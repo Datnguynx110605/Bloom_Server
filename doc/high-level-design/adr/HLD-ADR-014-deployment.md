@@ -21,6 +21,9 @@ The launch path must scale independently, and 99.9% availability needs failover 
 - **Broker / Redis HA:** RabbitMQ 3 nodes, Redis by role · all single · all HA
 - **Repo:** monorepo with per-service pipelines · repo per service
 - **Secrets:** Sealed Secrets · external vault
+- **Worker autoscaling:** KEDA · HPA on CPU · fixed replicas
+- **Backups:** WAL archiving + daily base backup · daily snapshot only · none
+- **CI/CD:** GitHub Actions only · GitHub Actions + Argo CD
 
 ## Decision
 Chosen:
@@ -29,6 +32,9 @@ Chosen:
 - **RabbitMQ 3-node cluster with quorum queues.** Redis replica + failover for gateway and launch; single instances elsewhere.
 - **Monorepo**: a folder per service, shared `.proto`, a shared plumbing-only library; CI builds and deploys only changed services.
 - **Sealed Secrets** for secrets in git.
+- Workers autoscale on RabbitMQ queue length with **KEDA**.
+- **Backups**: CloudNativePG WAL archiving + daily base backup to object storage; RPO ≤ 5 min, RTO ≤ 1 h.
+- **CI/CD**: GitHub Actions builds, tests, pushes and applies manifests for changed services (push-based).
 
 ## Pros and cons of the options
 ### Kubernetes
@@ -45,7 +51,7 @@ Chosen:
 
 ## Consequences
 - ✅ The launch path scales alone.
-- ⚠️ Open: worker autoscaling mechanism, backup/restore, CI tooling (OQ-HLD-4 … 6).
+- ❌ Push-based deploys can drift from the repo if the cluster is changed by hand (R-09). Argo CD (GitOps) was considered and not chosen.
 
 ## Links
 - [hld.md §9.5](../hld.md#95-deployment-topology)

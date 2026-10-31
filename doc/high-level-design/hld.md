@@ -62,6 +62,7 @@ Bloom is a single-vendor US store selling Apple devices ([product overview](../p
 | QA-07 | Message durability | No lost messages (at-least-once delivery + idempotent consumers) |
 | QA-08 | Revocation | Revoked tokens rejected at the gateway within ~1 s (ACC-R10) |
 | QA-09 | Payment data | Card data never reaches Bloom servers (CHK-R10) |
+| QA-10 | Recoverability | PostgreSQL RPO ≤ 5 min, RTO ≤ 1 h |
 
 ### 3.3 Functional ownership
 
@@ -133,7 +134,7 @@ Each service has one codebase and two deployments: **API** (gRPC/JSON) and **wor
 | **api-gateway** | Routing, TLS termination, JWT verification (JWKS), revocation check, tiered rate limiting, coarse role checks per route, stripping client-sent identity headers | Hold business data; make resource-level decisions |
 | **identity** | Customer and staff accounts, credentials, Google linking, MFA, access and refresh tokens, signing keys, address book, staff roles, **audit log** | Decide permissions inside other services; store orders |
 | **catalog** | Categories, products, SKUs, prices, warranty plans (as products), search, reviews and ratings, verified-buyer eligibility | Hold stock or allocation |
-| **inventory** | Stock per SKU (on-hand, reserved), reservations, serial units and their states, goods receipts, adjustments, stock ledger | Know prices, launches or orders beyond reservation and line references |
+| **inventory** | Stock per SKU (on-hand, reserved), reservations, pre-order backorder queue, serial units and their states, goods receipts, adjustments, stock ledger | Know prices, launches or orders beyond reservation and line references |
 | **order** | Cart, checkout orchestration, orders and status history, order-line snapshots, coupons and coupon uses, checkout settings (Express fee, tax rate), saga state for checkout and cancellation | Hold stock counts, allocation or payment state |
 | **launch** | Launches and stages, pre-order allocation counters, purchase-limit counters, waiting room, admission passes, admission worker | Own orders (it hands checkout to `order`) |
 | **payment** | Payments, refunds, provider idempotency keys, provider events, reconciliation | Change order status directly (it publishes events) |
@@ -152,7 +153,8 @@ Every service has its own database in one PostgreSQL cluster ([HLD-ADR-004](adr/
 | Products, SKUs, prices, warranty plans | catalog | order lines: price and name snapshot at checkout start (immutable) |
 | Reviews, ratings | catalog | — |
 | Verified-buyer eligibility | catalog | (fed by order "delivered" events) |
-| Stock, reservations, serial units, ledger | inventory | — |
+| Stock, reservations, pre-order backorders, serial units, ledger | inventory | — |
+| Checkout settings (Express fee, tax rate) | order | — |
 | Launches, allocation, limit counters | launch (Postgres) | — |
 | Waiting-room queue, admission state | launch (Redis) | — |
 | Cart, orders, coupons, coupon uses | order | — |
@@ -183,9 +185,11 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 |---|---|---|---|
 | Payment succeeded / failed | Event | payment | order |
 | Refund completed | Event | payment | order, fulfillment, notification |
-| Order paid | Event | order | inventory (reservation → sale), launch (hold → sold), fulfillment (pack task), notification |
+| Order paid | Event | order | inventory (regular: reservation → sale; pre-order: create backorder), launch (hold → sold), notification |
+| Stock allocated to order | Event | inventory | order (pre-order *Awaiting stock* → *Paid*) |
+| Order ready to fulfill | Event | order | fulfillment (pack task). Emitted when the order reaches *Paid*; carries lines, shipping address and shipping option. |
 | Order cancelled | Event | order | notification |
-| Release reservation | Command | order | inventory |
+| Release reservation / backorder | Command | order | inventory |
 | Release allocation hold | Command | order | launch |
 | Refund payment | Command | order, fulfillment | payment |
 | Order delivered | Event | order | catalog (review eligibility) |
@@ -203,7 +207,7 @@ Each provider sits behind an interface in its owning service ([HLD-ADR-018](adr/
 |---|---|---|---|
 | Stripe (test mode) | payment | Payment intents, refunds, idempotency keys | Signed webhooks |
 | Shippo (test mode) | fulfillment | Labels, return labels, tracking (US) | Tracking webhooks |
-| Resend | notification | Transactional email | — |
+| Resend (cloud) / Mailpit (local) | notification | Transactional email | — |
 | Google OIDC | identity | Customer sign-in | OAuth redirect |
 
 ## 8. Key flows
@@ -276,6 +280,13 @@ A reconciliation job in `payment` asks Stripe about payments still pending witho
 
 The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orchestrated by `fulfillment`.
 
+### 8.5 Pre-order stock arrival
+
+1. When a launch order is paid, `inventory` records a **backorder** (order, SKU, quantity, paid time) from the "Order paid" event.
+2. On goods receipt, `inventory` allocates received units to the **oldest backorders in the same transaction as the receipt**, so they never become available to regular buyers (INV-R10). Units left over go to on-hand stock. Unfilled backorders keep waiting (INV-R11).
+3. `inventory` publishes "Stock allocated to order". `order` moves the order *Awaiting stock* → *Paid* and emits "Order ready to fulfill" for `fulfillment`.
+4. Cancelling a waiting pre-order sends "Release reservation / backorder", which removes the backorder.
+
 ## 9. Cross-cutting concerns
 
 ### 9.1 Security
@@ -326,6 +337,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Payment after checkout expiry | Paid for a released hold | Automatic refund + notification (HLD-ADR-013). |
 | launch Redis fails over | Up to ~1 s of joins lost | Accepted risk. Passes are signed, counters are in Postgres (HLD-ADR-012). |
 | Postgres primary fails | Short write outage | CloudNativePG promotes the replica automatically. |
+| Data corruption or accidental delete | Bad data copied to the replica | Point-in-time recovery from WAL archive (RPO ≤ 5 min, RTO ≤ 1 h). |
 
 ### 9.5 Deployment topology
 
@@ -334,14 +346,15 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Each domain service | API deployment + worker deployment (same image, different entrypoint) |
 | api-gateway | Deployment, autoscaled horizontally |
 | launch API | Autoscaled horizontally (launch hot path) |
-| Workers | Scaled on queue depth (mechanism: OQ-HLD-4) |
+| Workers | Scaled on RabbitMQ queue length by KEDA |
 | PostgreSQL | One CloudNativePG cluster (primary + 1 replica, automatic failover), 8 databases with separate credentials |
+| Backup | CloudNativePG continuous WAL archiving + daily base backup to object storage (MinIO locally, S3-compatible in the cloud). Restore rehearsed once and documented. |
 | Redis | One instance per service. gateway and launch: replica + automatic failover. launch: AOF persistence (fsync every second). Others: single instance (rebuildable cache). |
 | RabbitMQ | 3-node cluster, quorum queues |
 | Service mesh | Linkerd (mTLS, allow rules) |
 | Observability | Grafana, Tempo, Prometheus, Loki |
-| Environments | Docker Compose for development; Kubernetes (kind/k3d locally; cloud-ready) as the deployment target |
-| Code and CI | Monorepo: one folder per service, shared `.proto` contracts, a shared library for plumbing only (outbox, inbox, telemetry). CI builds and deploys only changed services. |
+| Environments | Docker Compose for development (Mailpit for email); Kubernetes (kind/k3d locally; cloud-ready) as the deployment target |
+| Code and CI/CD | Monorepo: one folder per service, shared `.proto` contracts, a shared library for plumbing only (outbox, inbox, telemetry). GitHub Actions builds, tests and pushes images for changed services only, then applies their manifests to the cluster. |
 
 ## 10. Decision records
 
@@ -378,6 +391,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | R-06 | Shared Postgres cluster: one noisy service can slow others. | Per-database credentials and connection limits; split clusters if metrics show interference. |
 | R-07 | 409 on every optimistic-lock conflict surfaces brief races to users. | Clients show "changed, reload"; monitor conflict rate per endpoint. |
 | R-08 | Eventual consistency: status can lag briefly across services (for example "paid" visible a moment after payment). | UI shows pending states; consumer lag is monitored. |
+| R-09 | Push-based deploys from GitHub Actions: cluster state can drift from the repo after manual changes. | No manual changes to the cluster; manifests in the repo are the only source. |
 
 ## 12. Assumptions
 
@@ -391,12 +405,6 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 
 | ID | Question |
 |---|---|
-| OQ-HLD-1 | Pre-order stock arrival (INV-R10, R11, LCH-R19, R20): which service matches received stock to the oldest *Awaiting stock* orders, and through which interface? |
-| OQ-HLD-2 | Checkout settings owner: the Express fee (Admin-set) and the tax rate are placed in `order` above. Confirm. |
-| OQ-HLD-3 | How does fulfillment get order lines for packing: carried in the "Order paid" event (assumed in §7.2), or a gRPC lookup? |
-| OQ-HLD-4 | Worker autoscaling on queue depth: mechanism (for example KEDA). |
-| OQ-HLD-5 | Backup and restore: RPO/RTO targets and method. |
-| OQ-HLD-6 | CI/CD tooling. |
-| OQ-HLD-7 | Local email in development: Resend test mode or a local mail catcher. |
+| — | OQ-HLD-1 to OQ-HLD-7 resolved 2026-10-31 (§5, §6, §7.2, §7.3, §8.5, §9.5, QA-10). |
 | OQ-HLD-8 | Retention for outbox, inbox, idempotency and audit records. (Can be set in the LLD.) |
 | OQ-HLD-9 | Refresh token storage format and admission-pass signing key handling. (Can be set in the LLD.) |

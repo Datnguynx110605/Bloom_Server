@@ -35,7 +35,7 @@ Chosen: **Stripe** (owned by payment), **Shippo** (owned by fulfillment), **Rese
 
 ## Consequences
 - ✅ Providers can be swapped by implementing the interface.
-- ⚠️ Local development email approach is open (OQ-HLD-7).
+- ✅ Locally, notification sends through SMTP to **Mailpit** (no API key, works offline). Resend is used in the cloud environment.
 
 ## Links
 - [hld.md §7.3](../hld.md#73-external-integrations)
