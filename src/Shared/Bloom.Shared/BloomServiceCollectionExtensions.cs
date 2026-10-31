@@ -34,6 +34,7 @@ public sealed class BloomBuilder(IServiceCollection services, string serviceName
     {
         Services.AddHostedService<TopologyInitializer>();
         Services.AddHostedService<OutboxRelay>();
+        Services.AddHostedService<ConsumerHost>();
         return this;
     }
 }

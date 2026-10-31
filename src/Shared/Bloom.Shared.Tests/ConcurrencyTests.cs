@@ -13,7 +13,7 @@ namespace Bloom.Shared.Tests;
 public class ConcurrencyTests(Containers containers)
 {
     /// <summary>Sums long counter measurements of this host's service, keyed by instrument name and tags.</summary>
-    private sealed class Capture : IDisposable
+    internal sealed class Capture : IDisposable
     {
         private readonly MeterListener _listener = new();
         private readonly List<(string Name, Dictionary<string, object?> Tags, long Value)> _all = [];
