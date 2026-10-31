@@ -311,7 +311,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Authorization | Gateway: coarse role rules per route. Services: resource ownership, using the trusted identity context. | [011](adr/HLD-ADR-011-service-trust.md) |
 | Service-to-service | Linkerd mTLS with per-service allow rules. The gateway strips client-sent identity headers. | [011](adr/HLD-ADR-011-service-trust.md) |
 | Staff | Admin-invited, TOTP MFA required, one role, audit log in identity. | [016](adr/HLD-ADR-016-audit-log.md) |
-| Edge protection | Tiered rate limits (per IP anonymous, per user signed-in, stricter on login / refresh / reset / waiting-room join), sliding window in gateway Redis. | — |
+| Edge protection | Rate limits per threat: a global fixed window per IP on every client route, sliding windows on auth and refresh, token buckets per user on browsing, checkout and the waiting room; one atomic Lua call in gateway Redis, per-pod fallback if Redis is down ([07-api-gateway](../low-level-design/07-api-gateway.md)). TLS terminated at the ingress controller (cert-manager certificates). | — |
 | Payment data | Customers pay on Stripe's hosted Checkout page ([LLD-ADR-007](../low-level-design/adr/LLD-ADR-007-stripe-checkout-hosted.md)). Bloom never receives card data. | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Webhooks | Provider signature verified by the owning service before processing. | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Secrets | Kubernetes Secrets, committed encrypted (Sealed Secrets). Each service sees only its own. The JWT private key is visible only to identity. | [014](adr/HLD-ADR-014-deployment.md) |
@@ -364,6 +364,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Backup | CloudNativePG continuous WAL archiving + daily base backup to object storage (MinIO locally, S3-compatible in the cloud). Restore rehearsed once and documented. |
 | Redis | One instance per service. gateway and launch: replica + automatic failover. launch: AOF persistence (fsync every second). Others: single instance (rebuildable cache). |
 | RabbitMQ | 3-node cluster, quorum queues |
+| Ingress | ingress-nginx (or the cloud load balancer) terminates TLS with cert-manager certificates; forwards to api-gateway |
 | Service mesh | Linkerd (mTLS, allow rules) |
 | Observability | Grafana, Tempo, Prometheus, Loki |
 | Environments | Docker Compose for development (Mailpit for email); Kubernetes (kind/k3d locally; cloud-ready) as the deployment target |
