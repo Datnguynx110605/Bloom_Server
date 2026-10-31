@@ -1,9 +1,12 @@
 using System.Text.RegularExpressions;
 using Bloom.Shared.Concurrency;
+using Bloom.Shared.DeadLetters;
 using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
 using Bloom.Shared.Retention;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -68,6 +71,14 @@ public static partial class BloomServiceCollectionExtensions
         var builder = new BloomBuilder(services, options.ServiceName);
         services.AddSingleton(builder.Catalog);
         services.AddSingleton<RabbitMqConnection>();
+        services.AddSingleton<DeadLetterPass>();
         return builder;
+    }
+
+    /// <summary>Hosts the <c>DeadLetterAdmin</c> gRPC service (00-reliability §7.7). The host must call <c>AddGrpc()</c> (and <c>AddJsonTranscoding()</c> for the HTTP routes).</summary>
+    public static IEndpointRouteBuilder MapBloomDeadLetterAdmin(this IEndpointRouteBuilder endpoints)
+    {
+        endpoints.MapGrpcService<DeadLetterAdminService>();
+        return endpoints;
     }
 }

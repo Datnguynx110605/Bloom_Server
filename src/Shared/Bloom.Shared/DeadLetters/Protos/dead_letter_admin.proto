@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package bloom.shared.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+option csharp_namespace = "Bloom.Shared.DeadLetters";
+
+// Admin only (00-reliability 7.7, LLD-ADR-009). `service` must be the hosting service; `queue` is a full DLQ name.
+service DeadLetterAdmin {
+  rpc ListDeadLetterQueues(ListDeadLetterQueuesRequest) returns (ListDeadLetterQueuesResponse) {
+    option (google.api.http) = { get: "/api/admin/dlq/{service}/queues" };
+  }
+  rpc PeekDeadLetters(PeekDeadLettersRequest) returns (PeekDeadLettersResponse) {
+    option (google.api.http) = { get: "/api/admin/dlq/{service}/queues/{queue}/messages" };
+  }
+  rpc ReplayDeadLetter(DeadLetterRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/dlq/{service}/queues/{queue}/messages/{message_id}:replay" };
+  }
+  rpc ReplayAllDeadLetters(ReplayAllDeadLettersRequest) returns (ReplayAllDeadLettersResponse) {
+    option (google.api.http) = { post: "/api/admin/dlq/{service}/queues/{queue}:replay-all" };
+  }
+  rpc DiscardDeadLetter(DeadLetterRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { delete: "/api/admin/dlq/{service}/queues/{queue}/messages/{message_id}" };
+  }
+}
+
+message ListDeadLetterQueuesRequest {
+  string service = 1;
+}
+
+message DeadLetterQueue {
+  string name = 1;
+  uint32 message_count = 2;
+}
+
+message ListDeadLetterQueuesResponse {
+  repeated DeadLetterQueue queues = 1;
+}
+
+message PeekDeadLettersRequest {
+  string service = 1;
+  string queue = 2;
+  int32 limit = 3;
+}
+
+message DeadLetter {
+  string message_id = 1;
+  string message_type = 2;
+  string envelope_json = 3;
+  string failure_reason = 4;
+  string failed_at = 5;
+}
+
+message PeekDeadLettersResponse {
+  repeated DeadLetter messages = 1;
+}
+
+message DeadLetterRequest {
+  string service = 1;
+  string queue = 2;
+  string message_id = 3;
+}
+
+message ReplayAllDeadLettersRequest {
+  string service = 1;
+  string queue = 2;
+}
+
+message ReplayAllDeadLettersResponse {
+  uint32 replayed_count = 1;
+}

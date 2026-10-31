@@ -1,0 +1,102 @@
+using System.Threading.Channels;
+using Bloom.Shared.Errors;
+using Bloom.Shared.Messaging;
+using Grpc.Core;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
+
+namespace Bloom.Shared.DeadLetters;
+
+internal enum PassAction { Keep, Replay, Discard }
+
+/// <summary>
+/// One pass over a DLQ (00-reliability §7.7): takes the message count at the start and consumes exactly that many
+/// messages with an exclusive consumer, so late arrivals stay. Never nacks or requeues.
+/// </summary>
+internal sealed class DeadLetterPass(RabbitMqConnection connection)
+{
+    private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
+    private static readonly string[] ReplayStrips = ["x-attempt", "x-failure-reason", "x-failed-at"];
+
+    /// <summary>Per message: <paramref name="decide"/>, publish (replay, or keep at the DLQ tail), <paramref name="audit"/> (replay and discard only), ACK.</summary>
+    /// <exception cref="RpcException"><c>DLQ_NOT_FOUND</c> when the queue is not declared; <c>DLQ_BUSY</c> when another consumer holds it.</exception>
+    public async Task RunAsync(
+        string dlq, Func<BasicDeliverEventArgs, PassAction> decide, Func<BasicDeliverEventArgs, PassAction, Task> audit, CancellationToken ct)
+    {
+        await using var channel = await connection.CreateConfirmChannelAsync(ct);
+        QueueDeclareOk declared;
+        try
+        {
+            declared = await channel.QueueDeclarePassiveAsync(dlq, ct);
+        }
+        catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == 404)
+        {
+            throw BloomErrors.Create(StatusCode.NotFound, BloomErrors.DlqNotFound, $"Queue '{dlq}' does not exist.");
+        }
+
+        var count = declared.MessageCount;
+        if (declared.ConsumerCount > 0) throw Busy(dlq);
+
+        await channel.BasicQosAsync(0, 1, false, ct);
+        var deliveries = Channel.CreateUnbounded<BasicDeliverEventArgs>();
+        var consumer = new AsyncEventingBasicConsumer(channel);
+        // The broker's buffers are reused once the handler returns, so keep a copy.
+        consumer.ReceivedAsync += (_, d) => deliveries.Writer.WriteAsync(Copy(d), ct).AsTask();
+        string tag;
+        try
+        {
+            tag = await channel.BasicConsumeAsync(dlq, false, "", false, true, null, consumer, ct); // exclusive, even for an empty DLQ
+        }
+        catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == 403)
+        {
+            throw Busy(dlq);
+        }
+        // Quorum queues (the DLQs, §5.1) ignore the exclusive flag, so also check that nobody else joined meanwhile:
+        // of two racing passes, the one that registers second sees the first and backs off.
+        if ((await channel.QueueDeclarePassiveAsync(dlq, ct)).ConsumerCount > 1) throw Busy(dlq);
+
+        if (count == 0)
+        {
+            await channel.BasicCancelAsync(tag, cancellationToken: ct);
+            return;
+        }
+
+        for (var i = 1u; i <= count; i++)
+        {
+            var delivery = await deliveries.Reader.ReadAsync(ct);
+            var action = decide(delivery);
+            switch (action)
+            {
+                case PassAction.Replay: await PublishAsync(channel, dlq[..^".dlq".Length], delivery, strip: true, ct); break;
+                case PassAction.Keep: await PublishAsync(channel, dlq, delivery, strip: false, ct); break;
+            }
+            if (action != PassAction.Keep) await audit(delivery, action);
+            if (i == count) await channel.BasicCancelAsync(tag, cancellationToken: ct); // before the last ACK, or the broker delivers a late arrival
+            await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
+        }
+
+        // A quorum queue keeps the cancelled consumer until its last ACK is applied. Wait it out, or the next
+        // operation would see it as another running one.
+        for (var polls = 0; polls < 100 && (await channel.QueueDeclarePassiveAsync(dlq, ct)).ConsumerCount > 0; polls++)
+            await Task.Delay(20, ct);
+    }
+
+    private static RpcException Busy(string dlq) =>
+        BloomErrors.Create(StatusCode.Aborted, BloomErrors.DlqBusy, $"Another operation is running on '{dlq}'.");
+
+    private static BasicDeliverEventArgs Copy(BasicDeliverEventArgs d) =>
+        new(d.ConsumerTag, d.DeliveryTag, d.Redelivered, d.Exchange, d.RoutingKey,
+            new BasicProperties(d.BasicProperties) { Headers = d.BasicProperties.Headers is { } h ? new Dictionary<string, object?>(h) : null },
+            d.Body.ToArray(), d.CancellationToken);
+
+    private static async Task PublishAsync(IChannel channel, string queue, BasicDeliverEventArgs delivery, bool strip, CancellationToken ct)
+    {
+        var headers = delivery.BasicProperties.Headers is { } h ? new Dictionary<string, object?>(h) : null;
+        if (strip) foreach (var name in ReplayStrips) headers?.Remove(name);
+        var properties = new BasicProperties(delivery.BasicProperties) { Headers = headers, DeliveryMode = DeliveryModes.Persistent };
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(ConfirmTimeout);
+        await channel.BasicPublishAsync("", queue, mandatory: false, properties, delivery.Body, timeout.Token);
+    }
+}
