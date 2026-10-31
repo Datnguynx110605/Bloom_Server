@@ -429,4 +429,4 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 |---|---|
 | — | OQ-HLD-1 to OQ-HLD-7 resolved 2026-10-31 (§5, §6, §7.2, §7.3, §8.5, §9.5, QA-10). |
 | — | OQ-HLD-8 resolved 2026-10-31 in [reliability LLD §13](../low-level-design/00-reliability.md#13-retention). |
-| OQ-HLD-9 | Refresh token storage format and admission-pass signing key handling. (Can be set in the LLD.) |
+| — | OQ-HLD-9 resolved 2026-10-31 in [identity LLD §4.1](../low-level-design/06-identity.md#41-postgresql-identity-database) (refresh tokens stored as SHA-256 hash) and [launch LLD §4.3](../low-level-design/01-launch.md#43-admission-pass-token) (HMAC-SHA256 key per `kid`, held only by launch). |
