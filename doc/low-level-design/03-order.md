@@ -173,7 +173,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | Message | When | Key payload |
 |---|---|---|
 | `order.paid.v1` | Payment confirmed (any order) | `orderId`, `accountId`, `launchId?`, `paidAt`, `lines[{skuId, quantity}]` |
-| `order.ready-to-fulfill.v1` | Order reaches `paid` | `orderId`, `number`, `shipTo`, `shippingOption`, `lines[{lineNo, kind, skuId, productId, serialized, quantity, parentLineNo, coverageMonths, paidCents}]` |
+| `order.ready-to-fulfill.v1` | Order reaches `paid` | `orderId`, `accountId`, `number`, `shipTo`, `shippingOption`, `shippingCents`, `totalCents`, `lines[{lineNo, kind, skuId, productId, serialized, quantity, parentLineNo, coverageMonths, paidCents, taxCents}]` |
 | `order.cancelled.v1` | Any cancellation | `orderId`, `reason` |
 | `order.delivered.v1` | Delivered | `orderId`, `accountId`, `productIds[]`, `deliveredAt` |
 | `inventory.release-reservation.v1` | Command | `orderId` |

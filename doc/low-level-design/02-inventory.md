@@ -230,7 +230,7 @@ Status → `released`. The same transaction writes `inventory.reservation-releas
 | `UnassignSerial` | Serial `assigned` to `ref_id` | Serial → `in_stock`, `ref_id` cleared |
 | `ReplaceSerial` | Both of the above, one transaction | Old → `in_stock`, new → `assigned` |
 
-Non-serialized SKUs have no serial operations. All three are audited (INV-R19).
+All three are idempotent for retries: assigning a serial already `assigned` to the same `ref_id`, or unassigning a serial that is already `in_stock`, returns `ok`. Non-serialized SKUs have no serial operations. All three are audited (INV-R19).
 
 ### 6.7 Shipment, returns and delivery failures
 
