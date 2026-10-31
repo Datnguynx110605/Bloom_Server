@@ -151,6 +151,7 @@ Every service has its own database in one PostgreSQL cluster ([HLD-ADR-004](adr/
 | Token revocations | identity | gateway Redis: revocation list (identity events) |
 | Audit log | identity | — (fed by staff-action events from all services) |
 | Products, SKUs, prices, warranty plans | catalog | order lines: price and name snapshot at checkout start (immutable) |
+| Launches, stages, launch SKU membership | launch | catalog: membership and stage per SKU (launch events) |
 | Reviews, ratings | catalog | — |
 | Verified-buyer eligibility | catalog | (fed by order "delivered" events) |
 | Stock, reservations, pre-order backorders, serial units, ledger | inventory | — |
@@ -174,6 +175,7 @@ Every service has its own database in one PostgreSQL cluster ([HLD-ADR-004](adr/
 | order → payment | Create a payment for the order (returns the provider client secret) | Order stays *Pending payment*; customer retries within 15 min |
 | identity → order | "Does this customer have unsettled orders?" (ACC-R13) | Deletion refused with "try later" (fail safe) |
 | fulfillment → inventory | Assign, unassign or replace serials at packing (INV-R13, R14, R19) | Packing step fails; Warehouse retries |
+| launch → catalog | Validate a SKU and its product when staff add it to a launch | Admin action fails; staff retry |
 
 Exact contracts (`.proto`) are specified in the LLD of each service.
 
@@ -197,6 +199,7 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Return decided | Event | fulfillment | order, notification |
 | Customer registered / contact changed | Event | identity | notification |
 | Account deleted | Event | identity | notification, catalog, order, fulfillment (each anonymizes the personal data it holds; amounts, SKUs and dates are kept) |
+| Launch stage changed | Event | launch | catalog (launch membership and stage per SKU: visibility, buyability, and launch info returned to order at checkout) |
 | Tokens revoked | Event | identity | api-gateway |
 | Staff action recorded | Event | all services | identity (audit log) |
 
@@ -408,5 +411,5 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | ID | Question |
 |---|---|
 | — | OQ-HLD-1 to OQ-HLD-7 resolved 2026-10-31 (§5, §6, §7.2, §7.3, §8.5, §9.5, QA-10). |
-| — | OQ-HLD-8 resolved 2026-10-31 in [reliability LLD §13](../low-level-design/reliability.md#13-retention). |
+| — | OQ-HLD-8 resolved 2026-10-31 in [reliability LLD §13](../low-level-design/00-reliability.md#13-retention). |
 | OQ-HLD-9 | Refresh token storage format and admission-pass signing key handling. (Can be set in the LLD.) |
