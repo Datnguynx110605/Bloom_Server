@@ -7,9 +7,34 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Bloom.Shared;
 
-public sealed class BloomBuilder(IServiceCollection services)
+public sealed class BloomBuilder(IServiceCollection services, string serviceName)
 {
     public IServiceCollection Services { get; } = services;
+
+    internal ConsumerCatalog Catalog { get; } = new();
+
+    /// <summary>Registers a consumer: queue <c>{service}.{handler}</c>, handler resolved from a scope per delivery.</summary>
+    public BloomBuilder AddConsumer<THandler>(string handler, params ConsumerBinding[] bindings)
+        where THandler : class, IMessageHandler
+    {
+        Services.AddScoped<THandler>();
+        Catalog.Add(new ConsumerDefinition(handler, MessageNames.ConsumerQueue(serviceName, handler), typeof(THandler), bindings));
+        return this;
+    }
+
+    /// <summary>Declares <c>{target}.commands</c> exchanges this service sends commands to.</summary>
+    public BloomBuilder SendsCommandsTo(params string[] services)
+    {
+        Catalog.AddCommandTargets(services);
+        return this;
+    }
+
+    /// <summary>Background work, in registration order: topology first. Later tasks add their hosted services here.</summary>
+    public BloomBuilder AddWorker()
+    {
+        Services.AddHostedService<TopologyInitializer>();
+        return this;
+    }
 }
 
 public static partial class BloomServiceCollectionExtensions
@@ -33,6 +58,9 @@ public static partial class BloomServiceCollectionExtensions
         services.AddSingleton<BloomMetrics>();
         services.AddScoped<ConcurrentUpdates>();
         services.AddScoped<OutboxWriter>();
-        return new BloomBuilder(services);
+        var builder = new BloomBuilder(services, options.ServiceName);
+        services.AddSingleton(builder.Catalog);
+        services.AddSingleton<RabbitMqConnection>();
+        return builder;
     }
 }

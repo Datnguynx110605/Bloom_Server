@@ -1,5 +1,6 @@
 using Npgsql;
 using Testcontainers.PostgreSql;
+using Testcontainers.RabbitMq;
 
 [assembly: AssemblyFixture(typeof(Bloom.Shared.Tests.Containers))]
 
@@ -11,9 +12,27 @@ public sealed class Containers : IAsyncLifetime
     // Same exact tag as the Compose file (plan Task 11).
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:17.6").Build();
 
-    public async ValueTask InitializeAsync() => await _postgres.StartAsync();
+    // Same exact tag as the Compose file (plan Task 11).
+    private readonly RabbitMqContainer _rabbit = new RabbitMqBuilder("rabbitmq:4.1.4-management").Build();
 
-    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
+    public string RabbitMqUri => _rabbit.GetConnectionString();
+
+    public async ValueTask InitializeAsync() => await Task.WhenAll(_postgres.StartAsync(), _rabbit.StartAsync());
+
+    public async ValueTask DisposeAsync()
+    {
+        await _postgres.DisposeAsync();
+        await _rabbit.DisposeAsync();
+    }
+
+    /// <summary>Runs <c>rabbitmqctl</c> inside the broker container and returns its stdout.</summary>
+    public async Task<string> RabbitCtlAsync(params string[] args)
+    {
+        var result = await _rabbit.ExecAsync(["rabbitmqctl", .. args]);
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException($"rabbitmqctl {string.Join(' ', args)} failed ({result.ExitCode}): {result.Stderr}");
+        return result.Stdout;
+    }
 
     public async Task<string> CreateDatabaseAsync()
     {
