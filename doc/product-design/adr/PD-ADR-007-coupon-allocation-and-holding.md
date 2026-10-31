@@ -54,7 +54,7 @@ Chosen: **split the discount across eligible lines in proportion to price at che
 ## Consequences
 - ✅ Each order line carries its own paid amount, which drives every refund.
 - ❌ Coupon uses share the reservation lifecycle, which adds coupling.
-- ⚠️ The cent-rounding rule for the split is left to the LLD (OQ-08-3).
+- ⚠️ The cent-rounding rule for the split is set in [03-order §6.3](../../low-level-design/03-order.md) (largest remainder).
 
 ## Links
 - [08-promotions](../08-promotions.md), [05-checkout-payment](../05-checkout-payment.md), [07-returns-refunds](../07-returns-refunds.md)

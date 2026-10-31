@@ -168,6 +168,7 @@ Keys are held only by `launch` (Sealed Secret). On rotation, the old key stays v
 | `identity.staff-action-recorded.v1` | Published | Every admin change |
 | `order.paid.v1` | Consumed (`launch.order-paid`) | Only events carrying a `launchId` |
 | `launch.release-allocation-hold.v1` | Consumed (`launch.release-allocation-hold`) | Command from order: `orderId`, `reason` |
+| `launch.hold-released.v1` | Published → order | `orderId`. Written in the same transaction as **every** applied release command, including no-ops (saga completion, [03-order](03-order.md)) |
 
 ### 5.4 Error reasons (`ErrorInfo.reason`)
 
@@ -268,7 +269,7 @@ A failed hold rolls back step 4, so the pass stays usable (LR-03). Fixed lock or
 | `release-allocation-hold` | `sold` | Per line: `sold −= q`; per product: `sold −= n`; hold → `released` (cancellation after payment) |
 | `release-allocation-hold` | `released` / none | No-op |
 
-Released units return to the pool immediately (LCH-R16). If customers are still queued, the next admission tick admits again because `available > 0` (LCH-R18).
+Every release command, including a no-op, also writes `launch.hold-released.v1` to the outbox so `order`'s saga can complete. Released units return to the pool immediately (LCH-R16). If customers are still queued, the next admission tick admits again because `available > 0` (LCH-R18).
 
 ### 6.7 Admin rules
 

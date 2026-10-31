@@ -86,4 +86,4 @@ sequenceDiagram
 
 | ID | Question |
 |---|---|
-| OQ-05-4 | Rounding rule when the flat tax rate produces fractions of a cent. (Can be set in the LLD.) |
+| — | OQ-05-4 resolved 2026-10-31 in [03-order §6.3](../low-level-design/03-order.md#63-pricing) (half-up per line). |

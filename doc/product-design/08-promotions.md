@@ -66,4 +66,4 @@ stateDiagram-v2
 
 | ID | Question |
 |---|---|
-| OQ-08-3 | Rounding rule when the proportional split leaves a fraction of a cent. (Can be set in the LLD.) |
+| — | OQ-08-3 resolved 2026-10-31 in [03-order §6.3](../low-level-design/03-order.md#63-pricing) (largest remainder). |

@@ -173,6 +173,7 @@ Every service has its own database in one PostgreSQL cluster ([HLD-ADR-004](adr/
 | order → inventory | Reserve stock for a regular checkout; availability for cart flags (CHK-R18) | Checkout start fails; already-made holds are compensated |
 | order → launch | Consume admission pass, hold allocation and purchase limit | Same |
 | order → payment | Create a payment for the order (returns the provider client secret) | Order stays *Pending payment*; customer retries within 15 min |
+| order → fulfillment | Cancel a pack task before cancelling a handed-over order (refused once packing started for customers, or once shipped for Support) | Cancellation fails; order unchanged |
 | identity → order | "Does this customer have unsettled orders?" (ACC-R13) | Deletion refused with "try later" (fail safe) |
 | fulfillment → inventory | Assign, unassign or replace serials at packing (INV-R13, R14, R19); commit stock for a reship (ORD-R13) | Packing step fails; Warehouse retries |
 | launch → catalog | Validate a SKU and its product when staff add it to a launch | Admin action fails; staff retry |
@@ -193,6 +194,9 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Order ready to fulfill | Event | order | fulfillment (pack task). Emitted when the order reaches *Paid*; carries lines, shipping address and shipping option. |
 | Order cancelled | Event | order | notification |
 | Release reservation / backorder | Command | order | inventory |
+| Reservation released / hold released | Event | inventory / launch | order (saga completion; published for every release command, including no-ops) |
+| Cancel payment | Command | order | payment (cancel the provider payment when a checkout expires or fails) |
+| Packing started; return requested / return closed | Event | fulfillment | order (status *Packing*; open-return count for ACC-R13) |
 | Release allocation hold | Command | order | launch |
 | Refund payment | Command | order, fulfillment | payment |
 | Order delivered | Event | order | catalog (review eligibility) |
@@ -201,7 +205,7 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Return decided | Event | fulfillment | order, notification |
 | Customer registered / contact changed | Event | identity | notification |
 | Account deleted | Event | identity | notification, catalog, order, fulfillment (each anonymizes the personal data it holds; amounts, SKUs and dates are kept) |
-| Launch stage changed | Event | launch | catalog (launch membership and stage per SKU: visibility, buyability, and launch info returned to order at checkout) |
+| Launch stage changed | Event | launch | order (release of allocated pre-orders, LCH-R19); catalog (launch membership and stage per SKU: visibility, buyability, and launch info returned to order at checkout) |
 | Tokens revoked | Event | identity | api-gateway |
 | Staff action recorded | Event | all services | identity (audit log) |
 

@@ -97,4 +97,4 @@ stateDiagram-v2
 
 | ID | Question |
 |---|---|
-| OQ-03-2 | List of stock adjustment reason codes. (Can be set in the LLD.) |
+| — | OQ-03-2 resolved 2026-10-31 in [02-inventory §4.4](../low-level-design/02-inventory.md#44-receipts-adjustments-ledger). |

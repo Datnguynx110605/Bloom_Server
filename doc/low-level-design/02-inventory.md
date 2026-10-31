@@ -151,6 +151,7 @@ Index: `(sku_id, status)`.
 | `identity.staff-action-recorded.v1` | Published | Receipts, adjustments, serial changes |
 | `order.paid.v1` | Consumed (`inventory.order-paid`) | Payload includes `launchId` (null for regular), `paidAt`, lines |
 | `inventory.release-reservation.v1` | Consumed (`inventory.release-reservation`) | Command from order: `orderId` |
+| `inventory.reservation-released.v1` | Published → order | `orderId`. Written in the same transaction as **every** applied release command, including no-ops (saga completion, [03-order](03-order.md)) |
 | `fulfillment.shipment-shipped.v1` | Consumed (`inventory.shipment-shipped`) | `refId`, lines |
 | `inventory.receive-customer-return.v1` | Consumed | Command from fulfillment: `orderId`, accepted units `[{skuId, serial?, quantity}]` |
 | `inventory.receive-returned-to-sender.v1` | Consumed | Command from fulfillment: `refId`, units `[{skuId, serial?, quantity, outcome: sealed \| failed}]` |
@@ -219,7 +220,7 @@ For each allocation of the order:
 | `committed` | `committed −= q, on_hand += q`; any `assigned` serials of the ref → `in_stock`; ledger `commitment_released`; then run the allocator for the SKU (freed units serve waiting pre-orders first) |
 | `shipped`, `released` | No-op |
 
-Status → `released`.
+Status → `released`. The same transaction writes `inventory.reservation-released.v1` to the outbox, also when nothing needed releasing, so `order`'s saga can complete.
 
 ### 6.6 Packing serial operations
 
