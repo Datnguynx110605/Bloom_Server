@@ -9,6 +9,7 @@ public sealed class GatewayMetrics
 
     private readonly Counter<long> _requests, _authFailures, _rateLimited, _jwksRefreshes;
     private readonly Histogram<double> _overhead, _upstream;
+    private long _redisDegraded;
 
     public GatewayMetrics(IMeterFactory meterFactory)
     {
@@ -19,10 +20,14 @@ public sealed class GatewayMetrics
         _authFailures = meter.CreateCounter<long>("gateway_auth_failures_total");
         _rateLimited = meter.CreateCounter<long>("gateway_rate_limited_total");
         _jwksRefreshes = meter.CreateCounter<long>("jwks_refresh_total");
+        meter.CreateObservableGauge("gateway_redis_degraded", () => Volatile.Read(ref _redisDegraded));
     }
 
     /// <param name="reason"><c>TOKEN_MISSING</c>, <c>TOKEN_INVALID</c> or <c>TOKEN_REVOKED</c> (plan P8).</param>
     public void AuthFailure(string reason) => _authFailures.Add(1, new KeyValuePair<string, object?>("reason", reason));
+
+    /// <summary>1 while requests are served from the in-memory fallback because Redis is unreachable.</summary>
+    public void SetRedisDegraded(bool degraded) => Volatile.Write(ref _redisDegraded, degraded ? 1 : 0);
 
     public void RateLimited(string policy) => _rateLimited.Add(1, new KeyValuePair<string, object?>("policy", policy));
 

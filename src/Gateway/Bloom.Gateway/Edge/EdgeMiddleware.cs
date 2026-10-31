@@ -1,13 +1,14 @@
 using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
+using StackExchange.Redis;
 using Yarp.ReverseProxy.Configuration;
 using Yarp.ReverseProxy.Model;
 
 namespace Bloom.Gateway;
 
 /// <summary>Steps 4 to 8 of the edge pipeline (LLD 07 §3); later steps are added here in that order.</summary>
-public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validator, EdgeStore store, GatewayMetrics metrics, IReadOnlyDictionary<string, RateLimitPolicy> policies)
+public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validator, EdgeStore store, FallbackLimiters fallback, GatewayMetrics metrics, IReadOnlyDictionary<string, RateLimitPolicy> policies)
 {
     // One EdgeRoute per route config instance; a config reload yields new instances and the old entries are collected.
     private readonly ConditionalWeakTable<RouteConfig, EdgeRoute> _parsed = [];
@@ -56,7 +57,24 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
 
         // Step 6: revocation and rate limits, one Redis call (§6.2). Anonymous callers of public-optional-user routes get the global limit only.
         var routePolicy = route.Auth == AuthMode.PublicOptionalUser && caller is null ? null : route.Policy;
-        var decision = await store.CheckAsync(caller, ClientIp(context), routePolicy, context.Request.Headers["x-bloom-request-id"].ToString());
+        var clientIp = ClientIp(context);
+        EdgeDecision decision;
+        try
+        {
+            decision = await store.CheckAsync(caller, clientIp, routePolicy, context.Request.Headers["x-bloom-request-id"].ToString());
+            metrics.SetRedisDegraded(false);
+        }
+        catch (Exception e) when (e is RedisException or TimeoutException) // RedisTimeoutException is a TimeoutException, not a RedisException
+        {
+            // Redis is unreachable or not answering (§6.2): staff fail closed, everyone else gets per-pod limits and no revocation check.
+            metrics.SetRedisDegraded(true);
+            if (caller is { IsStaff: true })
+            {
+                await GatewayErrors.WriteAsync(context, GatewayErrors.AuthStoreUnavailable);
+                return;
+            }
+            decision = fallback.Check(caller, clientIp, routePolicy);
+        }
         if (decision.Revoked)
         {
             await FailAsync(context, GatewayErrors.TokenRevoked);

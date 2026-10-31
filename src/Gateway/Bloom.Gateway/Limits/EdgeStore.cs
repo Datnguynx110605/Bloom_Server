@@ -14,7 +14,7 @@ public sealed class EdgeStore(IConnectionMultiplexer redis, TimeProvider time, I
 
     /// <param name="caller">Null when anonymous.</param>
     /// <param name="routePolicy">Null when the route has no policy, or the route is public-optional-user and the caller anonymous.</param>
-    /// <exception cref="RedisException">Redis is unreachable.</exception>
+    /// <exception cref="RedisException">Redis is unreachable (a timeout surfaces as <see cref="TimeoutException"/>).</exception>
     public async Task<EdgeDecision> CheckAsync(Caller? caller, string clientIp, RateLimitPolicy? routePolicy, string requestId)
     {
         var now = time.GetUtcNow().ToUnixTimeMilliseconds();
@@ -30,8 +30,7 @@ public sealed class EdgeStore(IConnectionMultiplexer redis, TimeProvider time, I
         RedisValue[] route = ["", "", 0, 0];
         if (routePolicy is not null)
         {
-            var subject = routePolicy.Key == LimitKey.Ip ? clientIp
-                : caller?.UserId.ToString("D") ?? throw new InvalidOperationException($"Policy '{routePolicy.Name}' is per user but the request is anonymous.");
+            var subject = routePolicy.Subject(caller, clientIp);
             (var algorithm, var key, var first, var second) = routePolicy.Algorithm switch
             {
                 Algorithm.FixedWindow => ("fixed", FixedWindowKey(routePolicy, subject, now), routePolicy.Limit, (double)routePolicy.WindowSeconds * 1000),

@@ -45,6 +45,7 @@ public static class GatewayApp
                 return ConnectionMultiplexer.Connect(options);
             });
             builder.Services.AddSingleton<EdgeStore>();
+            builder.Services.AddSingleton<FallbackLimiters>();
             builder.Services.AddSingleton<JwksCache>();
             builder.Services.AddHostedService(sp => sp.GetRequiredService<JwksCache>());
             builder.Services.AddSingleton<TokenValidator>();
