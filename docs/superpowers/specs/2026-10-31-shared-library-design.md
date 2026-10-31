@@ -171,11 +171,7 @@ Each module follows 00-reliability exactly. This section only says what the libr
 
 The owner deferred the DLQ tool because both documented forms conflict with other docs (an admin endpoint has no gateway route in 07-api-gateway §5.1; a CLI has no staff identity for "Admin only" and the audit entry, 00-reliability §11).
 
-The library's code will not contain it, but 00-reliability §3 still lists it and §15 says "None open". **Proposed edit, needs owner approval before anyone changes `doc/`:** add to 00-reliability §15:
-
-| ID | Question |
-|---|---|
-| OQ-RL-1 | DLQ tool form (CLI vs per-service admin endpoint), how it enforces Admin-only and writes the audit entry. Deferred until a service with an Admin UI exists. Until then, RabbitMQ's management UI is used for inspection. |
+The library's code will not contain it. The open question is tracked as **OQ-RL-1** (DLQ tool form, how it enforces Admin-only and writes the audit entry). **The owner decides OQ-RL-1 and owns any matching change to `doc/`.** This project makes no edit under `doc/`. Until it is decided, RabbitMQ's management UI is used for inspection.
 
 ## 10. Testing
 
