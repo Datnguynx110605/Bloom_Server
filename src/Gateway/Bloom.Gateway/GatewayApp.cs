@@ -2,6 +2,7 @@ using Bloom.Shared.Observability;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 using Yarp.ReverseProxy;
 
 namespace Bloom.Gateway;
@@ -35,6 +36,15 @@ public static class GatewayApp
         {
             builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first
             builder.Services.AddSingleton<GatewayMetrics>();
+            builder.Services.AddSingleton(RateLimitPolicy.Bind(builder.Configuration));
+            builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+            {
+                var options = ConfigurationOptions.Parse(builder.Configuration["Gateway:Redis"]!);
+                options.AbortOnConnectFail = false; // start and serve while Redis is down (P16)
+                options.BacklogPolicy = BacklogPolicy.FailFast; // an outage fails requests at once instead of queueing them
+                return ConnectionMultiplexer.Connect(options);
+            });
+            builder.Services.AddSingleton<EdgeStore>();
             builder.Services.AddSingleton<JwksCache>();
             builder.Services.AddHostedService(sp => sp.GetRequiredService<JwksCache>());
             builder.Services.AddSingleton<TokenValidator>();
@@ -45,11 +55,13 @@ public static class GatewayApp
             builder.Services.Configure<ForwardedHeadersOptions>(o =>
             {
                 // Only the ingress controller's addresses may supply X-Forwarded-For (GW-06, LLD 07 §6.4).
-                o.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+                var trusted = builder.Configuration.GetSection("Gateway:TrustedProxies").Get<string[]>() ?? [];
+                // With no known proxy the middleware would trust every hop, so then it must not read the header at all.
+                o.ForwardedHeaders = trusted.Length == 0 ? ForwardedHeaders.None : ForwardedHeaders.XForwardedFor;
                 o.KnownIPNetworks.Clear();
                 o.KnownProxies.Clear();
                 o.ForwardLimit = null;
-                foreach (var cidr in builder.Configuration.GetSection("Gateway:TrustedProxies").Get<string[]>() ?? [])
+                foreach (var cidr in trusted)
                     o.KnownIPNetworks.Add(System.Net.IPNetwork.Parse(cidr));
             });
         }

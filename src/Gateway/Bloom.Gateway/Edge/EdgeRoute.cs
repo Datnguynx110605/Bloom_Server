@@ -5,9 +5,9 @@ namespace Bloom.Gateway;
 public enum AuthMode { Public, PublicOptionalUser, Customer, Staff, AnyUser, None }
 
 /// <summary>A route's edge settings (LLD 07 §5.1), read from the YARP route <c>Metadata</c>.</summary>
-public sealed record EdgeRoute(string RouteId, AuthMode Auth, IReadOnlySet<string> Roles, string? Policy, long? MaxBodyBytes, bool CheckOrigin)
+public sealed record EdgeRoute(string RouteId, AuthMode Auth, IReadOnlySet<string> Roles, RateLimitPolicy? Policy, long? MaxBodyBytes, bool CheckOrigin)
 {
-    public static EdgeRoute From(RouteConfig route)
+    public static EdgeRoute From(RouteConfig route, IReadOnlyDictionary<string, RateLimitPolicy> policies)
     {
         var metadata = route.Metadata ?? new Dictionary<string, string>();
         var auth = metadata.GetValueOrDefault("Auth") switch
@@ -25,7 +25,9 @@ public sealed record EdgeRoute(string RouteId, AuthMode Auth, IReadOnlySet<strin
             route.RouteId,
             auth,
             roles.ToHashSet(),
-            metadata.GetValueOrDefault("Policy"),
+            metadata.GetValueOrDefault("Policy") is { } name
+                ? policies.GetValueOrDefault(name) ?? throw new InvalidOperationException($"Route '{route.RouteId}' has unknown Policy '{name}'.")
+                : null,
             metadata.TryGetValue("MaxBodyBytes", out var max) ? long.Parse(max) : null,
             metadata.GetValueOrDefault("CheckOrigin") == "true");
     }

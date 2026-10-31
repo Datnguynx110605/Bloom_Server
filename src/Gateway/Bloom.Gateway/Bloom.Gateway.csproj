@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <Content Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Limits\edge.lua" LogicalName="edge.lua" />
     <InternalsVisibleTo Include="Bloom.Gateway.Tests" />
     <ProjectReference Include="..\..\Shared\Bloom.Shared\Bloom.Shared.csproj" />
     <ProjectReference Include="..\..\Identity\Bloom.Identity.Contracts\Bloom.Identity.Contracts.csproj" />

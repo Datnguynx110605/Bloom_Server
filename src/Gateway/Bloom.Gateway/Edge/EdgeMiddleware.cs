@@ -7,10 +7,11 @@ using Yarp.ReverseProxy.Model;
 namespace Bloom.Gateway;
 
 /// <summary>Steps 4 to 8 of the edge pipeline (LLD 07 §3); later steps are added here in that order.</summary>
-public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validator, GatewayMetrics metrics)
+public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validator, EdgeStore store, GatewayMetrics metrics, IReadOnlyDictionary<string, RateLimitPolicy> policies)
 {
     // One EdgeRoute per route config instance; a config reload yields new instances and the old entries are collected.
-    private static readonly ConditionalWeakTable<RouteConfig, EdgeRoute> Parsed = [];
+    private readonly ConditionalWeakTable<RouteConfig, EdgeRoute> _parsed = [];
+    private readonly ConditionalWeakTable<RouteConfig, EdgeRoute>.CreateValueCallback _parse = config => EdgeRoute.From(config, policies);
 
     public async Task InvokeAsync(HttpContext context)
     {
@@ -25,7 +26,7 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
             return;
         }
 
-        var route = Parsed.GetValue(model.Config, EdgeRoute.From);
+        var route = _parsed.GetValue(model.Config, _parse);
         context.Features.Set(route);
         if (route.MaxBodyBytes is { } max)
             context.Features.GetRequiredFeature<IHttpMaxRequestBodySizeFeature>().MaxRequestBodySize = max; // Kestrel enforces it for Content-Length and chunked bodies
@@ -53,7 +54,20 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
             }
         }
 
-        // Step 6 (revocation and rate limits) goes here.
+        // Step 6: revocation and rate limits, one Redis call (§6.2). Anonymous callers of public-optional-user routes get the global limit only.
+        var routePolicy = route.Auth == AuthMode.PublicOptionalUser && caller is null ? null : route.Policy;
+        var decision = await store.CheckAsync(caller, ClientIp(context), routePolicy, context.Request.Headers["x-bloom-request-id"].ToString());
+        if (decision.Revoked)
+        {
+            await FailAsync(context, GatewayErrors.TokenRevoked);
+            return;
+        }
+        if (!decision.Allowed)
+        {
+            metrics.RateLimited(decision.DeniedPolicy!);
+            await GatewayErrors.WriteAsync(context, GatewayErrors.RateLimited, decision.RetryAfter);
+            return;
+        }
 
         // Step 7: role check.
         if (caller is not null && !RoleAllowed(route, caller))
@@ -82,6 +96,9 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
         AuthMode.Staff => caller.IsStaff && route.Roles.Contains(caller.Role!),
         _ => true, // any-user and public-optional-user accept either type
     };
+
+    private static string ClientIp(HttpContext context) =>
+        context.Connection.RemoteIpAddress is { } ip ? (ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip).ToString() : "unknown";
 
     private Task FailAsync(HttpContext context, GatewayError error)
     {
