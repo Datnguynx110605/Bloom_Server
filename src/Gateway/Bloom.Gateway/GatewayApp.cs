@@ -1,6 +1,8 @@
 using Bloom.Shared.Observability;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Yarp.ReverseProxy;
 
 namespace Bloom.Gateway;
 
@@ -31,7 +33,11 @@ public static class GatewayApp
 
         if (api)
         {
+            builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first
             builder.Services.AddSingleton<GatewayMetrics>();
+            builder.Services.AddSingleton<JwksCache>();
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<JwksCache>());
+            builder.Services.AddSingleton<TokenValidator>();
             builder.Services.AddRequestTimeouts(o => o.DefaultPolicy = new() { Timeout = TimeSpan.FromSeconds(5) }); // YARP applies each route's Timeout through it; LLD 07 §5.2 default 5 s
             builder.Services.AddReverseProxy()
                 .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
@@ -57,6 +63,8 @@ public static class GatewayApp
             app.UseMiddleware<EdgeMiddleware>();
             app.UseRequestTimeouts();
             app.MapReverseProxy(ProxyPipeline.Configure);
+            app.MapGet("/readyz", (JwksCache jwks, IProxyStateLookup routes) =>
+                jwks.IsLoaded && routes.GetRoutes().Any() ? Results.Ok() : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
         }
         app.MapGet("/healthz", () => Results.Ok());
         return app;

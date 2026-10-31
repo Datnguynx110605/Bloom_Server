@@ -7,27 +7,85 @@ using Yarp.ReverseProxy.Model;
 namespace Bloom.Gateway;
 
 /// <summary>Steps 4 to 8 of the edge pipeline (LLD 07 §3); later steps are added here in that order.</summary>
-public sealed class EdgeMiddleware(RequestDelegate next)
+public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validator, GatewayMetrics metrics)
 {
     // One EdgeRoute per route config instance; a config reload yields new instances and the old entries are collected.
     private static readonly ConditionalWeakTable<RouteConfig, EdgeRoute> Parsed = [];
 
-    public Task InvokeAsync(HttpContext context)
+    public async Task InvokeAsync(HttpContext context)
     {
         var endpoint = context.GetEndpoint();
         if (endpoint?.Metadata.GetMetadata<RouteModel>() is not { } model)
         {
             // No route, or ASP.NET's own 405 endpoint: both are "no such route". Health endpoints are not routes.
-            return endpoint is RouteEndpoint { RoutePattern.RawText: "/healthz" or "/readyz" }
-                ? next(context)
-                : GatewayErrors.WriteAsync(context, GatewayErrors.RouteNotFound);
+            if (endpoint is RouteEndpoint { RoutePattern.RawText: "/healthz" or "/readyz" })
+                await next(context);
+            else
+                await GatewayErrors.WriteAsync(context, GatewayErrors.RouteNotFound);
+            return;
         }
 
         var route = Parsed.GetValue(model.Config, EdgeRoute.From);
         context.Features.Set(route);
         if (route.MaxBodyBytes is { } max)
             context.Features.GetRequiredFeature<IHttpMaxRequestBodySizeFeature>().MaxRequestBodySize = max; // Kestrel enforces it for Content-Length and chunked bodies
+
+        // Step 5: JWT validation. Public and None routes ignore Authorization entirely (spec §7); the proxy never forwards it.
+        var authorization = context.Request.Headers.Authorization.ToString();
         context.Request.Headers.Remove("Authorization");
-        return next(context);
+        Caller? caller = null;
+        if (route.Auth is not (AuthMode.Public or AuthMode.None))
+        {
+            var anonymousAllowed = route.Auth == AuthMode.PublicOptionalUser;
+            if (authorization.Length == 0 && anonymousAllowed)
+            {
+                // anonymous
+            }
+            else if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                await FailAsync(context, GatewayErrors.TokenMissing);
+                return;
+            }
+            else if ((caller = await validator.ValidateAsync(authorization["Bearer ".Length..].Trim())) is null)
+            {
+                await FailAsync(context, GatewayErrors.TokenInvalid);
+                return;
+            }
+        }
+
+        // Step 6 (revocation and rate limits) goes here.
+
+        // Step 7: role check.
+        if (caller is not null && !RoleAllowed(route, caller))
+        {
+            await GatewayErrors.WriteAsync(context, GatewayErrors.RoleNotAllowed);
+            return;
+        }
+
+        // Step 8: trusted identity context (§4.3). Client x-bloom-* headers were already removed.
+        if (caller is not null)
+        {
+            context.Features.Set(caller);
+            var headers = context.Request.Headers;
+            headers["x-bloom-user-id"] = caller.UserId.ToString("D");
+            headers["x-bloom-user-type"] = caller.UserType;
+            if (caller.IsStaff)
+                headers["x-bloom-role"] = caller.Role;
+            headers["x-bloom-auth-time"] = caller.AuthTime.ToString();
+        }
+        await next(context);
+    }
+
+    private static bool RoleAllowed(EdgeRoute route, Caller caller) => route.Auth switch
+    {
+        AuthMode.Customer => !caller.IsStaff,
+        AuthMode.Staff => caller.IsStaff && route.Roles.Contains(caller.Role!),
+        _ => true, // any-user and public-optional-user accept either type
+    };
+
+    private Task FailAsync(HttpContext context, GatewayError error)
+    {
+        metrics.AuthFailure(error.Reason);
+        return GatewayErrors.WriteAsync(context, error);
     }
 }

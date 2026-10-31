@@ -50,7 +50,11 @@ public class ShellTests(Containers containers)
     [Fact]
     public async Task Worker_mode_serves_healthz_only()
     {
-        await using var gateway = await TestGateway.StartAsync(containers, o => o.Config["Gateway:Mode"] = "worker");
+        await using var gateway = await TestGateway.StartAsync(containers, o =>
+        {
+            o.Config["Gateway:Mode"] = "worker";
+            o.WaitForReady = false; // the worker has no /readyz
+        });
 
         Assert.Equal(HttpStatusCode.OK, (await gateway.Client.GetAsync("/healthz", TestContext.Current.CancellationToken)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await gateway.Client.GetAsync("/api/catalog/x", TestContext.Current.CancellationToken)).StatusCode);

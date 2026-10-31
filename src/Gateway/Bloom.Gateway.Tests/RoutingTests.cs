@@ -46,43 +46,43 @@ public class RoutingTests(Containers containers)
         { "webhook-shippo", "POST", "/webhooks/shippo/{secret}", "fulfillment", "none", null, "webhook", "00:00:10", "65536", false },
     };
 
-    // method, path, cluster: one sample request per route.
-    public static TheoryData<string, string, string> SampleRequests() => new()
+    // method, path, cluster, caller (anon | customer | staff:<role>), route ID: one sample request per route.
+    public static TheoryData<string, string, string, string, string> SampleRequests() => new()
     {
-        { "GET", "/api/catalog/products/1", "catalog" },
-        { "PUT", "/api/admin/catalog/products/1", "catalog" },
-        { "POST", "/api/auth/login", "identity" },
-        { "POST", "/auth/refresh", "identity" },
-        { "GET", "/api/me/profile", "identity" },
-        { "GET", "/api/admin/staff/1", "identity" },
-        { "GET", "/api/admin/audit/events", "identity" },
-        { "GET", "/api/cart", "order" },
-        { "GET", "/api/orders/1", "order" },
-        { "POST", "/api/checkout", "order" },
-        { "GET", "/api/admin/orders/1", "order" },
-        { "GET", "/api/admin/coupons/1", "order" },
-        { "GET", "/api/admin/settings/x", "order" },
-        { "GET", "/api/launches/1", "launch" },
-        { "POST", "/api/launches/1/waiting-room", "launch" },
-        { "GET", "/api/launches/1/waiting-room", "launch" },
-        { "GET", "/api/admin/launches/1", "launch" },
-        { "GET", "/api/admin/inventory/1", "inventory" },
-        { "GET", "/api/admin/payments/1", "payment" },
-        { "GET", "/api/returns/1", "fulfillment" },
-        { "GET", "/api/warranty/1", "fulfillment" },
-        { "GET", "/api/admin/fulfillment/1", "fulfillment" },
-        { "GET", "/api/notifications/unread", "notification" },
-        { "GET", "/api/notifications/hub/negotiate", "notification" },
-        { "POST", "/api/admin/dlq/catalog/x/replay", "catalog" },
-        { "POST", "/api/admin/dlq/inventory/x/replay", "inventory" },
-        { "POST", "/api/admin/dlq/launch/x/replay", "launch" },
-        { "POST", "/api/admin/dlq/order/x/replay", "order" },
-        { "POST", "/api/admin/dlq/payment/x/replay", "payment" },
-        { "POST", "/api/admin/dlq/fulfillment/x/replay", "fulfillment" },
-        { "POST", "/api/admin/dlq/identity/x/replay", "identity" },
-        { "POST", "/api/admin/dlq/notification/x/replay", "notification" },
-        { "POST", "/webhooks/stripe", "payment" },
-        { "POST", "/webhooks/shippo/s3cret", "fulfillment" },
+        { "GET", "/api/catalog/products/1", "catalog", "anon", "catalog-public" },
+        { "PUT", "/api/admin/catalog/products/1", "catalog", "staff:catalog_manager", "admin-catalog" },
+        { "POST", "/api/auth/login", "identity", "anon", "auth" },
+        { "POST", "/auth/refresh", "identity", "anon", "auth-refresh" },
+        { "GET", "/api/me/profile", "identity", "customer", "me" },
+        { "GET", "/api/admin/staff/1", "identity", "staff:admin", "admin-staff" },
+        { "GET", "/api/admin/audit/events", "identity", "staff:admin", "admin-audit" },
+        { "GET", "/api/cart", "order", "customer", "cart" },
+        { "GET", "/api/orders/1", "order", "customer", "orders" },
+        { "POST", "/api/checkout", "order", "customer", "checkout" },
+        { "GET", "/api/admin/orders/1", "order", "staff:support", "admin-orders" },
+        { "GET", "/api/admin/coupons/1", "order", "staff:catalog_manager", "admin-coupons" },
+        { "GET", "/api/admin/settings/x", "order", "staff:admin", "admin-settings" },
+        { "GET", "/api/launches/1", "launch", "anon", "launch-public" },
+        { "POST", "/api/launches/1/waiting-room", "launch", "customer", "waiting-room-join" },
+        { "GET", "/api/launches/1/waiting-room", "launch", "customer", "waiting-room-status" },
+        { "GET", "/api/admin/launches/1", "launch", "staff:catalog_manager", "admin-launches" },
+        { "GET", "/api/admin/inventory/1", "inventory", "staff:warehouse", "admin-inventory" },
+        { "GET", "/api/admin/payments/1", "payment", "staff:support", "admin-payments" },
+        { "GET", "/api/returns/1", "fulfillment", "customer", "returns" },
+        { "GET", "/api/warranty/1", "fulfillment", "customer", "warranty" },
+        { "GET", "/api/admin/fulfillment/1", "fulfillment", "staff:warehouse", "admin-fulfillment" },
+        { "GET", "/api/notifications/unread", "notification", "customer", "notifications" },
+        { "GET", "/api/notifications/hub/negotiate", "notification", "anon", "notifications-hub" },
+        { "POST", "/api/admin/dlq/catalog/x/replay", "catalog", "staff:admin", "dlq-catalog" },
+        { "POST", "/api/admin/dlq/inventory/x/replay", "inventory", "staff:admin", "dlq-inventory" },
+        { "POST", "/api/admin/dlq/launch/x/replay", "launch", "staff:admin", "dlq-launch" },
+        { "POST", "/api/admin/dlq/order/x/replay", "order", "staff:admin", "dlq-order" },
+        { "POST", "/api/admin/dlq/payment/x/replay", "payment", "staff:admin", "dlq-payment" },
+        { "POST", "/api/admin/dlq/fulfillment/x/replay", "fulfillment", "staff:admin", "dlq-fulfillment" },
+        { "POST", "/api/admin/dlq/identity/x/replay", "identity", "staff:admin", "dlq-identity" },
+        { "POST", "/api/admin/dlq/notification/x/replay", "notification", "staff:admin", "dlq-notification" },
+        { "POST", "/webhooks/stripe", "payment", "anon", "webhook-stripe" },
+        { "POST", "/webhooks/shippo/s3cret", "fulfillment", "anon", "webhook-shippo" },
     };
 
     [Theory, MemberData(nameof(RouteTable))]
@@ -108,16 +108,23 @@ public class RoutingTests(Containers containers)
     }
 
     [Theory, MemberData(nameof(SampleRequests))]
-    public async Task Requests_reach_the_route_cluster(string method, string path, string cluster)
+    public async Task Requests_reach_the_route_cluster(string method, string path, string cluster, string caller, string routeId)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
+        using var metrics = new MetricCapture(gateway.Services);
         using var request = new HttpRequestMessage(new HttpMethod(method), path);
         request.Headers.Add("Origin", "https://bloom.test");
+        if (caller == "customer")
+            request.Headers.Authorization = new("Bearer", TestTokens.Issue(gateway.DefaultKey));
+        else if (caller.StartsWith("staff:", StringComparison.Ordinal))
+            request.Headers.Authorization = new("Bearer", TestTokens.Issue(gateway.DefaultKey, "staff", caller["staff:".Length..]));
 
         using var response = await gateway.Client.SendAsync(request, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal($"/{cluster}{path}", (await ReadEchoAsync(response)).GetProperty("path").GetString());
+        // Overlapping paths must pick the more specific route (plan P2): the hub over notifications, waiting-room over launch-public.
+        await Poll.UntilAsync(() => metrics.Sum("gateway_requests_total", ("route", routeId), ("status", "200")) == 1, 5, $"the request is counted on route {routeId}");
     }
 
     [Theory]
