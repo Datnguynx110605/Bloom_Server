@@ -1,0 +1,57 @@
+# Development stack only (spec §8.1, HLD §9.5). Credentials are dev-only; no secrets exist yet.
+services:
+  postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_USER: bloom
+      POSTGRES_PASSWORD: bloom
+    ports: ["5432:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+
+  rabbitmq:
+    image: rabbitmq:4.1.4-management
+    ports: ["5672:5672", "15672:15672"]
+    volumes: [rabbitmq-data:/var/lib/rabbitmq]
+
+  redis:
+    image: redis:8.2.3
+    ports: ["6379:6379"]
+
+  mailpit:
+    image: axllent/mailpit:v1.27.10
+    ports: ["1025:1025", "8025:8025"]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes: ["./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro"]
+    ports: ["4317:4317", "4318:4318"]
+    depends_on: [tempo, loki]
+
+  tempo:
+    image: grafana/tempo:2.9.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes: ["./tempo.yaml:/etc/tempo.yaml:ro"]
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+
+  loki:
+    image: grafana/loki:3.5.7
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes: ["./loki.yaml:/etc/loki/loki.yaml:ro"]
+
+  grafana:
+    image: grafana/grafana:12.2.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes: ["./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro"]
+    ports: ["3000:3000"]
+    depends_on: [tempo, prometheus, loki]
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
