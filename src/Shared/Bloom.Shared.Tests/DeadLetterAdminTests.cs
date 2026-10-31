@@ -35,6 +35,22 @@ public sealed class ToggleHandler(TestDbContext db, Toggle toggle) : IMessageHan
     }
 }
 
+/// <summary>Parks the first audit of a pass until released, so a test can hold an operation mid-pass.</summary>
+internal sealed class GatedPass(RabbitMqConnection connection) : DeadLetterPass(connection)
+{
+    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public override Task RunAsync(
+        string dlq, Func<BasicDeliverEventArgs, PassAction> decide, Func<BasicDeliverEventArgs, PassAction, Task> audit, CancellationToken ct) =>
+        base.RunAsync(dlq, decide, async (d, action) =>
+        {
+            Entered.TrySetResult();
+            await Release.Task;
+            await audit(d, action);
+        }, ct);
+}
+
 public class DeadLetterAdminTests(Containers containers)
 {
     private const string AuditType = "identity.staff-action-recorded.v1";
@@ -67,7 +83,7 @@ public class DeadLetterAdminTests(Containers containers)
         }
     }
 
-    private async Task<App> StartAsync(bool worker = false)
+    private async Task<App> StartAsync(bool worker = false, Action<IServiceCollection>? configure = null)
     {
         var ct = TestContext.Current.CancellationToken;
         var cs = await containers.CreateDatabaseAsync();
@@ -86,6 +102,7 @@ public class DeadLetterAdminTests(Containers containers)
         }).AddConsumer<ToggleHandler>("h", ConsumerBinding.Event(svc, $"{svc}.thing.v1"));
         if (worker) bloom.AddWorker();
         else bloom.Services.AddHostedService<TopologyInitializer>(); // declares the queues, consumes nothing
+        configure?.Invoke(builder.Services);
         var host = builder.Build();
         host.MapBloomDeadLetterAdmin();
         using (var scope = host.Services.CreateScope())
@@ -268,42 +285,47 @@ public class DeadLetterAdminTests(Containers containers)
     [Fact]
     public async Task T23_second_operation_gets_dlq_busy()
     {
-        await using var app = await StartAsync();
-        await SeedAsync(app, 3);
+        await using var app = await StartAsync(configure: s => s.AddSingleton<DeadLetterPass>(sp => new GatedPass(sp.GetRequiredService<RabbitMqConnection>())));
+        var gate = (GatedPass)app.Host.Services.GetRequiredService<DeadLetterPass>();
+        var ids = await SeedAsync(app, 3);
         var request = new ReplayAllDeadLettersRequest { Service = app.Svc, Queue = app.Dlq };
-        var ct = TestContext.Current.CancellationToken;
-        var connection = await new ConnectionFactory { Uri = new Uri(containers.RabbitMqUri) }.CreateConnectionAsync(ct);
-        var holder = await connection.CreateChannelAsync(cancellationToken: ct);
-        await holder.BasicQosAsync(0, 1, false, ct);
-        await holder.BasicConsumeAsync(app.Dlq, false, "", false, true, null, new AsyncEventingBasicConsumer(holder), ct);
+        var a = app.Client.ReplayAllDeadLettersAsync(request, app.Headers()).ResponseAsync; // parks after publishing the first message
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         await AssertErrorAsync(StatusCode.Aborted, "DLQ_BUSY", () => app.Client.ReplayAllDeadLettersAsync(request, app.Headers()).ResponseAsync);
+        await AssertErrorAsync(StatusCode.Aborted, "DLQ_BUSY", () => PeekAsync(app));
+        await AssertErrorAsync(StatusCode.Aborted, "DLQ_BUSY",
+            () => app.Client.DiscardDeadLetterAsync(new DeadLetterRequest { Service = app.Svc, Queue = app.Dlq, MessageId = ids[2].ToString() }, app.Headers()).ResponseAsync);
 
-        await holder.CloseAsync(cancellationToken: ct);
-        await connection.DisposeAsync();
-        await UntilCountAsync(app, app.Dlq, 3);
-        Assert.Equal(3u, (await app.Client.ReplayAllDeadLettersAsync(request, app.Headers())).ReplayedCount);
+        Assert.Equal(1u, await app.Rabbit.MessageCountAsync(app.Queue)); // only A's first replay so far
+        gate.Release.SetResult();
+        Assert.Equal(3u, (await a).ReplayedCount);
+        Assert.Equal(0u, (await app.Client.ReplayAllDeadLettersAsync(request, app.Headers())).ReplayedCount); // the lock is free again
+        Assert.Equal(ids, await DrainAsync(app, app.Queue));
+        Assert.Equal(3, (await AuditAsync(app)).Count);
     }
 
     [Fact]
-    public async Task Concurrent_replay_all_never_processes_a_message_twice()
+    public async Task Two_simultaneous_replay_alls_one_wins_one_gets_dlq_busy()
     {
-        await using var app = await StartAsync();
+        await using var app = await StartAsync(configure: s => s.AddSingleton<DeadLetterPass>(sp => new GatedPass(sp.GetRequiredService<RabbitMqConnection>())));
+        var gate = (GatedPass)app.Host.Services.GetRequiredService<DeadLetterPass>();
         var ids = await SeedAsync(app, 3);
         var request = new ReplayAllDeadLettersRequest { Service = app.Svc, Queue = app.Dlq };
 
-        var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
+        var calls = Enumerable.Range(0, 2).Select(_ => app.Client.ReplayAllDeadLettersAsync(request, app.Headers()).ResponseAsync).ToList();
+        await Task.WhenAny(calls); // the loser fails fast on the lock while the winner is parked
+        gate.Release.SetResult();
+        var outcomes = await Task.WhenAll(calls.Select(async c =>
         {
-            try { return (long)(await app.Client.ReplayAllDeadLettersAsync(request, app.Headers())).ReplayedCount; }
-            catch (RpcException ex) when (ex.GetRpcStatus()!.GetDetail<ErrorInfo>().Reason == "DLQ_BUSY") { return -1L; }
+            try { return (long)(await c).ReplayedCount; }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.Aborted && ex.GetRpcStatus()!.GetDetail<ErrorInfo>().Reason == "DLQ_BUSY") { return -1L; }
         }));
 
-        // Racing starters may all back off (retry later), but a message is never replayed or audited twice.
-        var replayed = (int)results.Where(r => r >= 0).Sum();
-        Assert.Contains(replayed, new[] { 0, 3 });
-        Assert.Equal(ids.Take(replayed), await DrainAsync(app, app.Queue));
-        Assert.Equal(replayed, (await AuditAsync(app)).Count);
-        await UntilCountAsync(app, app.Dlq, (uint)(3 - replayed));
+        Assert.Equal([-1L, 3L], outcomes.Order());
+        Assert.Equal(ids, await DrainAsync(app, app.Queue));
+        Assert.Equal(3, (await AuditAsync(app)).Count);
+        await UntilCountAsync(app, app.Dlq, 0);
     }
 
     [Theory]

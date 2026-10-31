@@ -12,9 +12,10 @@ internal enum PassAction { Keep, Replay, Discard }
 
 /// <summary>
 /// One pass over a DLQ (00-reliability §7.7): takes the message count at the start and consumes exactly that many
-/// messages with an exclusive consumer, so late arrivals stay. Never nacks or requeues.
+/// messages with an exclusive consumer, so late arrivals stay. Quorum queues ignore the exclusive flag, so callers
+/// serialise passes themselves (<see cref="DeadLetterAdminService"/> holds a PostgreSQL advisory lock). Never nacks or requeues.
 /// </summary>
-internal sealed class DeadLetterPass(RabbitMqConnection connection)
+internal class DeadLetterPass(RabbitMqConnection connection)
 {
     private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
 
@@ -27,22 +28,19 @@ internal sealed class DeadLetterPass(RabbitMqConnection connection)
 
     /// <summary>Per message: <paramref name="decide"/>, publish (replay, or keep at the DLQ tail), <paramref name="audit"/> (replay and discard only), ACK.</summary>
     /// <exception cref="RpcException"><c>DLQ_NOT_FOUND</c> when the queue is not declared; <c>DLQ_BUSY</c> when another consumer holds it.</exception>
-    public async Task RunAsync(
+    public virtual async Task RunAsync(
         string dlq, Func<BasicDeliverEventArgs, PassAction> decide, Func<BasicDeliverEventArgs, PassAction, Task> audit, CancellationToken ct)
     {
         await using var channel = await connection.CreateConfirmChannelAsync(ct);
-        QueueDeclareOk declared;
+        uint count;
         try
         {
-            declared = await channel.QueueDeclarePassiveAsync(dlq, ct);
+            count = (await channel.QueueDeclarePassiveAsync(dlq, ct)).MessageCount;
         }
         catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == 404)
         {
             throw BloomErrors.Create(StatusCode.NotFound, BloomErrors.DlqNotFound, $"Queue '{dlq}' does not exist.");
         }
-
-        var count = declared.MessageCount;
-        if (declared.ConsumerCount > 0) throw Busy(dlq);
 
         await channel.BasicQosAsync(0, 1, false, ct);
         var deliveries = Channel.CreateUnbounded<BasicDeliverEventArgs>();
@@ -64,9 +62,6 @@ internal sealed class DeadLetterPass(RabbitMqConnection connection)
         {
             throw Busy(dlq);
         }
-        // Quorum queues (the DLQs, §5.1) ignore the exclusive flag, so also check that nobody else joined meanwhile:
-        // of two racing passes, the one that registers second sees the first and backs off.
-        if ((await channel.QueueDeclarePassiveAsync(dlq, ct)).ConsumerCount > 1) throw Busy(dlq);
 
         if (count == 0)
         {
@@ -98,14 +93,9 @@ internal sealed class DeadLetterPass(RabbitMqConnection connection)
             if (i == count) await channel.BasicCancelAsync(tag, cancellationToken: ct); // before the last ACK, or the broker delivers a late arrival
             await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
         }
-
-        // A quorum queue keeps the cancelled consumer until its last ACK is applied. Wait it out, or the next
-        // operation would see it as another running one.
-        for (var polls = 0; polls < 100 && (await channel.QueueDeclarePassiveAsync(dlq, ct)).ConsumerCount > 0; polls++)
-            await Task.Delay(20, ct);
     }
 
-    private static RpcException Busy(string dlq) =>
+    internal static RpcException Busy(string dlq) =>
         BloomErrors.Create(StatusCode.Aborted, BloomErrors.DlqBusy, $"Another operation is running on '{dlq}'.");
 
     private static BasicDeliverEventArgs Copy(BasicDeliverEventArgs d) =>

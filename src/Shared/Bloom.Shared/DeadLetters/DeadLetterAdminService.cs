@@ -43,7 +43,7 @@ internal sealed class DeadLetterAdminService(
         Authorize(context, request.Service, request.Queue);
         var limit = request.Limit == 0 ? 20 : Math.Clamp(request.Limit, 1, 100); // R2
         var response = new PeekDeadLettersResponse();
-        await pass.RunAsync(request.Queue, d =>
+        await RunLockedAsync(request.Queue, d =>
         {
             if (response.Messages.Count < limit) response.Messages.Add(ToDeadLetter(d));
             return PassAction.Keep;
@@ -67,7 +67,7 @@ internal sealed class DeadLetterAdminService(
     {
         var actor = Authorize(context, request.Service, request.Queue);
         var replayed = 0u;
-        await pass.RunAsync(request.Queue, _ => PassAction.Replay, async (d, action) =>
+        await RunLockedAsync(request.Queue, _ => PassAction.Replay, async (d, action) =>
         {
             await RecordAsync(actor, context, d, action, request.Queue);
             replayed++;
@@ -75,11 +75,49 @@ internal sealed class DeadLetterAdminService(
         return new ReplayAllDeadLettersResponse { ReplayedCount = replayed };
     }
 
+    /// <summary>
+    /// One pass at a time per DLQ, across pods: a session advisory lock on the service's own database, held on one open
+    /// connection for the whole pass (the per-message audit commits use that same connection).
+    /// </summary>
+    private async Task RunLockedAsync(
+        string queue, Func<BasicDeliverEventArgs, PassAction> decide, Func<BasicDeliverEventArgs, PassAction, Task> audit, CancellationToken ct)
+    {
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            var locked = await db.Database
+                .SqlQuery<bool>($"SELECT pg_try_advisory_lock(hashtextextended('bloom.dlq:' || {queue}, 0)) AS \"Value\"")
+                .SingleAsync(ct);
+            if (!locked) throw DeadLetterPass.Busy(queue);
+            try
+            {
+                await pass.RunAsync(queue, decide, audit, ct);
+            }
+            finally
+            {
+                try
+                {
+                    await db.Database
+                        .SqlQuery<bool>($"SELECT pg_advisory_unlock(hashtextextended('bloom.dlq:' || {queue}, 0)) AS \"Value\"")
+                        .SingleAsync(CancellationToken.None);
+                }
+                catch (Exception)
+                {
+                    // A broken connection ends the session, which releases the lock; don't mask the pass's own outcome.
+                }
+            }
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
     private async Task OneAsync(DeadLetterRequest request, ServerCallContext context, PassAction wanted)
     {
         var actor = Authorize(context, request.Service, request.Queue);
         var matched = false;
-        await pass.RunAsync(request.Queue,
+        await RunLockedAsync(request.Queue,
             d =>
             {
                 if (matched || d.BasicProperties.MessageId != request.MessageId) return PassAction.Keep;
