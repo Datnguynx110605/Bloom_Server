@@ -133,7 +133,7 @@ Each service has one codebase and two deployments: **API** (gRPC/JSON) and **wor
 |---|---|---|
 | **api-gateway** | Routing, TLS termination, JWT verification (JWKS), revocation check, tiered rate limiting, coarse role checks per route, stripping client-sent identity headers | Hold business data; make resource-level decisions |
 | **identity** | Customer and staff accounts, credentials, Google linking, MFA, access and refresh tokens, signing keys, address book, staff roles, **audit log** | Decide permissions inside other services; store orders |
-| **catalog** | Categories, products, SKUs, prices, warranty plans (as products), search, reviews and ratings, verified-buyer eligibility | Hold stock or allocation |
+| **catalog** | Categories, products, SKUs, prices, warranty plans (as products), product images (object storage), search, reviews and ratings, verified-buyer eligibility | Hold stock or allocation |
 | **inventory** | Stock per SKU (on-hand, reserved), reservations, pre-order backorder queue, serial units and their states, goods receipts, adjustments, stock ledger | Know prices, launches or orders beyond reservation and line references |
 | **order** | Cart, checkout orchestration, orders and status history, order-line snapshots, coupons and coupon uses, checkout settings (Express fee, tax rate), saga state for checkout and cancellation | Hold stock counts, allocation or payment state |
 | **launch** | Launches and stages, pre-order allocation counters, purchase-limit counters, waiting room, admission passes, admission worker | Own orders (it hands checkout to `order`) |
@@ -204,7 +204,7 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Shipment shipped / delivered / delivery failed | Event | fulfillment | order, notification; inventory (shipped) |
 | Receive customer return / receive returned-to-sender / mark lost in transit | Command | fulfillment | inventory |
 | Return decided | Event | fulfillment | order, notification |
-| Customer registered / contact changed | Event | identity | notification |
+| Customer registered / contact changed | Event | identity | notification (contact copy); catalog (reviewer display name) |
 | Verification code / staff invited | Event | identity | notification (email only: codes for email verification, password reset, email change; staff invitation links) |
 | Account deleted | Event | identity | notification, catalog, order, fulfillment (each anonymizes the personal data it holds; amounts, SKUs and dates are kept) |
 | Launch stage changed | Event | launch | order (release of allocated pre-orders, LCH-R19); catalog (launch membership and stage per SKU: visibility, buyability, and launch info returned to order at checkout) |
@@ -361,6 +361,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Workers | Scaled on RabbitMQ queue length by KEDA |
 | PostgreSQL | One CloudNativePG cluster (primary + 1 replica, automatic failover), 8 databases with separate credentials |
 | Connection pooling | CloudNativePG Pooler (PgBouncer, transaction mode) in front of the cluster. Each service has a fixed server-connection budget (launch and order largest), and app-side pool sizes are capped to match, so autoscaling can't exhaust Postgres. |
+| Object storage | S3-compatible (MinIO locally): product images (catalog, public read) and database backups |
 | Backup | CloudNativePG continuous WAL archiving + daily base backup to object storage (MinIO locally, S3-compatible in the cloud). Restore rehearsed once and documented. |
 | Redis | One instance per service. gateway and launch: replica + automatic failover. launch: AOF persistence (fsync every second). Others: single instance (rebuildable cache). |
 | RabbitMQ | 3-node cluster, quorum queues |
