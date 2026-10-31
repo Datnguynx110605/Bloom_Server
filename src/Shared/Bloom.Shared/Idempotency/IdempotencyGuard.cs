@@ -10,11 +10,7 @@ using Status = Google.Rpc.Status;
 
 namespace Bloom.Shared.Idempotency;
 
-/// <summary>
-/// Idempotency guard (00-reliability §7.4, LLD-ADR-001). The guard owns the transaction(s): a handler must not begin one.
-/// Request messages of idempotent operations must not use map fields: C# protobuf does not serialize them deterministically,
-/// so the request hash would differ between identical requests (spec §6.7).
-/// </summary>
+/// <summary>Idempotency guard (00-reliability §7.4, LLD-ADR-001).</summary>
 public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
 {
     private const string Savepoint = "idempotency";
@@ -47,7 +43,8 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
     /// <summary>
     /// Single-transaction form: claim, handler, <c>SaveChanges</c> and the stored outcome commit together. A concurrent duplicate
     /// blocks on the primary key until then and gets the replay. The handler only stages changes; the guard saves them.
-    /// Request messages must not use map fields; the guard owns the transaction, the handler must not begin one.
+    /// Request messages must not use map fields (C# protobuf serializes them non-deterministically, so the request hash would vary; spec §6.7).
+    /// The guard owns the transaction, the handler must not begin one.
     /// </summary>
     public async Task<TResponse> ExecuteAsync<TRequest, TResponse>(TRequest request, ServerCallContext context,
         Func<CancellationToken, Task<TResponse>> handler)
