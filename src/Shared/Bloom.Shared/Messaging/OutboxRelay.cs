@@ -75,12 +75,13 @@ internal sealed class OutboxRelay(
 
         var sent = new List<Guid>();
         var failed = new List<(OutboxMessage Row, string Error)>();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(ConfirmTimeout);
 
-        for (var i = 0; i < rows.Count; i++)
+        foreach (var row in rows)
         {
-            var row = rows[i];
+            // A channel closed by the broker (404 on a bad exchange, ...) is replaced before the next row.
+            if (_channel is { IsOpen: false }) await DisposeChannelAsync();
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ConfirmTimeout);
             try
             {
                 _channel ??= await connection.CreateConfirmChannelAsync(timeout.Token);
@@ -93,11 +94,13 @@ internal sealed class OutboxRelay(
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                // Confirm timeout or channel/connection error: this row and the rest are unconfirmed.
+                // Only the row in flight is unconfirmed (§7.2 step 5); the rest are untouched and tried next.
+                // ponytail: a broker that is down fails one row per pass, not the batch; the loop's 1 s pause keeps that cheap.
+                var brokerDown = _channel is null; // opening the channel failed, so every following row would fail too
                 var error = ex is OperationCanceledException ? $"No publisher confirm within {ConfirmTimeout.TotalSeconds:0} s" : ex.Message;
-                failed.AddRange(rows.Skip(i).Select(r => (r, error)));
+                failed.Add((row, error));
                 await DisposeChannelAsync();
-                break;
+                if (brokerDown) break;
             }
         }
 

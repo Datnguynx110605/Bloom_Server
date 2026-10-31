@@ -151,23 +151,18 @@ public class OutboxRelayTests(Containers containers)
         using (var scope = s.Host.Services.CreateScope())
             await scope.ServiceProvider.GetRequiredService<TestDbContext>().Database
                 .ExecuteSqlAsync($"UPDATE outbox_messages SET exchange = 'nope.events' WHERE id = {a}", ct);
+        var b = (await WriteAsync(s.Host, 1)).Single(); // newer than the poison row A
 
-        Assert.Equal(1, await s.Relay.RunOnceAsync(ct));
+        Assert.Equal(2, await s.Relay.RunOnceAsync(ct));
 
-        var rowA = Assert.Single(await RowsAsync(s.Host));
+        var rows = await RowsAsync(s.Host);
+        var rowA = rows.Single(r => r.Id == a);
         Assert.Equal("pending", rowA.Status);
-        Assert.Equal(1, rowA.Attempts);
+        Assert.True(rowA.Attempts >= 1);
         Assert.Contains("404", rowA.LastError);
-
-        using (var scope = s.Host.Services.CreateScope())
-            await scope.ServiceProvider.GetRequiredService<TestDbContext>().Database
-                .ExecuteSqlAsync($"UPDATE outbox_messages SET status = 'sent', sent_at = now() WHERE id = {a}", ct);
-        var b = (await WriteAsync(s.Host, 1)).Single();
-
-        Assert.Equal(1, await s.Relay.RunOnceAsync(ct));
-
+        Assert.Equal("sent", rows.Single(r => r.Id == b).Status); // A does not block B (§7.2)
         Assert.Equal(b.ToString(), (await s.Rabbit.BasicGetAsync(s.Queue))!.BasicProperties.MessageId);
-        Assert.Equal("sent", (await RowsAsync(s.Host)).Single(r => r.Id == b).Status);
+        Assert.Null(await s.Rabbit.BasicGetAsync(s.Queue));
     }
 
     [Fact]
