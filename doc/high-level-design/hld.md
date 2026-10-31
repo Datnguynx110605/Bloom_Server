@@ -195,7 +195,8 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Order delivered | Event | order | catalog (review eligibility) |
 | Shipment shipped / delivered / delivery failed | Event | fulfillment | order, notification |
 | Return decided | Event | fulfillment | order, notification |
-| Customer registered / contact changed / account deleted | Event | identity | notification |
+| Customer registered / contact changed | Event | identity | notification |
+| Account deleted | Event | identity | notification, catalog, order, fulfillment (each anonymizes the personal data it holds; amounts, SKUs and dates are kept) |
 | Tokens revoked | Event | identity | api-gateway |
 | Staff action recorded | Event | all services | identity (audit log) |
 
@@ -310,7 +311,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 |---|---|---|---|
 | Transactional outbox + polling relay (`SKIP LOCKED`, batch 100, loop while rows remain, ~200 ms idle sleep) | Every message producer | No message lost; safe with several relay instances | [006](adr/HLD-ADR-006-transactional-outbox.md) |
 | Inbox in the consumer's transaction (message ID = outbox UUIDv7) | Every consumer | No message applied twice | [007](adr/HLD-ADR-007-inbox-retries-dlq.md) |
-| Retries 1 s, 5 s, 30 s, 2 min, 10 min → DLQ, alert, replay tool | Every consumer | Transient failures absorbed; poison messages isolated | [007](adr/HLD-ADR-007-inbox-retries-dlq.md) |
+| 5 attempts in total (retries after 1 s, 5 s, 30 s, 2 min) → DLQ, alert, replay tool | Every consumer | Transient failures absorbed; poison messages isolated | [007](adr/HLD-ADR-007-inbox-retries-dlq.md) |
 | Idempotency key (per user, 24 h, claimed in the same transaction) | Payment operations | Duplicate requests return the first result | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Four layers against double charge | payment | BI-05 | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Atomic conditional update + affected-row check | Counters: stock, allocation, limits, coupon uses | No overselling under concurrency | [009](adr/HLD-ADR-009-concurrency-control.md) |
@@ -332,7 +333,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 |---|---|---|
 | A service's API is down | Sync callers fail fast | Callers return an error. Checkout holds already made are compensated. |
 | RabbitMQ unavailable | Async flows pause | Outbox rows wait in the database and publish on recovery. |
-| Consumer keeps failing | Message can't be applied | 5 retries with backoff → DLQ → alert → fix → replay. |
+| Consumer keeps failing | Message can't be applied | 5 attempts with backoff → DLQ → alert → fix → replay. |
 | Stripe webhook never arrives | Payment stuck *pending* | Reconciliation job queries Stripe. |
 | Payment after checkout expiry | Paid for a released hold | Automatic refund + notification (HLD-ADR-013). |
 | launch Redis fails over | Up to ~1 s of joins lost | Accepted risk. Passes are signed, counters are in Postgres (HLD-ADR-012). |
@@ -348,6 +349,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | launch API | Autoscaled horizontally (launch hot path) |
 | Workers | Scaled on RabbitMQ queue length by KEDA |
 | PostgreSQL | One CloudNativePG cluster (primary + 1 replica, automatic failover), 8 databases with separate credentials |
+| Connection pooling | CloudNativePG Pooler (PgBouncer, transaction mode) in front of the cluster. Each service has a fixed server-connection budget (launch and order largest), and app-side pool sizes are capped to match, so autoscaling can't exhaust Postgres. |
 | Backup | CloudNativePG continuous WAL archiving + daily base backup to object storage (MinIO locally, S3-compatible in the cloud). Restore rehearsed once and documented. |
 | Redis | One instance per service. gateway and launch: replica + automatic failover. launch: AOF persistence (fsync every second). Others: single instance (rebuildable cache). |
 | RabbitMQ | 3-node cluster, quorum queues |
@@ -406,5 +408,5 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | ID | Question |
 |---|---|
 | — | OQ-HLD-1 to OQ-HLD-7 resolved 2026-10-31 (§5, §6, §7.2, §7.3, §8.5, §9.5, QA-10). |
-| OQ-HLD-8 | Retention for outbox, inbox, idempotency and audit records. (Can be set in the LLD.) |
+| — | OQ-HLD-8 resolved 2026-10-31 in [reliability LLD §13](../low-level-design/reliability.md#13-retention). |
 | OQ-HLD-9 | Refresh token storage format and admission-pass signing key handling. (Can be set in the LLD.) |

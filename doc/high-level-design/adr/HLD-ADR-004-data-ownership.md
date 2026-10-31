@@ -24,6 +24,7 @@ Microservices need clear data ownership. Running 8 HA Postgres clusters and shar
 Chosen:
 - **One CloudNativePG cluster** (primary + 1 replica, automatic failover) hosting **8 databases**, each with its own credentials. No cross-database access.
 - **One Redis instance per service.** gateway and launch get a replica with failover; others run single.
+- **Connections go through the CloudNativePG Pooler (PgBouncer, transaction mode)** with a fixed connection budget per service; app pool sizes are capped to match. Considered: app-side pool limits only (rejected: autoscaling multiplies pods, so limits break when max replicas change).
 - **No service reads another's store.** Data is shared by gRPC or event-fed copies: notification's contact copy and the gateway's revocation list (from identity events), catalog's verified-buyer eligibility (from order events).
 
 ## Pros and cons of the options

@@ -21,7 +21,7 @@ At-least-once delivery means duplicates. Consumers also fail, transiently or per
 ## Decision
 Chosen:
 - The consumer inserts the **message ID (= outbox UUIDv7) into its inbox table in the same transaction as the business effect**. A duplicate violates the unique key, so it's ACKed and skipped.
-- **Retries after ~1 s, 5 s, 30 s, 2 min, 10 min** (delay queues with TTL), then the **dead-letter queue**. Any DLQ message raises an alert. An ops tool can inspect, replay or discard. Replay is safe because of the inbox.
+- **5 attempts in total**: retries after ~1 s, 5 s, 30 s, 2 min (delay queues with TTL), then the **dead-letter queue**. Permanent errors skip retries ([LLD-ADR-002](../../low-level-design/adr/LLD-ADR-002-rabbitmq-topology.md)). Any DLQ message raises an alert. An ops tool can inspect, replay or discard. Replay is safe because of the inbox.
 
 ## Pros and cons of the options
 ### Inbox in the same transaction

@@ -38,6 +38,7 @@ Chosen:
 ## Consequences
 - ✅ BI-05 holds against client, server and provider retries.
 - ❌ A reconciliation job must be built and monitored.
+- ⚠️ Refined by [LLD-ADR-001](../../low-level-design/adr/LLD-ADR-001-two-phase-idempotency.md): operations that call a provider claim the key in a first transaction and store the outcome in a second, with stale-key takeover after 60 s.
 
 ## Links
 - [hld.md §8.2, §9.2](../hld.md)
