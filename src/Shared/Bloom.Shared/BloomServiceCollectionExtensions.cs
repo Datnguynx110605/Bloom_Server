@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using Bloom.Shared.Concurrency;
+using Bloom.Shared.Observability;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -26,6 +28,9 @@ public static partial class BloomServiceCollectionExtensions
         services.AddSingleton(options);
         services.AddScoped<DbContext>(sp => sp.GetRequiredService<TDbContext>());
         services.AddHttpContextAccessor();
+        services.AddMetrics();
+        services.AddSingleton<BloomMetrics>();
+        services.AddScoped<ConcurrentUpdates>();
         return new BloomBuilder(services);
     }
 }
