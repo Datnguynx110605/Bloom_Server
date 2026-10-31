@@ -49,6 +49,12 @@ public static class GatewayApp
             builder.Services.AddSingleton<JwksCache>();
             builder.Services.AddHostedService(sp => sp.GetRequiredService<JwksCache>());
             builder.Services.AddSingleton<TokenValidator>();
+            builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
+                .WithOrigins(builder.Configuration.GetSection("Gateway:AllowedOrigins").Get<string[]>() ?? [])
+                .AllowCredentials() // the refresh cookie (LLD 07 §6.4)
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .SetPreflightMaxAge(TimeSpan.FromMinutes(10))));
             builder.Services.AddRequestTimeouts(o => o.DefaultPolicy = new() { Timeout = TimeSpan.FromSeconds(5) }); // YARP applies each route's Timeout through it; LLD 07 §5.2 default 5 s
             builder.Services.AddReverseProxy()
                 .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
@@ -72,6 +78,7 @@ public static class GatewayApp
         {
             app.UseForwardedHeaders();
             app.UseMiddleware<RequestHygiene>();
+            app.UseCors(); // before route matching, so error responses carry CORS headers too (§3 step 3)
             app.UseRouting();
             app.UseMiddleware<EdgeMiddleware>();
             app.UseRequestTimeouts();

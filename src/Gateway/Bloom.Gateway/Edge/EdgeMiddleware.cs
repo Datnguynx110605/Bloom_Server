@@ -8,10 +8,11 @@ using Yarp.ReverseProxy.Model;
 namespace Bloom.Gateway;
 
 /// <summary>Steps 4 to 8 of the edge pipeline (LLD 07 §3); later steps are added here in that order.</summary>
-public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validator, EdgeStore store, FallbackLimiters fallback, GatewayMetrics metrics, IReadOnlyDictionary<string, RateLimitPolicy> policies)
+public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validator, EdgeStore store, FallbackLimiters fallback, GatewayMetrics metrics, IReadOnlyDictionary<string, RateLimitPolicy> policies, IConfiguration configuration)
 {
     // One EdgeRoute per route config instance; a config reload yields new instances and the old entries are collected.
     private readonly ConditionalWeakTable<RouteConfig, EdgeRoute> _parsed = [];
+    private readonly HashSet<string> _allowedOrigins = new(configuration.GetSection("Gateway:AllowedOrigins").Get<string[]>() ?? [], StringComparer.OrdinalIgnoreCase);
     private readonly ConditionalWeakTable<RouteConfig, EdgeRoute>.CreateValueCallback _parse = config => EdgeRoute.From(config, policies);
 
     public async Task InvokeAsync(HttpContext context)
@@ -29,6 +30,13 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
 
         var route = _parsed.GetValue(model.Config, _parse);
         context.Features.Set(route);
+
+        // Step 4b: a missing or foreign Origin on the refresh and hub routes is refused (CSRF defence, G-09, plan P5).
+        if (route.CheckOrigin && !_allowedOrigins.Contains(context.Request.Headers.Origin.ToString()))
+        {
+            await GatewayErrors.WriteAsync(context, GatewayErrors.OriginNotAllowed);
+            return;
+        }
         if (route.MaxBodyBytes is { } max)
             context.Features.GetRequiredFeature<IHttpMaxRequestBodySizeFeature>().MaxRequestBodySize = max; // Kestrel enforces it for Content-Length and chunked bodies
 
