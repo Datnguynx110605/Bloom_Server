@@ -40,6 +40,7 @@ Chosen: **advisory lock**. Before it touches the broker, an operation opens a co
 ## Consequences
 - ✅ `DLQ_BUSY` works on quorum queues, and T-23 passes.
 - ❌ A DLQ operation needs the service's database to be up, which the audit step already requires.
+- ❌ Session advisory locks don't survive PgBouncer transaction mode (HLD-ADR-004). The DLQ admin service must reach PostgreSQL through a direct or session-mode connection, not the transaction-mode pooler.
 
 ## Links
 - [00-reliability.md §7.7](../00-reliability.md#77-dlq-admin)

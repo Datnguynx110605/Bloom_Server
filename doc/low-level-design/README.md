@@ -8,7 +8,7 @@ One LLD per component. Each is consistent with the [high-level design](../high-l
 
 | # | Document | Component | Purpose | Builds on | ADRs |
 |---|---|---|---|---|---|
-| 00 | [00-reliability](00-reliability.md) | Shared library | Outbox + relay, inbox, retries / DLQ, idempotency keys, conditional updates, optimistic locking, error contract | — | [001](adr/LLD-ADR-001-two-phase-idempotency.md) … [006](adr/LLD-ADR-006-inbox-key.md), [009](adr/LLD-ADR-009-dlq-admin-endpoint.md) |
+| 00 | [00-reliability](00-reliability.md) | Shared library | Outbox + relay, inbox, retries / DLQ, idempotency keys, conditional updates, optimistic locking, error contract | — | [001](adr/LLD-ADR-001-two-phase-idempotency.md) … [006](adr/LLD-ADR-006-inbox-key.md), [009](adr/LLD-ADR-009-dlq-admin-endpoint.md), [010](adr/LLD-ADR-010-dlq-busy-advisory-lock.md) |
 | 01 | [01-launch](01-launch.md) | launch | Waiting room, admission passes, allocation and purchase-limit holds | 00 | — |
 | 02 | [02-inventory](02-inventory.md) | inventory | Stock counters, reservations, backorders (strict FIFO), serial units, receipts, ledger | 00 | — |
 | 03 | [03-order](03-order.md) | order | Cart, checkout saga, pricing, coupons, order lifecycle, cancellation | 00, 01, 02 | — |

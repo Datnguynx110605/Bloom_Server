@@ -32,7 +32,7 @@ doc/
     ├── README.md                 component index
     ├── 00-reliability.md         shared outbox / inbox / idempotency / concurrency
     ├── 01-launch.md … 09-notification.md   one file per service
-    └── adr/                      LLD-ADR-001 … 009
+    └── adr/                      LLD-ADR-001 … 010
 ```
 
 ## Conventions
