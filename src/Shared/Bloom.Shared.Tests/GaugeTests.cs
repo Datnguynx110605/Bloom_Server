@@ -1,4 +1,3 @@
-using System.Diagnostics.Metrics;
 using System.Text;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
@@ -30,22 +29,11 @@ public class GaugeTests(Containers containers)
 
         await host.Services.GetServices<IHostedService>().OfType<GaugePoller>().Single().PollOnceAsync(ct);
 
-        var seen = new Dictionary<string, (object Value, object? Queue)>();
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (i, l) => { if (i.Meter.Name == BloomMetrics.MeterName) l.EnableMeasurementEvents(i); };
-        void OnMeasurement<T>(Instrument i, T v, ReadOnlySpan<KeyValuePair<string, object?>> tags) where T : struct
-        {
-            var d = tags.ToArray().ToDictionary(t => t.Key, t => t.Value);
-            if (Equals(d.GetValueOrDefault("service"), service)) seen[i.Name] = (v, d.GetValueOrDefault("queue"));
-        }
-        listener.SetMeasurementEventCallback<long>((i, v, tags, _) => OnMeasurement(i, v, tags));
-        listener.SetMeasurementEventCallback<double>((i, v, tags, _) => OnMeasurement(i, v, tags));
-        listener.Start();
-        listener.RecordObservableInstruments();
+        using var capture = new MetricCapture(service);
 
-        Assert.Equal(3L, seen["outbox_pending_count"].Value);
-        Assert.True((double)seen["outbox_oldest_pending_age_seconds"].Value >= 10);
-        Assert.Equal((2L, (object?)dlq), seen["dlq_depth"]);
+        Assert.Equal(3, capture.Gauge("outbox_pending_count")[""]);
+        Assert.True(capture.Gauge("outbox_oldest_pending_age_seconds")[""] >= 10);
+        Assert.Equal(2, capture.Gauge("dlq_depth")[dlq]);
     }
 
     [Fact]
@@ -62,18 +50,10 @@ public class GaugeTests(Containers containers)
 
         await host.Services.GetServices<IHostedService>().OfType<GaugePoller>().Single().PollOnceAsync(ct);
 
-        var depths = new Dictionary<object, long>();
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (i, l) => { if (i.Name == "dlq_depth") l.EnableMeasurementEvents(i); };
-        listener.SetMeasurementEventCallback<long>((_, v, tags, _) =>
-        {
-            var d = tags.ToArray().ToDictionary(t => t.Key, t => t.Value);
-            if (Equals(d["service"], service)) depths[d["queue"]!] = v;
-        });
-        listener.Start();
-        listener.RecordObservableInstruments();
+        using var capture = new MetricCapture(service);
+        var depths = capture.Gauge("dlq_depth");
 
-        Assert.Equal(0L, depths[$"{service}.h1.dlq"]);
-        Assert.Equal(1L, depths[$"{service}.h2.dlq"]);
+        Assert.Equal(0, depths[$"{service}.h1.dlq"]);
+        Assert.Equal(1, depths[$"{service}.h2.dlq"]);
     }
 }

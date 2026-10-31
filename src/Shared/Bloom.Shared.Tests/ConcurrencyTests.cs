@@ -12,38 +12,12 @@ namespace Bloom.Shared.Tests;
 
 public class ConcurrencyTests(Containers containers)
 {
-    /// <summary>Sums long counter measurements of this host's service, keyed by instrument name and tags.</summary>
-    internal sealed class Capture : IDisposable
-    {
-        private readonly MeterListener _listener = new();
-        private readonly List<(string Name, Dictionary<string, object?> Tags, long Value)> _all = [];
-
-        public Capture(string service)
-        {
-            _listener.InstrumentPublished = (i, l) => { if (i.Meter.Name == BloomMetrics.MeterName) l.EnableMeasurementEvents(i); };
-            _listener.SetMeasurementEventCallback<long>((i, v, tags, _) =>
-            {
-                var d = tags.ToArray().ToDictionary(t => t.Key, t => t.Value);
-                if (Equals(d.GetValueOrDefault("service"), service))
-                    lock (_all) _all.Add((i.Name, d, v));
-            });
-            _listener.Start();
-        }
-
-        public long Sum(string name, string tag, string value)
-        {
-            lock (_all) return _all.Where(m => m.Name == name && Equals(m.Tags.GetValueOrDefault(tag), value)).Sum(m => m.Value);
-        }
-
-        public void Dispose() => _listener.Dispose();
-    }
-
     [Fact]
     public async Task T17_fifty_concurrent_conditional_updates_on_one_unit()
     {
         var ct = TestContext.Current.CancellationToken;
         using var host = await TestApp.BuildAsync(containers);
-        using var capture = new Capture(host.Services.GetRequiredService<BloomOptions>().ServiceName);
+        using var capture = new MetricCapture(host.Services.GetRequiredService<BloomOptions>().ServiceName);
         using (var scope = host.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<TestDbContext>();
@@ -70,7 +44,7 @@ public class ConcurrencyTests(Containers containers)
     {
         var ct = TestContext.Current.CancellationToken;
         using var host = await TestApp.BuildAsync(containers);
-        using var capture = new Capture(host.Services.GetRequiredService<BloomOptions>().ServiceName);
+        using var capture = new MetricCapture(host.Services.GetRequiredService<BloomOptions>().ServiceName);
         using var scope = host.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TestDbContext>();
         var id = Guid.NewGuid();

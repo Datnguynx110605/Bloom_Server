@@ -140,18 +140,8 @@ public class DeadLetterAdminTests(Containers containers)
         return ids;
     }
 
-    private static async Task UntilAsync(Func<Task<bool>> condition, int seconds, string what)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(seconds);
-        while (!await condition())
-        {
-            Assert.True(DateTime.UtcNow < deadline, $"Timed out after {seconds} s waiting for: {what}");
-            await Task.Delay(50, TestContext.Current.CancellationToken);
-        }
-    }
-
     private static Task UntilCountAsync(App a, string queue, uint expected) =>
-        UntilAsync(async () => await a.Rabbit.MessageCountAsync(queue) == expected, 10, $"{queue} to hold {expected}");
+        Poll.UntilAsync(async () => await a.Rabbit.MessageCountAsync(queue) == expected, 10, $"{queue} to hold {expected}");
 
     private static async Task<List<Envelope>> AuditAsync(App a)
     {
@@ -194,7 +184,7 @@ public class DeadLetterAdminTests(Containers containers)
 
         using var scope = app.Host.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TestDbContext>();
-        await UntilAsync(async () => await db.Effects.AsNoTracking().CountAsync(ct) == 1, 10, "one effect after replay");
+        await Poll.UntilAsync(async () => await db.Effects.AsNoTracking().CountAsync(ct) == 1, 10, "one effect after replay");
         var audit = Assert.Single(await AuditAsync(app));
         var p = audit.Payload;
         Assert.Equal(app.Actor, p.GetProperty("actorId").GetGuid());

@@ -173,23 +173,10 @@ public class ConsumerHostTests(Containers containers)
         return id;
     }
 
-    private static async Task UntilAsync(Func<Task<bool>> condition, int seconds, string what)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(seconds);
-        while (!await condition())
-        {
-            Assert.True(DateTime.UtcNow < deadline, $"Timed out after {seconds} s waiting for: {what}");
-            await Task.Delay(50, TestContext.Current.CancellationToken);
-        }
-    }
-
-    private static Task UntilAsync(Func<bool> condition, int seconds, string what) =>
-        UntilAsync(() => Task.FromResult(condition()), seconds, what);
-
     private static async Task<BasicGetResult> GetWithinAsync(Rabbit rabbit, string queue, int seconds)
     {
         BasicGetResult? got = null;
-        await UntilAsync(async () => (got = await rabbit.BasicGetAsync(queue)) is not null, seconds, $"a message in {queue}");
+        await Poll.UntilAsync(async () => (got = await rabbit.BasicGetAsync(queue)) is not null, seconds, $"a message in {queue}");
         return got!;
     }
 
@@ -213,13 +200,13 @@ public class ConsumerHostTests(Containers containers)
     public async Task T05_duplicate_delivery_applies_once()
     {
         await using var app = await StartOneAsync<RecordingHandler>();
-        using var capture = new ConcurrencyTests.Capture(app.Svc);
+        using var capture = new MetricCapture(app.Svc);
         var body = Body(app.Type());
 
         await app.Rabbit.PublishAsync("", app.Queue(), body);
         await app.Rabbit.PublishAsync("", app.Queue(), body);
 
-        await UntilAsync(() => capture.Sum("consumer_messages_total", "result", "duplicate") == 1, 10, "duplicate counted");
+        await Poll.UntilAsync(() => capture.Sum("consumer_messages_total", "result", "duplicate") == 1, 10, "duplicate counted");
         Assert.Equal(1, await EffectsAsync(app));
         Assert.Equal(1, capture.Sum("consumer_messages_total", "result", "success"));
     }
@@ -233,7 +220,7 @@ public class ConsumerHostTests(Containers containers)
 
         var id = await WriteAsync(app.Host, app.Type());
 
-        await UntilAsync(async () => await EffectsAsync(app) == 2, 10, "both handlers applied");
+        await Poll.UntilAsync(async () => await EffectsAsync(app) == 2, 10, "both handlers applied");
         Assert.Equal(1, await EffectsAsync(app, nameof(RecordingHandler)));
         Assert.Equal(1, await EffectsAsync(app, nameof(SecondRecordingHandler)));
         Assert.Equal([(app.Queue("h1"), id), (app.Queue("h2"), id)], (await InboxAsync(app)).OrderBy(i => i.Consumer).ToList());
@@ -265,7 +252,7 @@ public class ConsumerHostTests(Containers containers)
 
         await WriteAsync(app.Host, app.Type());
 
-        await UntilAsync(() => app.Log.Calls.Count == 2, 10, "second attempt after the 1 s retry queue");
+        await Poll.UntilAsync(() => app.Log.Calls.Count == 2, 10, "second attempt after the 1 s retry queue");
         var got = await GetWithinAsync(app.Rabbit, $"{app.Queue()}.retry.5s", 5);
         Assert.Equal(3, Convert.ToInt32(got.BasicProperties.Headers!["x-attempt"]));
         Assert.Equal(2, app.Log.Calls.Count);
@@ -275,7 +262,7 @@ public class ConsumerHostTests(Containers containers)
     public async Task T08_permanent_failure_goes_straight_to_dlq()
     {
         await using var app = await StartOneAsync<PermanentHandler>();
-        using var capture = new ConcurrencyTests.Capture(app.Svc);
+        using var capture = new MetricCapture(app.Svc);
 
         var id = await WriteAsync(app.Host, app.Type());
 
@@ -285,7 +272,7 @@ public class ConsumerHostTests(Containers containers)
         var failedAt = Header(dead, "x-failed-at");
         Assert.EndsWith("Z", failedAt);
         Assert.Equal(TimeSpan.Zero, DateTimeOffset.Parse(failedAt, CultureInfo.InvariantCulture).Offset);
-        await UntilAsync(() => capture.Sum("consumer_messages_total", "result", "dlq") == 1, 5, "dlq counted");
+        await Poll.UntilAsync(() => capture.Sum("consumer_messages_total", "result", "dlq") == 1, 5, "dlq counted");
         Assert.Single(app.Log.Calls);
         foreach (var (delay, _) in MessageNames.RetryDelays)
             Assert.Equal(0u, await app.Rabbit.MessageCountAsync(MessageNames.RetryQueue(app.Queue(), delay)));
@@ -345,7 +332,7 @@ public class ConsumerHostTests(Containers containers)
 
         var id = await WriteAsync(app.Host, app.Type());
 
-        await UntilAsync(async () => await app.Db.Set<OutboxMessage>().AsNoTracking()
+        await Poll.UntilAsync(async () => await app.Db.Set<OutboxMessage>().AsNoTracking()
             .AnyAsync(o => o.MessageType == app.Type("derived"), TestContext.Current.CancellationToken), 10, "derived outbox row");
         var derived = await app.Db.Set<OutboxMessage>().AsNoTracking().SingleAsync(o => o.MessageType == app.Type("derived"), TestContext.Current.CancellationToken);
         Assert.Equal(id.ToString(), JsonSerializer.Deserialize<Dictionary<string, string>>(derived.Headers)!["causation_id"]);
@@ -371,7 +358,7 @@ public class ConsumerHostTests(Containers containers)
         }
         Assert.NotNull(traceId);
 
-        await UntilAsync(() => !app.Log.Traces.IsEmpty, 10, "handler ran");
+        await Poll.UntilAsync(() => !app.Log.Traces.IsEmpty, 10, "handler ran");
 
         Assert.Equal(traceId, app.Log.Traces.Single());
     }
@@ -388,7 +375,7 @@ public class ConsumerHostTests(Containers containers)
 
         var id = await WriteAsync(app.Host, app.Type());
 
-        await UntilAsync(() => !scopes.Entries.IsEmpty, 10, "handler logged");
+        await Poll.UntilAsync(() => !scopes.Entries.IsEmpty, 10, "handler logged");
         var scope = scopes.Entries.Single();
         Assert.Equal(id, scope["message_id"]);
         Assert.Equal(app.Type(), scope["message_type"]);
@@ -401,7 +388,7 @@ public class ConsumerHostTests(Containers containers)
     {
         await using var app = await StartOneAsync<RecordingHandler>();
         await WriteAsync(app.Host, app.Type());
-        await UntilAsync(async () => await EffectsAsync(app) == 1, 10, "first message processed");
+        await Poll.UntilAsync(async () => await EffectsAsync(app) == 1, 10, "first message processed");
 
         // Only this service's connection (named after it), so tests sharing the broker are not disturbed.
         var listing = await containers.RabbitCtlAsync("list_connections", "pid", "client_properties");
@@ -409,6 +396,6 @@ public class ConsumerHostTests(Containers containers)
         await containers.RabbitCtlAsync("close_connection", pid, "test");
         await WriteAsync(app.Host, app.Type());
 
-        await UntilAsync(async () => await EffectsAsync(app) == 2, 15, "second message processed after the drop");
+        await Poll.UntilAsync(async () => await EffectsAsync(app) == 2, 15, "second message processed after the drop");
     }
 }

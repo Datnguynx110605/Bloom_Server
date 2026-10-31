@@ -122,7 +122,7 @@ public class IdempotencyTests(Containers containers)
     {
         var ct = TestContext.Current.CancellationToken;
         using var host = await TestApp.BuildAsync(containers);
-        using var capture = new ConcurrencyTests.Capture(ServiceOf(host));
+        using var capture = new MetricCapture(ServiceOf(host));
         var user = Guid.NewGuid();
         var key = Guid.NewGuid().ToString();
         var calls = new Calls();
@@ -147,7 +147,7 @@ public class IdempotencyTests(Containers containers)
     {
         var ct = TestContext.Current.CancellationToken;
         using var host = await TestApp.BuildAsync(containers);
-        using var capture = new ConcurrencyTests.Capture(ServiceOf(host));
+        using var capture = new MetricCapture(ServiceOf(host));
         var user = Guid.NewGuid();
         var key = Guid.NewGuid().ToString();
         var calls = new Calls();
@@ -165,7 +165,7 @@ public class IdempotencyTests(Containers containers)
     public async Task T12_same_key_different_request_is_reused()
     {
         using var host = await TestApp.BuildAsync(containers);
-        using var capture = new ConcurrencyTests.Capture(ServiceOf(host));
+        using var capture = new MetricCapture(ServiceOf(host));
         var user = Guid.NewGuid();
         var key = Guid.NewGuid().ToString();
         var calls = new Calls();
@@ -246,7 +246,7 @@ public class IdempotencyTests(Containers containers)
     {
         var ct = TestContext.Current.CancellationToken;
         using var host = await TestApp.BuildAsync(containers);
-        using var capture = new ConcurrencyTests.Capture(ServiceOf(host));
+        using var capture = new MetricCapture(ServiceOf(host));
         var user = Guid.NewGuid();
         var key = Guid.NewGuid().ToString();
         var provider = new FakeProvider();
@@ -310,7 +310,7 @@ public class IdempotencyTests(Containers containers)
     {
         var ct = TestContext.Current.CancellationToken;
         using var host = await TestApp.BuildAsync(containers);
-        using var capture = new ConcurrencyTests.Capture(ServiceOf(host));
+        using var capture = new MetricCapture(ServiceOf(host));
         var user = Guid.NewGuid();
         var key = Guid.NewGuid().ToString();
         var provider = new FakeProvider();

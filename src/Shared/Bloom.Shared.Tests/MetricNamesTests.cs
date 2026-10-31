@@ -59,15 +59,12 @@ public class MetricNamesTests
             ["optimistic_conflicts_total", "entity=\"e\""], ["conditional_update_rejections_total", "counter=\"k\""],
         ];
         bool Has(string[] e) => lines.Any(l => l.StartsWith(e[0] + "{") && l.Contains("service=\"svc\"") && e[1..].All(l.Contains));
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < deadline && !expected.All(Has))
+        await Poll.UntilAsync(async () =>
         {
-            await Task.Delay(500, ct);
             try { lines = (await http.GetStringAsync(url, ct)).Split('\n'); }
             catch (HttpRequestException) { /* exporter not listening yet */ }
-        }
-
-        Assert.All(expected, e => Assert.True(Has(e), $"missing {string.Join(' ', e)}"));
+            return expected.All(Has);
+        }, 30, "every §12 metric on the Prometheus endpoint");
         Assert.DoesNotContain(lines, l => l.StartsWith("outbox_publish_total_total") || l.StartsWith("consumer_handle_seconds_seconds"));
     }
 
