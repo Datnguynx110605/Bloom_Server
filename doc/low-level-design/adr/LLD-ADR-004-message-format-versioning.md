@@ -1,5 +1,7 @@
 # LLD-ADR-004: JSON messages with a standard envelope, additive changes, versioned types
 
+[Docs](../../README.md) › [Low-level design](../README.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

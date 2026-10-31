@@ -1,11 +1,13 @@
 # HLD-ADR-001: Build Bloom as 8 domain microservices behind an API gateway
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
-| **Related** | HG-2, HG-4, [hld.md §5](../hld.md#5-components) |
+| **Related** | HG-2, HG-4, [high-level-design.md §5](../high-level-design.md#5-components) |
 
 ## Context
 Normal traffic is about 150 req/s at peak, which a single service could handle. The launch spike (100k queued, ~20k status reads/s, ~200 checkouts/s) is concentrated on one path. Bloom is a portfolio project meant to show distributed-systems skills: sagas, outbox, inbox, independent scaling. The owner's first proposal had 9 services whose boundaries didn't match the approved domain (no catalog owner, inventory vs stock split, an out-of-scope recommendation service, pre-orders owning their own orders).
@@ -37,10 +39,10 @@ Chosen: **microservices aligned to the domain**: `api-gateway`, `identity`, `cat
 - ❌ Ownership gaps and a duplicated order lifecycle.
 
 ## Consequences
-- ✅ Clear ownership per domain area (hld.md §5, §6).
+- ✅ Clear ownership per domain area (high-level-design.md §5, §6).
 - ✅ Coupons live in `order`, so the coupon hold is a local transaction at checkout start.
 - ❌ Cross-service flows need sagas and eventual consistency.
 - ⚠️ Build scope risk R-01.
 
 ## Links
-- [hld.md §5, §6](../hld.md)
+- [high-level-design.md §5, §6](../high-level-design.md)

@@ -1,5 +1,7 @@
 # LLD-ADR-005: Optimistic locking uses an explicit version column
 
+[Docs](../../README.md) › [Low-level design](../README.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

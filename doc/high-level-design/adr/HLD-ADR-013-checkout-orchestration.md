@@ -1,5 +1,7 @@
 # HLD-ADR-013: Synchronous orchestrated holds at checkout; DB sweep for expiry; auto-refund late payments
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -50,4 +52,4 @@ Chosen:
 - ❌ Checkout latency includes three gRPC calls (budget p95 < 300 ms, QA-03).
 
 ## Links
-- [hld.md §8.1, §8.2](../hld.md)
+- [high-level-design.md §8.1, §8.2](../high-level-design.md)

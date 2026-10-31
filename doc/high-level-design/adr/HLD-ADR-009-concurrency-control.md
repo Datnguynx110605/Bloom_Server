@@ -1,5 +1,7 @@
 # HLD-ADR-009: Atomic conditional updates for counters; optimistic locking for read-modify-write
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -40,4 +42,4 @@ Chosen:
 - ❌ Clients must handle 409.
 
 ## Links
-- [hld.md §9.2](../hld.md#92-reliability-patterns)
+- [high-level-design.md §9.2](../high-level-design.md#92-reliability-patterns)

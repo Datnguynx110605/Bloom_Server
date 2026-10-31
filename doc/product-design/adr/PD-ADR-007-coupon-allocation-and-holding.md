@@ -1,5 +1,7 @@
 # PD-ADR-007: Split coupon discounts per line and hold coupon uses at checkout
 
+[Docs](../../README.md) › [Product design](../00-overview.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

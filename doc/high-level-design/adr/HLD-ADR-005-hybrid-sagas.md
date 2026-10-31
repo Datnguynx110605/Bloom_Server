@@ -1,11 +1,13 @@
 # HLD-ADR-005: Orchestrate compensating flows, choreograph simple reactions
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
-| **Related** | HG-3, [hld.md §8](../hld.md#8-key-flows) |
+| **Related** | HG-3, [high-level-design.md §8](../high-level-design.md#8-key-flows) |
 
 ## Context
 Checkout, cancellation, return → refund and delivery failure span several services and need compensations and timeouts. Notifications, review eligibility and counter updates are one-way reactions.
@@ -44,4 +46,4 @@ Chosen: **hybrid**. `order` orchestrates checkout and cancellation. `fulfillment
 - ❌ Compensations are eventual (seconds), not instant.
 
 ## Links
-- [hld.md §8.3, §8.4](../hld.md)
+- [high-level-design.md §8.3, §8.4](../high-level-design.md)

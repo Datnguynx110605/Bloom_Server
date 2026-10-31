@@ -1,5 +1,7 @@
 # LLD Decision Records
 
+[Docs](../../README.md) › [Low-level design](../README.md) › Decision records
+
 Component-level decisions. Conventions and the MADR template are defined once in [product-design/adr/README.md](../../product-design/adr/README.md) and apply here with the prefix `LLD-ADR-`.
 
 ## Index

@@ -1,5 +1,7 @@
 # 10 — Accounts and Access
 
+[Docs](../README.md) › [Product design](00-overview.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |

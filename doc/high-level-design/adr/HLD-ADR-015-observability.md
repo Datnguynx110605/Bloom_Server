@@ -1,11 +1,13 @@
 # HLD-ADR-015: OpenTelemetry with Grafana, Tempo, Prometheus and Loki
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
-| **Related** | QA-01 … QA-05, [hld.md §9.3](../hld.md#93-observability) |
+| **Related** | QA-01 … QA-05, [high-level-design.md §9.3](../high-level-design.md#93-observability) |
 
 ## Context
 A single checkout crosses gateway, order, catalog, launch or inventory, payment, the broker and consumers. Debugging and SLO verification need traces across all of them.
@@ -38,4 +40,4 @@ Chosen: **OpenTelemetry** in every service, with trace context propagated throug
 - ❌ Every message must carry trace headers (handled by the shared plumbing library).
 
 ## Links
-- [hld.md §9.3](../hld.md#93-observability)
+- [high-level-design.md §9.3](../high-level-design.md#93-observability)

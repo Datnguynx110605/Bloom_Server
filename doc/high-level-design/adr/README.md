@@ -1,5 +1,7 @@
 # HLD Decision Records
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › Decision records
+
 Architecture decisions for Bloom's backend. Conventions and the MADR template are defined once in [product-design/adr/README.md](../../product-design/adr/README.md) and apply here with the prefix `HLD-ADR-`.
 
 ## Index

@@ -1,5 +1,7 @@
 # HLD-ADR-018: Stripe, Shippo and Resend, each behind an interface in its owning service
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -38,4 +40,4 @@ Chosen: **Stripe** (owned by payment), **Shippo** (owned by fulfillment), **Rese
 - ✅ Locally, notification sends through SMTP to **Mailpit** (no API key, works offline). Resend is used in the cloud environment.
 
 ## Links
-- [hld.md §7.3](../hld.md#73-external-integrations)
+- [high-level-design.md §7.3](../high-level-design.md#73-external-integrations)

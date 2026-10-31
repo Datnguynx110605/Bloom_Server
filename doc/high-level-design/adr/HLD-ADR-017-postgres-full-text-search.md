@@ -1,5 +1,7 @@
 # HLD-ADR-017: Catalog search uses PostgreSQL full-text search
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -35,4 +37,4 @@ Chosen: **PostgreSQL full-text search** with indexed filters in catalog's databa
 - ⚠️ Revisit if the catalog grows by orders of magnitude or fuzzy search becomes a requirement.
 
 ## Links
-- [hld.md §5](../hld.md#5-components)
+- [high-level-design.md §5](../high-level-design.md#5-components)

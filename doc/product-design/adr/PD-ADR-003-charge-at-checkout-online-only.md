@@ -1,5 +1,7 @@
 # PD-ADR-003: Charge in full at checkout, online payments only
 
+[Docs](../../README.md) › [Product design](../00-overview.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

@@ -1,5 +1,7 @@
 # HLD-ADR-006: Publish every message through a transactional outbox with a polling relay
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -42,4 +44,4 @@ Chosen:
 - ❌ Duplicates are possible, so consumers need the inbox (HLD-ADR-007).
 
 ## Links
-- [hld.md §9.2](../hld.md#92-reliability-patterns)
+- [high-level-design.md §9.2](../high-level-design.md#92-reliability-patterns)

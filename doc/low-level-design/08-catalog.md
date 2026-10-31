@@ -1,11 +1,13 @@
 # LLD — catalog service
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [02-catalog](../product-design/02-catalog.md) CAT-R01 … R15, [09-reviews](../product-design/09-reviews.md) REV-R01 … R08, WAR-R01, LCH-R13 |
-| **HLD** | [hld.md §5, §6](../high-level-design/hld.md), HLD-ADR-017 |
+| **HLD** | [high-level-design.md §5, §6](../high-level-design/high-level-design.md), HLD-ADR-017 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [01-launch.md](01-launch.md) (stage events) |
 
 ## 1. Problem and scope

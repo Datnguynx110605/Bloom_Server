@@ -1,5 +1,7 @@
 # HLD-ADR-012: Launch path: Postgres counters, Redis sorted-set waiting room, configured admission rate
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -48,4 +50,4 @@ Chosen:
 - ⚠️ R-02 (hot rows) and R-03 (queue loss) tracked.
 
 ## Links
-- [hld.md §8.1](../hld.md#81-launch-queue--checkout)
+- [high-level-design.md §8.1](../high-level-design.md#81-launch-queue--checkout)

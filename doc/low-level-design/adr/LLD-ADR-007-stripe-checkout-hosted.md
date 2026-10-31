@@ -1,5 +1,7 @@
 # LLD-ADR-007: Customers pay on Stripe Checkout (hosted page)
 
+[Docs](../../README.md) › [Low-level design](../README.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

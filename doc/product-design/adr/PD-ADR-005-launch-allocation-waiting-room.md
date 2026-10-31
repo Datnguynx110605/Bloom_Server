@@ -1,5 +1,7 @@
 # PD-ADR-005: Launches use a fixed allocation, a waiting room and per-launch purchase limits
 
+[Docs](../../README.md) › [Product design](../00-overview.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

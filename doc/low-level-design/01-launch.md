@@ -1,11 +1,13 @@
 # LLD — launch service
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [04-launch](../product-design/04-launch.md) (LCH-R01 … R28), BI-01, BI-03 |
-| **HLD** | [hld.md §5, §8.1](../high-level-design/hld.md), HLD-ADR-009, HLD-ADR-012 |
+| **HLD** | [high-level-design.md §5, §8.1](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-012 |
 | **Depends on** | [00-reliability.md](00-reliability.md) (outbox, inbox, conditional updates, error contract) |
 
 ## 1. Problem and scope

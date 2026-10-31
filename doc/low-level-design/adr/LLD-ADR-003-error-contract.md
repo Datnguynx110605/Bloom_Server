@@ -1,5 +1,7 @@
 # LLD-ADR-003: Errors are gRPC status codes with a stable ErrorInfo reason
 
+[Docs](../../README.md) › [Low-level design](../README.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

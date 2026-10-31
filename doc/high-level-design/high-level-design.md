@@ -1,5 +1,7 @@
 # Bloom — High-Level Design
 
+[Docs](../README.md) › High-level design
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
@@ -179,6 +181,7 @@ Every service has its own database in one PostgreSQL cluster ([HLD-ADR-004](adr/
 | fulfillment → inventory | Assign, unassign or replace serials at packing (INV-R13, R14, R19); commit stock for a reship (ORD-R13) | Packing step fails; Warehouse retries |
 | launch → catalog | Validate a SKU and its product when staff add it to a launch | Admin action fails; staff retry |
 | inventory → catalog | Lock a SKU's serialized flag at its first goods receipt (CAT-R14) | Receipt fails; Warehouse retries |
+| gateway → identity | Fetch the JWKS (internal HTTP, not gRPC; cached, refreshed every 10 min) | Gateway keeps its cached keys; not ready at startup until loaded |
 
 Exact contracts (`.proto`) are specified in the LLD of each service.
 
@@ -198,7 +201,7 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Release reservation / backorder | Command | order | inventory |
 | Reservation released / hold released | Event | inventory / launch | order (saga completion; published for every release command, including no-ops) |
 | Cancel payment | Command | order | payment (cancel the provider payment when a checkout expires or fails) |
-| Packing started; return requested / return closed | Event | fulfillment | order (status *Packing*; open-return count for ACC-R13) |
+| Packing started; return requested / return closed | Event | fulfillment | order (status *Packing*; open-return count for ACC-R13); notification (return closed as expired) |
 | Return label issued / return received | Event | fulfillment | notification |
 | Pre-order delayed | Event | order | notification (launch released without stock for the pre-order, INV-R11) |
 | Release allocation hold | Command | order | launch |

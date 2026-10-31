@@ -1,5 +1,7 @@
 # PD-ADR-008: Require an account to buy; invite staff and require MFA
 
+[Docs](../../README.md) › [Product design](../00-overview.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

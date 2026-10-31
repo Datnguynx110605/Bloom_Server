@@ -1,11 +1,13 @@
 # LLD — inventory service
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [03-inventory](../product-design/03-inventory.md) (INV-R01 … R20), BI-02, BI-06, BI-07, LCH-R19, R20 |
-| **HLD** | [hld.md §5, §8.5](../high-level-design/hld.md), HLD-ADR-009, HLD-ADR-013 |
+| **HLD** | [high-level-design.md §5, §8.5](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-013 |
 | **Depends on** | [00-reliability.md](00-reliability.md) |
 
 ## 1. Problem and scope

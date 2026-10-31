@@ -1,11 +1,13 @@
 # LLD — notification service
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [11-notifications](../product-design/11-notifications.md) NTF-R01 … R06, INV-R11, ACC-R06 |
-| **HLD** | [hld.md §5, §7.2](../high-level-design/hld.md), HLD-ADR-018 |
+| **HLD** | [high-level-design.md §5, §7.2](../high-level-design/high-level-design.md), HLD-ADR-018 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [06-identity.md](06-identity.md) (encrypted codes, revocation events) |
 
 ## 1. Problem and scope

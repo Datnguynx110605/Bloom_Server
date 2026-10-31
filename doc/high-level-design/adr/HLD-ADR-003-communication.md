@@ -1,11 +1,13 @@
 # HLD-ADR-003: gRPC internally, RabbitMQ for async, REST/JSON at the edge via JSON transcoding
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
-| **Related** | [hld.md §4, §7](../hld.md) |
+| **Related** | [high-level-design.md §4, §7](../high-level-design.md) |
 
 ## Context
 Some interactions need an immediate answer (checkout holds, prices). Others must happen eventually and survive outages (notifications, compensations). Browser clients need a plain HTTP API.
@@ -38,4 +40,4 @@ Chosen: **gRPC for synchronous internal calls**, **RabbitMQ for asynchronous eve
 - ❌ Transcoding runs in the services, not the gateway (YARP can't transcode), so the gateway forwards HTTP to services.
 
 ## Links
-- [hld.md §4](../hld.md#4-architecture-overview)
+- [high-level-design.md §4](../high-level-design.md#4-architecture-overview)

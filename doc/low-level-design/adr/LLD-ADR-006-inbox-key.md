@@ -1,5 +1,7 @@
 # LLD-ADR-006: The inbox is keyed by (consumer, message ID)
 
+[Docs](../../README.md) › [Low-level design](../README.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

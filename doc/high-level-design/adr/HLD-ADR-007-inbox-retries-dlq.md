@@ -1,5 +1,7 @@
 # HLD-ADR-007: Deduplicate with an inbox in the consumer transaction; retry 5 times, then dead-letter
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -39,4 +41,4 @@ Chosen:
 - ❌ A replay tool must be built.
 
 ## Links
-- [hld.md §9.2](../hld.md#92-reliability-patterns)
+- [high-level-design.md §9.2](../high-level-design.md#92-reliability-patterns)

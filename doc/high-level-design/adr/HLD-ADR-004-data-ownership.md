@@ -1,11 +1,13 @@
 # HLD-ADR-004: Database per service in one HA cluster, Redis per service, event-fed copies
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
-| **Related** | QA-01, [hld.md §6](../hld.md#6-data-ownership) |
+| **Related** | QA-01, [high-level-design.md §6](../high-level-design.md#6-data-ownership) |
 
 ## Context
 Microservices need clear data ownership. Running 8 HA Postgres clusters and shared caches both have costs. The 99.9% target needs automatic database failover.
@@ -45,4 +47,4 @@ Chosen:
 - ⚠️ launch can move to its own cluster if load tests show contention.
 
 ## Links
-- [hld.md §6, §9.5](../hld.md)
+- [high-level-design.md §6, §9.5](../high-level-design.md)

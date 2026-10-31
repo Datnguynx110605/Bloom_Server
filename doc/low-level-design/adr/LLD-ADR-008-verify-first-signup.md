@@ -1,5 +1,7 @@
 # LLD-ADR-008: Verify the email before the account exists, using a Data Protection registration token
 
+[Docs](../../README.md) › [Low-level design](../README.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

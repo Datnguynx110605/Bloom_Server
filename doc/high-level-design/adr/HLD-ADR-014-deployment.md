@@ -1,11 +1,13 @@
 # HLD-ADR-014: Kubernetes with API/worker split, HA data tier, monorepo and Sealed Secrets
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
-| **Related** | QA-01, HG-2, HG-4, [hld.md §9.5](../hld.md#95-deployment-topology) |
+| **Related** | QA-01, HG-2, HG-4, [high-level-design.md §9.5](../high-level-design.md#95-deployment-topology) |
 
 ## Context
 The launch path must scale independently, and 99.9% availability needs failover in the data tier. One person builds and runs everything.
@@ -54,4 +56,4 @@ Chosen:
 - ❌ Push-based deploys can drift from the repo if the cluster is changed by hand (R-09). Argo CD (GitOps) was considered and not chosen.
 
 ## Links
-- [hld.md §9.5](../hld.md#95-deployment-topology)
+- [high-level-design.md §9.5](../high-level-design.md#95-deployment-topology)

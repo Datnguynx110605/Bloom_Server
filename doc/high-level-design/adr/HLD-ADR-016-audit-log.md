@@ -1,5 +1,7 @@
 # HLD-ADR-016: identity owns the audit log, fed by staff-action events
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -36,7 +38,7 @@ Chosen: **every service publishes a "staff action recorded" event through its ou
 
 ## Consequences
 - ✅ BI-06 audit part enforced by the outbox.
-- ❌ identity's storage grows with all staff activity (retention: OQ-HLD-8).
+- ❌ identity's storage grows with all staff activity (kept indefinitely; [reliability LLD §13](../../low-level-design/00-reliability.md#13-retention)).
 
 ## Links
-- [hld.md §6](../hld.md#6-data-ownership)
+- [high-level-design.md §6](../high-level-design.md#6-data-ownership)

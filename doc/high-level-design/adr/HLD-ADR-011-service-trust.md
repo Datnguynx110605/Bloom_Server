@@ -1,11 +1,13 @@
 # HLD-ADR-011: Gateway passes a trusted identity context; Linkerd mTLS secures internal calls
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
-| **Related** | HLD-ADR-010, [hld.md §9.1](../hld.md#91-security) |
+| **Related** | HLD-ADR-010, [high-level-design.md §9.1](../high-level-design.md#91-security) |
 
 ## Context
 The owner wants JWT verification only at the gateway. But resource-level authorization ("does order #123 belong to this customer?") needs data only the owning service has. Without it, any customer could read others' orders by changing IDs (IDOR). Services therefore need a caller identity they can trust.
@@ -39,4 +41,4 @@ Chosen: **trusted context + mTLS**. The gateway verifies the JWT, applies coarse
 - ❌ Security depends on the mesh allow rules being correct.
 
 ## Links
-- [hld.md §9.1](../hld.md#91-security)
+- [high-level-design.md §9.1](../high-level-design.md#91-security)

@@ -1,11 +1,13 @@
 # LLD — payment service
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) CHK-R10 … R17, RET-R11 … R14, BI-05 |
-| **HLD** | [hld.md §5, §8.2](../high-level-design/hld.md), HLD-ADR-008, HLD-ADR-018 |
+| **HLD** | [high-level-design.md §5, §8.2](../high-level-design/high-level-design.md), HLD-ADR-008, HLD-ADR-018 |
 | **Decision records** | [LLD-ADR-001](adr/LLD-ADR-001-two-phase-idempotency.md), [LLD-ADR-007](adr/LLD-ADR-007-stripe-checkout-hosted.md) |
 | **Depends on** | [00-reliability.md](00-reliability.md), [03-order.md](03-order.md) |
 

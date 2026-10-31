@@ -1,11 +1,13 @@
 # LLD — Reliability Building Blocks
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Component** | Shared reliability library used by every domain service (plumbing only, no domain code) |
-| **HLD** | [hld.md §9.2](../high-level-design/hld.md#92-reliability-patterns), HLD-ADR-005 … 009 |
+| **HLD** | [high-level-design.md §9.2](../high-level-design/high-level-design.md#92-reliability-patterns), HLD-ADR-005 … 009 |
 | **Decision records** | [LLD-ADR-001 … 006](adr/README.md) |
 
 ## 1. Problem and scope

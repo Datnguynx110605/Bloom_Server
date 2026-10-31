@@ -1,5 +1,7 @@
 # PD-ADR-004: Reserve stock at checkout start, with a 15-minute timeout
 
+[Docs](../../README.md) › [Product design](../00-overview.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

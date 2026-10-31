@@ -1,11 +1,13 @@
 # LLD — order service
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R18), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
-| **HLD** | [hld.md §5, §8.1 – §8.3, §8.5](../high-level-design/hld.md), HLD-ADR-005, HLD-ADR-013 |
+| **HLD** | [high-level-design.md §5, §8.1 – §8.3, §8.5](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-013 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [01-launch.md](01-launch.md), [02-inventory.md](02-inventory.md) |
 
 ## 1. Problem and scope
@@ -188,7 +190,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | Message | Effect |
 |---|---|
 | `payment.succeeded.v1` | §6.4 |
-| `payment.failed.v1` | Status unchanged (customer may retry within the deadline, CHK-R13); notification only |
+| `payment.failed.v1` | No effect: status unchanged; the customer retries on Stripe's page within the deadline (CHK-R13) |
 | `payment.refund-completed.v1` | Update line `refunded_cents` (when the refund carries line amounts) and complete the `refund` saga step |
 | `payment.refund-failed.v1` | Saga stays open with the `refund` step marked failed, so `sagas_stuck` shows it; Support resolves (payment alerts) |
 | `inventory.stock-allocated.v1` | `stock_allocated = true`; §6.5 |

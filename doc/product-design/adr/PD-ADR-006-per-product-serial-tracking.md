@@ -1,5 +1,7 @@
 # PD-ADR-006: Track serial units per product flag; never resell returned units
 
+[Docs](../../README.md) › [Product design](../00-overview.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

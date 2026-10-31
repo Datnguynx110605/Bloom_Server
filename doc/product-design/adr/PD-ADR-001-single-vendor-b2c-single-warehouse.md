@@ -1,5 +1,7 @@
 # PD-ADR-001: Bloom is a single-vendor B2C store with a single warehouse
 
+[Docs](../../README.md) › [Product design](../00-overview.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |

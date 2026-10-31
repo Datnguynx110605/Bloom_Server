@@ -1,5 +1,7 @@
 # HLD-ADR-002: Use .NET, PostgreSQL, Redis and RabbitMQ
 
+[Docs](../../README.md) › [High-level design](../high-level-design.md) › [Decision records](README.md)
+
 | | |
 |---|---|
 | **Status** | Accepted |
@@ -46,4 +48,4 @@ Chosen: **.NET / ASP.NET Core**, **PostgreSQL**, **Redis**, **RabbitMQ**.
 - ❌ Consumers need state-machine guards against reordering.
 
 ## Links
-- [hld.md §9.2](../hld.md#92-reliability-patterns)
+- [high-level-design.md §9.2](../high-level-design.md#92-reliability-patterns)

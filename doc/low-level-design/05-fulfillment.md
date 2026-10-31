@@ -1,11 +1,13 @@
 # LLD — fulfillment service
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) ORD-R08 … R17, [07-returns-refunds](../product-design/07-returns-refunds.md) RET-R01 … R15, WAR-R01 … R06, BI-05, BI-07 |
-| **HLD** | [hld.md §5, §8.4](../high-level-design/hld.md), HLD-ADR-005, HLD-ADR-018 |
+| **HLD** | [high-level-design.md §5, §8.4](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-018 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [02-inventory.md](02-inventory.md), [03-order.md](03-order.md), [04-payment.md](04-payment.md) |
 
 ## 1. Problem and scope
@@ -166,12 +168,14 @@
 | `fulfillment.shipment-shipped.v1` | Published → order, inventory, notification | `orderId`, `refId`, `lines[{skuId, quantity, serials[]}]`, `trackingNumber` |
 | `fulfillment.shipment-delivered.v1` | Published → order, notification | `orderId`, `refId`, `deliveredAt` |
 | `fulfillment.delivery-failed.v1` | Published → order, notification | `orderId`, `kind` |
-| `fulfillment.return-requested.v1` / `return-closed.v1` | Published → order, notification | `orderId`, `returnId`; `return-closed` adds `reason` (`decided` \| `expired`) |
+| `fulfillment.return-requested.v1` | Published → order | `orderId`, `returnId` |
+| `fulfillment.return-closed.v1` | Published → order, notification | `orderId`, `returnId`, `reason` (`decided` \| `expired`) |
 | `fulfillment.return-label-issued.v1` | Published → notification | `orderId`, `returnId`, `labelUrl` (when the return label is bought) |
 | `fulfillment.return-received.v1` | Published → notification | `orderId`, `returnId` (on `ReceiveReturn`) |
 | `fulfillment.return-decided.v1` | Published → order, notification | `orderId`, `returnId`, `accepted[{lineNo, quantity}]`, `refundCents` |
 | `payment.refund-payment.v1` | Command → payment | `orderId`, `refundId`, `amountCents`, `lines[{lineNo, amountCents}]` |
 | `inventory.receive-customer-return.v1` / `receive-returned-to-sender.v1` / `mark-lost-in-transit.v1` | Commands → inventory | per [02-inventory §5.3](02-inventory.md) |
+| `identity.staff-action-recorded.v1` | Published | Every staff action |
 | `order.ready-to-fulfill.v1` | Consumed | Creates the pack task and line accounts |
 | `payment.refund-completed.v1` / `refund-failed.v1` | Consumed | Saga step `refund` done / marked failed |
 | `identity.account-deleted.v1` | Consumed | Anonymize addresses |

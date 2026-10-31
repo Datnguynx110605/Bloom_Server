@@ -1,11 +1,13 @@
 # LLD — api-gateway
 
+[Docs](../README.md) › [Low-level design](README.md)
+
 | | |
 |---|---|
 | **Status** | Approved (2026-10-31) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | ACC-R10, [10-accounts-access §3](../product-design/10-accounts-access.md) (permission matrix) |
-| **HLD** | [hld.md §4, §9.1](../high-level-design/hld.md), HLD-ADR-003, HLD-ADR-010, HLD-ADR-011 |
+| **HLD** | [high-level-design.md §4, §9.1](../high-level-design/high-level-design.md), HLD-ADR-003, HLD-ADR-010, HLD-ADR-011 |
 | **Depends on** | [06-identity.md](06-identity.md) (tokens, JWKS, revocation events) |
 
 ## 1. Problem and scope
