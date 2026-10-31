@@ -267,6 +267,45 @@ public class IdempotencyTests(Containers containers)
     }
 
     [Fact]
+    public async Task Request_that_lost_its_lock_to_a_takeover_does_not_complete_the_key()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var provider = new FakeProvider();
+        var appliedByOriginal = new Calls();
+        var appliedByTaker = new Calls();
+        var parked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The original request parks in its provider call after tx 1 ...
+        var original = TwoPhase(host, Ctx(user, key), provider, appliedByOriginal, callProvider: async k =>
+        {
+            parked.SetResult();
+            await resume.Task;
+            return await provider.CallAsync(k);
+        });
+        await parked.Task.WaitAsync(ct);
+        // ... its lock expires, and a retry takes the key over and completes it.
+        using (var scope = host.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<TestDbContext>().Database
+                .ExecuteSqlAsync($"UPDATE idempotency_keys SET locked_until = now() - interval '1 second'", ct);
+        var taker = await TwoPhase(host, Ctx(user, key), provider, appliedByTaker);
+
+        // The original resumes: it no longer owns the key, so it must not apply or overwrite; it gets the replay.
+        resume.SetResult();
+        var replayed = await original;
+
+        Assert.Equal(taker.ChargeId, replayed.ChargeId);
+        Assert.Equal(1, appliedByTaker.N);
+        Assert.Equal(1, await Count<Effect>(host, ct));
+        var row = await OnlyKey(host, ct);
+        Assert.Equal("completed", row.Status);
+        Assert.Equal(taker.ToByteArray(), row.ResponseBody);
+    }
+
+    [Fact]
     public async Task T14_unexpired_lock_is_in_progress()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -26,7 +26,13 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
     private sealed record Call(Guid UserId, string Key, string Operation, byte[] Hash)
     {
         public string ProviderKey => $"bloom:{Operation}:{UserId}:{Key}";
+
+        /// <summary>The <c>locked_until</c> this request set when it claimed or took over the key. Complete and release only act while it is unchanged.</summary>
+        public DateTime Fence { get; set; }
     }
+
+    /// <summary>The key was taken over by another request while this one was working; its transaction is already rolled back.</summary>
+    private sealed class FenceLostException : Exception;
 
     internal sealed class ExistingRow
     {
@@ -84,15 +90,27 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
             throw;
         }
 
-        try
+        while (true)
         {
-            await using var tx2 = await db.Database.BeginTransactionAsync(ct);
-            return await RunAsync(call, tx2, t => apply(result, t), ct);
-        }
-        catch (Exception ex) when (ex is not RpcException { StatusCode: var c } || !Stored.Contains(c))
-        {
-            await ReleaseAsync(call);
-            throw;
+            try
+            {
+                await using var tx2 = await db.Database.BeginTransactionAsync(ct);
+                return await RunAsync(call, tx2, t => apply(result, t), ct);
+            }
+            catch (FenceLostException)
+            {
+            }
+            catch (Exception ex) when (ex is not RpcException { StatusCode: var c } || !Stored.Contains(c))
+            {
+                await ReleaseAsync(call);
+                throw;
+            }
+
+            // Our lock expired and another request took the key over: answer as a duplicate (its replay, or IN_PROGRESS).
+            // If that request has since expired too, this claim takes the key over again and we apply once more.
+            await using var tx3 = await db.Database.BeginTransactionAsync(ct);
+            if (await ClaimAsync<TResponse>(call, ct) is { } replay) return replay;
+            await tx3.CommitAsync(ct);
         }
     }
 
@@ -113,13 +131,15 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
     {
         while (true)
         {
-            var inserted = await db.Database.ExecuteSqlAsync($"""
+            var inserted = await db.Database.SqlQuery<DateTime>($"""
                 INSERT INTO idempotency_keys (user_id, key, operation, request_hash, status, locked_until)
                 VALUES ({call.UserId}, {call.Key}, {call.Operation}, {call.Hash}, 'in_progress', now() + interval '60 seconds')
                 ON CONFLICT DO NOTHING
-                """, ct);
-            if (inserted == 1)
+                RETURNING locked_until AS "Value"
+                """).ToListAsync(ct);
+            if (inserted.Count == 1)
             {
+                call.Fence = inserted[0];
                 metrics.Idempotency(call.Operation, "new");
                 return default;
             }
@@ -145,12 +165,14 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
 
             if (!row.Locked)
             {
-                var taken = await db.Database.ExecuteSqlAsync($"""
+                var taken = await db.Database.SqlQuery<DateTime>($"""
                     UPDATE idempotency_keys SET locked_until = now() + interval '60 seconds'
                     WHERE user_id = {call.UserId} AND key = {call.Key} AND status = 'in_progress' AND locked_until <= now()
-                    """, ct);
-                if (taken == 1)
+                    RETURNING locked_until AS "Value"
+                    """).ToListAsync(ct);
+                if (taken.Count == 1)
                 {
+                    call.Fence = taken[0];
                     metrics.Idempotency(call.Operation, "takeover");
                     return default;
                 }
@@ -182,22 +204,28 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
         {
             await tx.RollbackToSavepointAsync(Savepoint, ct);
             var status = ex.GetRpcStatus() ?? new Status { Code = (int)ex.StatusCode, Message = ex.Status.Detail };
-            await CompleteAsync(call, status.Code, status.ToByteArray(), ct);
+            await CompleteAsync(call, tx, status.Code, status.ToByteArray(), ct);
             await tx.CommitAsync(ct);
             throw;
         }
 
-        await CompleteAsync(call, 0, response.ToByteArray(), ct);
+        await CompleteAsync(call, tx, 0, response.ToByteArray(), ct);
         await tx.CommitAsync(ct);
         return response;
     }
 
-    private Task<int> CompleteAsync(Call call, int responseStatus, byte[] body, CancellationToken ct) =>
-        db.Database.ExecuteSqlAsync($"""
+    /// <summary>Stores the outcome only while this request still owns the key; otherwise rolls everything back and throws <see cref="FenceLostException"/>.</summary>
+    private async Task CompleteAsync(Call call, IDbContextTransaction tx, int responseStatus, byte[] body, CancellationToken ct)
+    {
+        var updated = await db.Database.ExecuteSqlAsync($"""
             UPDATE idempotency_keys
             SET status = 'completed', response_status = {responseStatus}, response_body = {body}, completed_at = now()
-            WHERE user_id = {call.UserId} AND key = {call.Key}
+            WHERE user_id = {call.UserId} AND key = {call.Key} AND status = 'in_progress' AND locked_until = {call.Fence}
             """, ct);
+        if (updated == 1) return;
+        await tx.RollbackAsync(ct);
+        throw new FenceLostException();
+    }
 
     /// <summary>Two-phase only: drops the in-progress row so the same key can retry. Not cancellable: a cancelled request must still release.</summary>
     private async Task ReleaseAsync(Call call)
@@ -205,7 +233,7 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
         try
         {
             await db.Database.ExecuteSqlAsync(
-                $"DELETE FROM idempotency_keys WHERE user_id = {call.UserId} AND key = {call.Key} AND status = 'in_progress'", CancellationToken.None);
+                $"DELETE FROM idempotency_keys WHERE user_id = {call.UserId} AND key = {call.Key} AND status = 'in_progress' AND locked_until = {call.Fence}", CancellationToken.None);
         }
         catch (Exception)
         {
