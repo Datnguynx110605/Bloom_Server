@@ -32,9 +32,9 @@
 
 ## Rulings in this plan (builder's calls the spec left open)
 
-- **Ruling R1 (needs owner yes, spec §6.9):** no interceptor. Library code throws `RpcException` that already carries `google.rpc.Status` + `ErrorInfo{domain="bloom"}` (built by `BloomErrors`). An interceptor would have nothing to convert, and the idempotency rule "classified by gRPC status, any non-`RpcException` released" then applies literally.
-- **Ruling R2 (needs owner yes, §7.7):** `PeekDeadLetters.limit` unset (0) → 20; values outside 1–100 are clamped into 1–100 (no new error reason).
-- **Ruling R3 (needs owner yes, §7.6):** optimistic-lock `NOT_FOUND` carries a reason supplied by the calling service (the docs define none in the library), like `FAILED_PRECONDITION`.
+- **Ruling R1 (owner approved 2026-10-31, spec §6.9):** no interceptor. Library code throws `RpcException` that already carries `google.rpc.Status` + `ErrorInfo{domain="bloom"}` (built by `BloomErrors`). An interceptor would have nothing to convert, and the idempotency rule "classified by gRPC status, any non-`RpcException` released" then applies literally.
+- **Ruling R2 (owner approved 2026-10-31, §7.7):** `PeekDeadLetters.limit` unset (0) → 20; values outside 1–100 are clamped into 1–100 (no new error reason).
+- **Ruling R3 (owner approved 2026-10-31, §7.6):** optimistic-lock `NOT_FOUND` carries a reason supplied by the calling service (the docs define none in the library), like `FAILED_PRECONDITION`.
 - R4: idempotency `operation` = `ServerCallContext.Method` without its leading `/` (e.g. `bloom.order.v1.OrderService/StartCheckout`); the key is stored in canonical lowercase `D` form, so case variants are one key.
 - R5: `{service}` mismatch on DLQ admin → `NOT_FOUND` / `DLQ_NOT_FOUND`. Role check runs first.
 - R6: a DLQ registered in the catalog but not yet declared on the broker is listed with count 0; any other operation on it → `DLQ_NOT_FOUND`.
