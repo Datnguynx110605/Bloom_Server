@@ -8,7 +8,7 @@
 | **Last updated** | 2026-10-31 |
 | **Component** | Shared reliability library used by every domain service (plumbing only, no domain code) |
 | **HLD** | [high-level-design.md §9.2](../high-level-design/high-level-design.md#92-reliability-patterns), HLD-ADR-005 … 009 |
-| **Decision records** | [LLD-ADR-001 … 006](adr/README.md) |
+| **Decision records** | [LLD-ADR-001 … 006, 009](adr/README.md) |
 
 ## 1. Problem and scope
 
@@ -27,7 +27,7 @@ Every Bloom service must publish messages without losing them, consume messages 
 | Concurrency helpers | Conditional (atomic) updates and optimistic locking |
 | Error mapping | Maps library failures to gRPC status + `ErrorInfo` reason |
 | Retention purger | Deletes expired outbox, inbox and idempotency rows |
-| DLQ tool | Inspect, replay, discard dead-lettered messages |
+| DLQ admin | Inspect, replay, discard dead-lettered messages (§7.7, LLD-ADR-009) |
 
 **Out of scope:** domain logic, saga state machines (each orchestrating service's LLD), which endpoints and messages exist (each service's LLD), gateway concerns, Redis usage.
 
@@ -76,7 +76,7 @@ flowchart LR
 | Outbox writer, Idempotency guard, Concurrency helpers | API and worker (in-process calls) | The caller's database transaction |
 | Outbox relay, Consumer host, Retention purger | Worker deployment only | Database, RabbitMQ |
 | Topology | Worker startup (idempotent declarations) | RabbitMQ |
-| DLQ tool | Ops CLI / admin endpoint, Admin only | RabbitMQ |
+| DLQ admin | API deployment (gRPC service, Admin only) | RabbitMQ, database (audit via outbox) |
 
 ## 4. Data model
 
@@ -306,6 +306,36 @@ WHERE  launch_sku_id = @id
 4. Affected 1 → success, return the new version. Affected 0 → if the row exists, `ABORTED` / `CONCURRENCY_CONFLICT`; if not, `NOT_FOUND`.
 5. **No automatic retry.** The client reloads.
 
+### 7.7 DLQ admin ([LLD-ADR-009](adr/LLD-ADR-009-dlq-admin-endpoint.md))
+
+A `DeadLetterAdmin` gRPC service from the library, hosted by each domain service's API. Route: `/api/admin/dlq/{service}/**`; `{service}` must equal the hosting service's name, otherwise `NOT_FOUND`. Every method requires `x-bloom-user-type = staff` and `x-bloom-role = Admin`, otherwise `PERMISSION_DENIED` / `ROLE_NOT_ALLOWED`.
+
+| Method | Effect |
+|---|---|
+| `ListDeadLetterQueues` | The service's DLQs (§5.1) with message counts |
+| `PeekDeadLetters` | Oldest messages of one DLQ (`limit` 1–100, default 20): envelope, `x-failure-reason`, `x-failed-at`. Removes nothing. |
+| `ReplayDeadLetter` | One message (by `messageId`) back to its consumer queue |
+| `ReplayAllDeadLetters` | Every message present in one DLQ when the call starts |
+| `DiscardDeadLetter` | One message (by `messageId`) removed |
+
+**One pass, no requeue.** An operation takes the DLQ's message count at the start and consumes exactly that many messages with an **exclusive** consumer. Each message is replayed, discarded, or published back to the DLQ's tail unchanged. Messages are never returned with `nack`/requeue, so the quorum-queue delivery limit can't drop them. Publishes use confirms. Order is preserved after a full pass. A second operation on the same DLQ while one is running gets `ABORTED` / `DLQ_BUSY`.
+
+**Replay** publishes the original body and properties to the consumer queue (default exchange) without `x-attempt`, `x-failure-reason` or `x-failed-at`, so it gets 5 fresh attempts.
+
+**Per message, in this order:** (1) publish (replay or back to tail) and wait for the confirm; (2) commit one `identity.staff-action-recorded.v1` outbox row (replay and discard only); (3) ACK the DLQ delivery.
+
+| Crash point | Result |
+|---|---|
+| After (1), before (2) | Message replayed without audit; DLQ copy redelivered and stays. Replaying it again is safe (inbox). |
+| After (2), before (3) | Audited; DLQ copy redelivered and stays. Replaying it again is safe; discarding again writes a second audit entry. |
+
+**Audit payload:** actor = trusted context; `action` = `<service>.dlq-replayed` \| `<service>.dlq-discarded`; `target_type` = `dlq_message`; `target_id` = `messageId`; `details` = `queue`, `messageType`, `failureReason`.
+
+| Case | Result |
+|---|---|
+| `messageId` not in the DLQ | `NOT_FOUND` / `DLQ_MESSAGE_NOT_FOUND` (after the full pass) |
+| Queue is not one of the service's DLQs | `NOT_FOUND` / `DLQ_NOT_FOUND` |
+
 ## 8. Error contract ([LLD-ADR-003](adr/LLD-ADR-003-error-contract.md))
 
 Every error carries a gRPC status and a `google.rpc.ErrorInfo` with `domain = "bloom"` and a stable `reason`. Clients branch on `reason`.
@@ -317,6 +347,9 @@ Every error carries a gRPC status and a `google.rpc.ErrorInfo` with `domain = "b
 | Same key, different request | `INVALID_ARGUMENT` | 400 | `IDEMPOTENCY_KEY_REUSED` |
 | Key missing on a required operation | `INVALID_ARGUMENT` | 400 | `IDEMPOTENCY_KEY_REQUIRED` |
 | Key not a UUID | `INVALID_ARGUMENT` | 400 | `IDEMPOTENCY_KEY_INVALID` |
+| Not Admin | `PERMISSION_DENIED` | 403 | `ROLE_NOT_ALLOWED` |
+| DLQ operation already running | `ABORTED` | 409 | `DLQ_BUSY` |
+| Unknown DLQ / message | `NOT_FOUND` | 404 | `DLQ_NOT_FOUND` / `DLQ_MESSAGE_NOT_FOUND` |
 | Conditional update rejected | `FAILED_PRECONDITION` | 400 | Defined by the owning service (for example `SOLD_OUT`) |
 
 ## 9. Concurrency and consistency guarantees
@@ -351,7 +384,7 @@ Every error carries a gRPC status and a `google.rpc.ErrorInfo` with `domain = "b
 - `user_id` for idempotency always comes from the trusted identity context set by the gateway, never from the request.
 - `Idempotency-Key` must be a UUID string (max 36 characters). Anything else is rejected before touching the database.
 - Message payloads carry the minimum personal data needed. Contact data travels only in identity's customer events (HLD §6).
-- The DLQ tool requires the Admin role; every replay or discard is recorded in the audit log.
+- DLQ admin requires the Admin role from the trusted identity context; every replay or discard is recorded in the audit log (§7.7). API pods connect to RabbitMQ with the service's own credentials, limited to its own queues.
 - Broker connections use per-service credentials allowed only on that service's exchanges and queues.
 
 ## 12. Observability
@@ -400,7 +433,7 @@ The audit log (owned by identity) is kept indefinitely.
 | T-06 | Two handlers in one service consume the same message | Each applies it once |
 | T-07 | Handler throws transient error 5 times | Attempts 1–5 at ~0, 1 s, 6 s, 36 s, 2 min 36 s; then in DLQ |
 | T-08 | Handler throws permanent error | Straight to DLQ with reason, no retries |
-| T-09 | Replay DLQ message after fix | Processed once |
+| T-09 | Replay DLQ message after fix (`ReplayDeadLetter`) | Processed once; one audit event |
 | T-10 | Idempotent request, new key | Executes; row `completed` |
 | T-11 | Same key, same request, after completion | Same stored response, no second effect |
 | T-12 | Same key, different request | `IDEMPOTENCY_KEY_REUSED` |
@@ -411,6 +444,11 @@ The audit log (owned by identity) is kept indefinitely.
 | T-17 | 50 concurrent conditional updates on a counter with 1 unit | Exactly 1 succeeds |
 | T-18 | Update with stale version | `CONCURRENCY_CONFLICT`, row unchanged |
 | T-19 | Purge job | Only rows past retention removed; pending outbox rows kept |
+| T-20 | `ReplayAllDeadLetters` on a DLQ with 3 messages | All 3 back on the consumer queue with no `x-attempt`; 3 audit events; DLQ empty |
+| T-21 | `DiscardDeadLetter` on the middle of 3 messages | 2 remain in original order; one audit event |
+| T-22 | `PeekDeadLetters` twice | Same messages, same order; nothing removed; no audit event |
+| T-23 | Two operations on one DLQ at once | One runs; the other gets `DLQ_BUSY` |
+| T-24 | Staff caller with role Support | `ROLE_NOT_ALLOWED`; DLQ unchanged |
 
 ## 15. Alternatives and open questions
 

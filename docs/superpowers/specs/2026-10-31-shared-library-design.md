@@ -5,7 +5,7 @@
 | **Status** | Draft, pending owner approval |
 | **Date** | 2026-10-31 |
 | **Branch / PR base** | `feat/shared-library` → `main` |
-| **Implements** | [00-reliability](../../../doc/low-level-design/00-reliability.md) (all modules except the DLQ tool), HLD §9.3 / [HLD-ADR-015](../../../doc/high-level-design/adr/HLD-ADR-015-observability.md) (telemetry), HLD §9.5 / [HLD-ADR-014](../../../doc/high-level-design/adr/HLD-ADR-014-deployment.md) (monorepo, Compose, CI) |
+| **Implements** | [00-reliability](../../../doc/low-level-design/00-reliability.md) (all modules, including DLQ admin §7.7 / [LLD-ADR-009](../../../doc/low-level-design/adr/LLD-ADR-009-dlq-admin-endpoint.md)), HLD §9.3 / [HLD-ADR-015](../../../doc/high-level-design/adr/HLD-ADR-015-observability.md) (telemetry), HLD §9.5 / [HLD-ADR-014](../../../doc/high-level-design/adr/HLD-ADR-014-deployment.md) (monorepo, Compose, CI) |
 | **Follow-up project** | api-gateway ([07-api-gateway](../../../doc/low-level-design/07-api-gateway.md)), separate spec |
 
 ## 1. Intent
@@ -17,21 +17,21 @@ Bloom has no code yet. This is the first project. It lays down the repo and the 
 ## 2. Goals
 
 1. A .NET 10 monorepo skeleton that later services drop into.
-2. The shared library, implementing 00-reliability §4–§13 except the DLQ tool.
+2. The shared library, implementing 00-reliability §4–§13, including DLQ admin (§7.7).
 3. A shared OpenTelemetry startup call used by every service.
 4. A dev Docker Compose stack with everything HLD §9.5 lists for development.
 5. A GitHub Actions workflow that builds and tests on every push and PR.
 
-**Success criteria:** test cases T-01 … T-19 (00-reliability §14) exist as automated tests and pass locally and in CI. `docker compose config` validates the Compose file.
+**Success criteria:** test cases T-01 … T-24 (00-reliability §14) exist as automated tests and pass locally and in CI. `docker compose config` validates the Compose file.
 
 ## 3. Non-goals and anti-goals
 
-**Non-goals (later projects):** the DLQ tool (deferred by the owner, §9), the api-gateway, any domain service, message contract packages per producer, `.proto` service contracts, Kubernetes manifests, image build/push and deploy steps in CI, per-service broker credentials (§11 of 00-reliability: a Kubernetes/broker-config concern).
+**Non-goals (later projects):** the api-gateway (including its `/api/admin/dlq/{service}/**` routes and its own revocation consumer's DLQ), any domain service, message contract packages per producer, `.proto` service contracts other than `DeadLetterAdmin`, Kubernetes manifests, image build/push and deploy steps in CI, per-service broker credentials (§11 of 00-reliability: a Kubernetes/broker-config concern).
 
 **Anti-goals** (failure even if it technically works):
 - Any domain logic in the library (00-reliability §1: "plumbing only").
 - Publishing to RabbitMQ from a handler instead of through the outbox (§7.1).
-- Different table names, queue names, headers or retry schedule from 00-reliability. Dashboards, the purger and the future DLQ tool rely on them being fixed.
+- Different table names, queue names, headers or retry schedule from 00-reliability. Dashboards, the purger and DLQ admin rely on them being fixed.
 - Behaviour, endpoints, fields or options the docs don't describe (AGENTS.md §1).
 
 ## 4. Owner decisions
@@ -43,7 +43,7 @@ Bloom has no code yet. This is the first project. It lays down the repo and the 
 | Data access | EF Core + Npgsql. The library joins the caller's `DbContext` transaction. Raw SQL through EF where the design needs it (`FOR UPDATE SKIP LOCKED`, `ON CONFLICT DO NOTHING`, conditional and versioned updates). |
 | RabbitMQ client | Official `RabbitMQ.Client` (v7, async API). No MassTransit / Wolverine. |
 | Tests | xUnit + Testcontainers (real PostgreSQL and RabbitMQ through Docker on Colima) |
-| DLQ tool | Deferred |
+| DLQ tool | Admin gRPC service per service (LLD-ADR-009, 00-reliability §7.7); route `/api/admin/dlq/{service}/**`; list, peek, replay one, replay all, discard one |
 | Docker Compose | Everything in HLD §9.5 for development: PostgreSQL, RabbitMQ (management UI), Redis, Mailpit, Grafana, Tempo, Prometheus, Loki, OpenTelemetry Collector |
 | CI | GitHub Actions: build + test only |
 | Telemetry | Shared OpenTelemetry startup call in the library |
@@ -138,7 +138,14 @@ Each module follows 00-reliability exactly. This section only says what the libr
 
 - Daily worker job, deletes in batches of 1,000, with the exact §13 rules. Pending outbox rows are never deleted (T-19).
 
-### 6.11 Metrics, logs, traces (§12)
+### 6.11 DLQ admin (§7.7, LLD-ADR-009)
+
+- A `DeadLetterAdmin` gRPC service in a `.proto` shipped by the library, with HTTP annotations under `/api/admin/dlq/{service}/…`. A service hosts it with one registration call in its API. Exact HTTP paths and verbs under the prefix: builder's call.
+- Everything else exactly as §7.7: Admin check from trusted headers, `{service}` must match, one pass with an exclusive consumer and no requeue, replay strips `x-attempt` / `x-failure-reason` / `x-failed-at`, the publish → audit commit → ACK order, the error reasons, the peek limit.
+- The API process needs a RabbitMQ connection for this (previously workers only).
+- *My call:* the library holds the payload record for `identity.staff-action-recorded.v1` (fields from 06-identity §4.1 `audit_log`: actor ID and role, service, action, target type and ID, details). A service publishes it on its own `<service>.events` exchange with routing key `identity.staff-action-recorded.v1`. How identity binds to every service's exchange belongs to the identity project.
+
+### 6.12 Metrics, logs, traces (§12)
 
 - All metrics in §12 with the listed names and labels, through `System.Diagnostics.Metrics`, labelled by `service`.
 - *My call:* the names **as they appear in Prometheus** must be exactly the §12 names, with a `service` label. OTLP-to-Prometheus naming can add suffixes (`_total_total`, unit suffixes) and turn `service.name` into `job`, so the builder sets instrument names, units and collector settings to make the result match. One test or script checks the final names.
@@ -167,18 +174,16 @@ Each module follows 00-reliability exactly. This section only says what the libr
 - `.github/workflows/ci.yml`: on push and pull request, set up .NET 10, restore, build, run the tests (Testcontainers on the Ubuntu runner).
 - No path filters yet (there is only one buildable unit). Path-filtered per-service jobs arrive with the first service (HLD-ADR-014).
 
-## 9. DLQ tool deferral and proposed doc edit
+## 9. DLQ tool decision
 
-The owner deferred the DLQ tool because both documented forms conflict with other docs (an admin endpoint has no gateway route in 07-api-gateway §5.1; a CLI has no staff identity for "Admin only" and the audit entry, 00-reliability §11).
-
-The library's code will not contain it. The open question is tracked as **OQ-RL-1** (DLQ tool form, how it enforces Admin-only and writes the audit entry). **The owner decides OQ-RL-1 and owns any matching change to `doc/`.** This project makes no edit under `doc/`. Until it is decided, RabbitMQ's management UI is used for inspection.
+Both documented forms of the DLQ tool conflicted with other docs. The owner chose an admin gRPC service per service and approved the design change on 2026-10-31: [LLD-ADR-009](../../../doc/low-level-design/adr/LLD-ADR-009-dlq-admin-endpoint.md), 00-reliability §7.7, §8, §11, §14 (T-20 … T-24), and the new route row in 07-api-gateway §5.1. The doc edits are on this branch.
 
 ## 10. Testing
 
 - xUnit + Testcontainers with real PostgreSQL and RabbitMQ. One container of each per test run, isolated per test by database / vhost or unique names (builder's call).
-- Every case T-01 … T-19 has at least one test named after its ID.
+- Every case T-01 … T-24 has at least one test named after its ID.
 - **T-07** (5 attempts over ~2 min 36 s): *builder's call:* assert the routing per attempt (message lands in the right `.retry.<delay>` queue with the right `x-attempt`, and the 5th failure lands in the DLQ), verify the retry queues' TTL arguments, and run one real TTL round trip on the 1 s queue. This keeps the suite fast without making retry delays configurable.
-- **T-09** (replay after fix): the test republishes the dead-lettered message to the consumer queue itself, because the DLQ tool is deferred.
+- **T-09, T-20 … T-24** run through the `DeadLetterAdmin` gRPC service in-process (no gateway), with trusted headers set by the test.
 - **T-14** (crash between provider call and tx 2): simulated by aborting after the provider call. The provider is a fake that deduplicates by key.
 - Tests need Colima running locally. All test containers are removed after the run.
 

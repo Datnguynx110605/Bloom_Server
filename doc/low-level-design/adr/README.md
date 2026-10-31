@@ -16,3 +16,4 @@ Component-level decisions. Conventions and the MADR template are defined once in
 | [LLD-ADR-006](LLD-ADR-006-inbox-key.md) | Inbox key (consumer, message ID) | reliability | Accepted | 2026-10-31 |
 | [LLD-ADR-007](LLD-ADR-007-stripe-checkout-hosted.md) | Customers pay on Stripe Checkout (hosted) | payment | Accepted | 2026-10-31 |
 | [LLD-ADR-008](LLD-ADR-008-verify-first-signup.md) | Verify-first sign-up with a Data Protection registration token | identity | Accepted | 2026-10-31 |
+| [LLD-ADR-009](LLD-ADR-009-dlq-admin-endpoint.md) | DLQ tool is an admin gRPC service per service | reliability | Accepted | 2026-10-31 |
