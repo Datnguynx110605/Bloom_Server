@@ -12,7 +12,7 @@ public class AuthTests(Containers containers)
     public static TheoryData<string> BadTokens() =>
     [
         "expired", "wrong-issuer", "wrong-audience", "rs256", "iat-in-future", "sub-missing", "sub-not-a-guid",
-        "typ-robot", "staff-without-role", "auth-time-missing", "garbage", "unknown-key",
+        "typ-robot", "staff-without-role", "auth-time-missing", "garbage", "unknown-key", "forged-signature", "tampered-payload",
     ];
 
     [Fact]
@@ -79,7 +79,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
         var key = gateway.DefaultKey;
-        var now = DateTimeOffset.UtcNow;
+        var now = gateway.Clock.GetUtcNow();
         var token = name switch
         {
             "expired" => TestTokens.Issue(key, iat: now - TimeSpan.FromMinutes(15) - TimeSpan.FromSeconds(40)),
@@ -94,6 +94,9 @@ public class AuthTests(Containers containers)
             "auth-time-missing" => TestTokens.Issue(key, edit: c => c.Remove("auth_time")),
             "garbage" => "garbage",
             "unknown-key" => TestTokens.Issue(TestKeys.Create("rogue")),
+            // Known kid, wrong key: only the signature check can reject these.
+            "forged-signature" => TestTokens.Issue(TestKeys.Create(key.Kid)),
+            "tampered-payload" => TamperedPayload(TestTokens.Issue(key), TestTokens.Issue(key, "staff", "admin")),
             _ => throw new ArgumentOutOfRangeException(nameof(name)),
         };
         var path = name == "staff-without-role" ? "/api/admin/orders/x" : "/api/cart";
@@ -108,7 +111,7 @@ public class AuthTests(Containers containers)
     public async Task Expired_within_30s_skew_is_accepted()
     {
         await using var gateway = await TestGateway.StartAsync(containers);
-        var token = TestTokens.Issue(gateway.DefaultKey, iat: DateTimeOffset.UtcNow - TimeSpan.FromMinutes(15) - TimeSpan.FromSeconds(20));
+        var token = TestTokens.Issue(gateway.DefaultKey, iat: gateway.Clock.GetUtcNow() - TimeSpan.FromMinutes(15) - TimeSpan.FromSeconds(20));
 
         using var response = await gateway.Client.SendAsync(Get("/api/cart", token), Ct);
 
@@ -192,7 +195,7 @@ public class AuthTests(Containers containers)
     public async Task Stale_token_is_ignored_on_public_routes(string method, string path)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
-        var expired = TestTokens.Issue(gateway.DefaultKey, iat: DateTimeOffset.UtcNow - TimeSpan.FromHours(1));
+        var expired = TestTokens.Issue(gateway.DefaultKey, iat: gateway.Clock.GetUtcNow() - TimeSpan.FromHours(1));
         using var request = Get(path, expired, method);
         request.Headers.Add("Origin", "https://bloom.test");
 
@@ -205,8 +208,8 @@ public class AuthTests(Containers containers)
     public async Task G10_unknown_kid_refetches_JWKS_once()
     {
         await using var gateway = await TestGateway.StartAsync(containers);
-        var rotated = TestKeys.Create("rotated");
-        var later = TestKeys.Create("later");
+        var rotated = TestKeys.Create("rotated", gateway.Clock);
+        var later = TestKeys.Create("later", gateway.Clock);
         gateway.Jwks.SetKeys(gateway.DefaultKey, rotated);
         var before = gateway.Jwks.FetchCount;
 
@@ -232,7 +235,7 @@ public class AuthTests(Containers containers)
     public async Task Concurrent_unknown_kid_requests_fetch_once()
     {
         await using var gateway = await TestGateway.StartAsync(containers);
-        var rotated = TestKeys.Create("rotated");
+        var rotated = TestKeys.Create("rotated", gateway.Clock);
         gateway.Jwks.SetKeys(gateway.DefaultKey, rotated);
         var before = gateway.Jwks.FetchCount;
 
@@ -302,7 +305,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
         var good = TestTokens.Issue(gateway.DefaultKey);
-        var bad = TestTokens.Issue(gateway.DefaultKey, iat: DateTimeOffset.UtcNow - TimeSpan.FromHours(1));
+        var bad = TestTokens.Issue(gateway.DefaultKey, iat: gateway.Clock.GetUtcNow() - TimeSpan.FromHours(1));
 
         foreach (var (path, token) in new[] { ("/api/cart", good), ("/api/cart", bad), ("/api/admin/orders/x", good) })
         {
@@ -320,6 +323,13 @@ public class AuthTests(Containers containers)
             Assert.DoesNotContain(bad, text);
             Assert.DoesNotContain("s3cr3t", text);
         }
+    }
+
+    /// <summary>The header and signature of <paramref name="signed"/> with the payload of <paramref name="other"/>.</summary>
+    private static string TamperedPayload(string signed, string other)
+    {
+        var (a, b) = (signed.Split('.'), other.Split('.'));
+        return $"{a[0]}.{b[1]}.{a[2]}";
     }
 
     private static HttpRequestMessage Get(string path, string? token, string method = "GET") =>

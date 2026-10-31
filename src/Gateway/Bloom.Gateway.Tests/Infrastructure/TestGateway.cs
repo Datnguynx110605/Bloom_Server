@@ -65,9 +65,9 @@ public sealed class TestGateway : IAsyncDisposable
     public static async Task<TestGateway> StartAsync(Containers containers, Action<TestGatewayOptions>? configure = null)
     {
         var upstream = await EchoUpstream.StartAsync();
-        var defaultKey = TestKeys.Create("test-key-1");
-        var jwks = await FakeJwks.StartAsync(defaultKey);
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var defaultKey = TestKeys.Create("test-key-1", clock);
+        var jwks = await FakeJwks.StartAsync(defaultKey);
         var logs = new LogCapture();
         var options = new TestGatewayOptions();
         foreach (var cluster in Clusters)
