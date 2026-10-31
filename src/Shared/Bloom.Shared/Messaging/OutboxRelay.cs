@@ -24,6 +24,7 @@ internal sealed class OutboxRelay(
     private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
 
     private IChannel? _channel;
+    private bool _channelFailed; // set when a pass lost its channel; the loop then pauses 1 s (R7)
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -33,12 +34,19 @@ internal sealed class OutboxRelay(
             {
                 try
                 {
-                    if (await RunOnceAsync(ct) < BatchSize) await Task.Delay(TimeSpan.FromMilliseconds(200), ct);
+                    var claimed = await RunOnceAsync(ct);
+                    if (_channelFailed)
+                    {
+                        _channelFailed = false;
+                        await Task.Delay(TimeSpan.FromSeconds(1), ct); // R7
+                    }
+                    else if (claimed < BatchSize) await Task.Delay(TimeSpan.FromMilliseconds(200), ct);
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
                     logger.LogError(ex, "Outbox relay iteration failed");
                     await DisposeChannelAsync();
+                    _channelFailed = false; // this catch already pauses
                     await Task.Delay(TimeSpan.FromSeconds(1), ct); // R7
                 }
             }
@@ -138,6 +146,7 @@ internal sealed class OutboxRelay(
 
     private async Task DisposeChannelAsync()
     {
+        _channelFailed = true;
         var channel = _channel;
         _channel = null;
         if (channel is null) return;
