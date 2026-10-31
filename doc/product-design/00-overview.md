@@ -47,7 +47,7 @@ These must hold at all times. Each is a testable success criterion for the backe
 | BI-06 | Every stock change has a stock ledger entry. Every staff action that changes data has an audit log entry. | [03-inventory](03-inventory.md), [10-accounts-access](10-accounts-access.md) |
 | BI-07 | Every shipped serialized unit is linked to exactly one order line. | [03-inventory](03-inventory.md) |
 
-Quantitative targets (launch traffic, latency, availability) belong to the HLD and are not yet defined. See [Open questions](#11-open-questions).
+Quantitative targets (launch traffic, latency, availability) are defined in [HLD §3](../high-level-design/hld.md#3-requirements).
 
 ## 4. Scope
 
@@ -155,6 +155,6 @@ The full permission matrix is in [10-accounts-access](10-accounts-access.md).
 
 | ID | Question | Owner |
 |---|---|---|
-| OQ-00-1 | Quantitative targets: expected launch traffic (concurrent queue size, checkout rate), latency and availability. | HLD |
+| — | None open. OQ-00-1 resolved 2026-10-31 in [HLD §3](../high-level-design/hld.md#3-requirements). | — |
 
 Each domain document lists its own open questions.
