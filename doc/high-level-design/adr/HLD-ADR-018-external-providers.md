@@ -25,7 +25,7 @@ Chosen: **Stripe** (owned by payment), **Shippo** (owned by fulfillment), **Rese
 
 ## Pros and cons of the options
 ### Stripe
-- ✅ Excellent test mode, idempotency keys, signed webhooks, client-side card entry.
+- ✅ Excellent test mode, idempotency keys, signed webhooks, hosted Checkout page (LLD-ADR-007).
 
 ### Shippo
 - ✅ US labels, return labels, tracking webhooks, a free test mode.

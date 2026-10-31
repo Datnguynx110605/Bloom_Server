@@ -143,7 +143,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 |---|---|---|
 | `GetCart` | Customer | → lines with current price, `available`, `price_changed` / `out_of_stock` flags (CHK-R18) |
 | `UpsertCartLine` / `RemoveCartLine` | Customer | line → cart (optimistic `version`) |
-| `StartCheckout` | Customer | **`Idempotency-Key` required.** `source` = `cart` \| `launch{launch_id, pass_token, lines[]}`, `ship_to`, `shipping_option`, `coupon_code?` → `order_id`, `number`, totals, `payment_client_secret`, `deadline_at` |
+| `StartCheckout` | Customer | **`Idempotency-Key` required.** `source` = `cart` \| `launch{launch_id, pass_token, lines[]}`, `ship_to`, `shipping_option`, `coupon_code?` → `order_id`, `number`, totals, `payment_url`, `deadline_at` |
 | `GetOrder` | Customer (own), Support, Admin | `order_id` → order, lines, history |
 | `ListMyOrders` | Customer | page → orders |
 | `CancelOrder` | Customer | `order_id`, `version` → order |
@@ -189,6 +189,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `payment.succeeded.v1` | §6.4 |
 | `payment.failed.v1` | Status unchanged (customer may retry within the deadline, CHK-R13); notification only |
 | `payment.refund-completed.v1` | Update line `refunded_cents` (when the refund carries line amounts) and complete the `refund` saga step |
+| `payment.refund-failed.v1` | Saga stays open with the `refund` step marked failed, so `sagas_stuck` shows it; Support resolves (payment alerts) |
 | `inventory.stock-allocated.v1` | `stock_allocated = true`; §6.5 |
 | `inventory.reservation-released.v1` | Complete `inventory_release` step |
 | `launch.hold-released.v1` | Complete `launch_release` step |
@@ -261,7 +262,7 @@ Guarded by the idempotency key (two-phase, [00-reliability.md §7.4](00-reliabil
 5. **Hold (gRPC):** regular → inventory `ReserveStock(order_id, product lines)`; launch → launch `HoldAllocation(order_id, pass, product lines)`.
 6. **Tx 2:** hold the coupon (§6.8); insert lines; set totals, `tax_rate_bp`, `status = pending_payment`, `deadline_at = now + 15 min`. Commit.
 7. **Payment (gRPC):** `CreatePayment(order_id, total, account)` (idempotent by `order_id`); store `payment_id`.
-8. Complete the idempotency key with the response (order, totals, client secret, deadline).
+8. Complete the idempotency key with the response (order, totals, payment URL, deadline).
 
 **Failures:**
 
@@ -364,7 +365,7 @@ On `launch.stage-changed.v1` with `stage = released`: process that launch's `awa
 |---|---|
 | Price changes during checkout | Locked prices used (OR-06). |
 | Cart item price changed since added | Shown with `price_changed`; checkout uses the current price. |
-| Customer pays twice from two tabs | One Stripe PaymentIntent per order (`CreatePayment` idempotent by `order_id`); provider + payment layers stop a second charge. |
+| Customer pays twice from two tabs | One Stripe Checkout Session per order (`CreatePayment` idempotent by `order_id`); provider + payment layers stop a second charge. |
 | Payment succeeds 1 s after expiry | Late payment saga refunds in full. |
 | `stock-allocated` arrives before `order.paid` was processed | Can't happen: inventory only creates the backorder from `order.paid`. |
 | Launch released before any stock arrives | `launch_released = true`; order waits for `stock_allocated`. |
@@ -400,7 +401,7 @@ On `launch.stage-changed.v1` with `stage = released`: process that launch's `awa
 
 | # | Case | Expected |
 |---|---|---|
-| O-01 | Regular checkout happy path | `pending_payment`, reservation, coupon held, client secret |
+| O-01 | Regular checkout happy path | `pending_payment`, reservation, coupon held, payment URL |
 | O-02 | Retry with the same key after success | Same order and secret, no second hold |
 | O-03 | Crash after hold, before Tx 2; no retry | Creating sweep cancels, release sent, saga completes |
 | O-04 | `SOLD_OUT` from inventory | Order `cancelled`, error stored on key, retry returns same error |

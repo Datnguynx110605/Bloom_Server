@@ -172,7 +172,7 @@ Every service has its own database in one PostgreSQL cluster ([HLD-ADR-004](adr/
 | order → catalog | Batched current prices and snapshot data (cart view, checkout start) | Checkout start fails; customer retries |
 | order → inventory | Reserve stock for a regular checkout; availability for cart flags (CHK-R18) | Checkout start fails; already-made holds are compensated |
 | order → launch | Consume admission pass, hold allocation and purchase limit | Same |
-| order → payment | Create a payment for the order (returns the provider client secret) | Order stays *Pending payment*; customer retries within 15 min |
+| order → payment | Create a payment for the order (returns the Stripe Checkout URL) | Order stays *Pending payment*; customer retries within 15 min |
 | order → fulfillment | Cancel a pack task before cancelling a handed-over order (refused once packing started for customers, or once shipped for Support) | Cancellation fails; order unchanged |
 | identity → order | "Does this customer have unsettled orders?" (ACC-R13) | Deletion refused with "try later" (fail safe) |
 | fulfillment → inventory | Assign, unassign or replace serials at packing (INV-R13, R14, R19); commit stock for a reship (ORD-R13) | Packing step fails; Warehouse retries |
@@ -189,6 +189,7 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 |---|---|---|---|
 | Payment succeeded / failed | Event | payment | order |
 | Refund completed | Event | payment | order, fulfillment, notification |
+| Refund failed | Event | payment | order, fulfillment (saga stays open; Support alerted) |
 | Order paid | Event | order | inventory (regular: reservation → sale; pre-order: create backorder), launch (hold → sold), notification |
 | Stock allocated to order | Event | inventory | order (pre-order *Awaiting stock* → *Paid*) |
 | Order ready to fulfill | Event | order | fulfillment (pack task). Emitted when the order reaches *Paid*; carries lines, shipping address and shipping option. |
@@ -215,7 +216,7 @@ Each provider sits behind an interface in its owning service ([HLD-ADR-018](adr/
 
 | Provider | Owner | Use | Inbound |
 |---|---|---|---|
-| Stripe (test mode) | payment | Payment intents, refunds, idempotency keys | Signed webhooks |
+| Stripe (test mode) | payment | Checkout Sessions (hosted page), refunds, idempotency keys | Signed webhooks |
 | Shippo (test mode) | fulfillment | Labels, return labels, tracking (US) | Tracking webhooks |
 | Resend (cloud) / Mailpit (local) | notification | Transactional email | — |
 | Google OIDC | identity | Customer sign-in | OAuth redirect |
@@ -247,7 +248,7 @@ sequenceDiagram
     Note over L: Postgres conditional updates,<br/>check affected rows
     O->>O: create order + snapshot (Pending payment)
     O->>P: create payment (gRPC)
-    P-->>C: client secret (via order, gateway)
+    P-->>C: Stripe Checkout URL (via order, gateway)
 ```
 
 ### 8.2 Payment confirmation, expiry and late payment
@@ -259,7 +260,7 @@ sequenceDiagram
     participant P as payment
     participant O as order
     participant MQ as RabbitMQ
-    C->>S: Confirm payment (card data stays at Stripe)
+    C->>S: Pay on Stripe Checkout (hosted page; card data stays at Stripe)
     S->>P: Webhook (signature verified, event ID deduped)
     P->>MQ: Payment succeeded (outbox)
     MQ->>O: consume (inbox)
@@ -310,7 +311,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Service-to-service | Linkerd mTLS with per-service allow rules. The gateway strips client-sent identity headers. | [011](adr/HLD-ADR-011-service-trust.md) |
 | Staff | Admin-invited, TOTP MFA required, one role, audit log in identity. | [016](adr/HLD-ADR-016-audit-log.md) |
 | Edge protection | Tiered rate limits (per IP anonymous, per user signed-in, stricter on login / refresh / reset / waiting-room join), sliding window in gateway Redis. | — |
-| Payment data | Card entry happens in Stripe's client component. Bloom never receives card data. | [008](adr/HLD-ADR-008-idempotency-payments.md) |
+| Payment data | Customers pay on Stripe's hosted Checkout page ([LLD-ADR-007](../low-level-design/adr/LLD-ADR-007-stripe-checkout-hosted.md)). Bloom never receives card data. | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Webhooks | Provider signature verified by the owning service before processing. | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Secrets | Kubernetes Secrets, committed encrypted (Sealed Secrets). Each service sees only its own. The JWT private key is visible only to identity. | [014](adr/HLD-ADR-014-deployment.md) |
 
