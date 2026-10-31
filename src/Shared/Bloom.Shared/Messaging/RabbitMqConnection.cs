@@ -17,8 +17,13 @@ internal sealed class RabbitMqConnection(BloomOptions options) : IAsyncDisposabl
         try
         {
             if (_connection is { IsOpen: true }) return _connection;
-            if (_connection is not null) await _connection.DisposeAsync();
-            _connection = null;
+            var stale = _connection;
+            _connection = null; // cleared first: a failing dispose must not leave the dead connection in place
+            if (stale is not null)
+            {
+                try { await stale.DisposeAsync(); }
+                catch { /* already closed; nothing left to release */ }
+            }
             _connection = await new ConnectionFactory
             {
                 Uri = new Uri(options.RabbitMqUri),
