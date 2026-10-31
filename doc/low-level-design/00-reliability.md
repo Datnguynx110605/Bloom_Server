@@ -8,7 +8,7 @@
 | **Last updated** | 2026-10-31 |
 | **Component** | Shared reliability library used by every domain service (plumbing only, no domain code) |
 | **HLD** | [high-level-design.md §9.2](../high-level-design/high-level-design.md#92-reliability-patterns), HLD-ADR-005 … 009 |
-| **Decision records** | [LLD-ADR-001 … 006, 009](adr/README.md) |
+| **Decision records** | [LLD-ADR-001 … 006, 009, 010](adr/README.md) |
 
 ## 1. Problem and scope
 
@@ -318,7 +318,7 @@ A `DeadLetterAdmin` gRPC service from the library, hosted by each domain service
 | `ReplayAllDeadLetters` | Every message present in one DLQ when the call starts |
 | `DiscardDeadLetter` | One message (by `messageId`) removed |
 
-**One pass, no requeue.** An operation takes the DLQ's message count at the start and consumes exactly that many messages with an **exclusive** consumer. Each message is replayed, discarded, or published back to the DLQ's tail unchanged. Messages are never returned with `nack`/requeue, so the quorum-queue delivery limit can't drop them. Publishes use confirms. Order is preserved after a full pass. A second operation on the same DLQ while one is running gets `ABORTED` / `DLQ_BUSY`.
+**One pass, no requeue.** An operation takes the DLQ's message count at the start and consumes exactly that many messages. Each message is replayed, discarded, or published back to the DLQ's tail unchanged. Messages are never returned with `nack`/requeue, so the quorum-queue delivery limit can't drop them. Publishes use confirms. Order is preserved after a full pass. Only one operation runs on a DLQ at a time: an operation first takes a PostgreSQL advisory lock for that DLQ on the service's database and holds it for the whole pass; a second operation that can't take the lock gets `ABORTED` / `DLQ_BUSY` (LLD-ADR-010).
 
 **Replay** publishes the original body and properties to the consumer queue (default exchange) without `x-attempt`, `x-failure-reason` or `x-failed-at`, so it gets 5 fresh attempts.
 
