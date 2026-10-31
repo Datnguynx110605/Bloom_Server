@@ -20,8 +20,8 @@ Customer accounts identify buyers. Staff accounts give controlled back-office ac
 
 | ID | Rule |
 |---|---|
-| ACC-R01 | Customers sign up with email and password, and must verify their email before buying or joining a waiting room. |
-| ACC-R02 | Customers can also sign in with Google. If a Bloom account with the same email exists, Google is linked automatically **only if** Google reports the email as verified **and** the Bloom account's email is verified. Otherwise the customer must sign in with the account's password first. |
+| ACC-R01 | Customers sign up by verifying their email with a 6-digit code **first**; only then do they set a password and the account is created. No unverified customer account can exist. |
+| ACC-R02 | Customers can also sign in with Google. If a Bloom customer account with the same email exists, Google is linked automatically when Google reports the email as verified (every Bloom customer email was verified at sign-up, ACC-R01). Staff emails can't use Google. |
 | ACC-R03 | Customers can reset a forgotten password by email. |
 | ACC-R04 | Customers keep an address book of US shipping addresses. |
 | ACC-R05 | Customers can see their order history. |

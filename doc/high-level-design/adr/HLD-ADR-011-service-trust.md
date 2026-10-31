@@ -21,7 +21,7 @@ The owner wants JWT verification only at the gateway. But resource-level authori
 3. Forward the JWT; services re-verify
 
 ## Decision
-Chosen: **trusted context + mTLS**. The gateway verifies the JWT, applies coarse role rules per route, **strips identity headers sent by clients**, and forwards a trusted context (user ID, user type, role). Services trust it and check **resource ownership**. **Linkerd** provides mTLS and allow rules, so only the gateway and permitted services can reach each service. Calls without a user (consumers, saga steps) are authorized by service identity.
+Chosen: **trusted context + mTLS**. The gateway verifies the JWT, applies coarse role rules per route, **strips identity headers sent by clients**, and forwards a trusted context (user ID, user type, role, auth time). Services trust it and check **resource ownership**. **Linkerd** provides mTLS and allow rules, so only the gateway and permitted services can reach each service. Calls without a user (consumers, saga steps) are authorized by service identity.
 
 ## Pros and cons of the options
 ### Context + mTLS

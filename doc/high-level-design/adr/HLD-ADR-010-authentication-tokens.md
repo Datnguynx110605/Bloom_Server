@@ -45,6 +45,7 @@ Chosen:
 ## Consequences
 - ✅ Logout-everywhere and password-change revocation also work.
 - ⚠️ Frontend constraint: only one refresh request in flight across tabs.
+- ⚠️ Refined in [06-identity](../../low-level-design/06-identity.md): refresh token in an HttpOnly cookie; staff sessions 12 h absolute; reuse revokes all of the user's sessions, not only the family.
 
 ## Links
 - [hld.md §9.1](../hld.md#91-security)

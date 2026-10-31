@@ -205,6 +205,7 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Receive customer return / receive returned-to-sender / mark lost in transit | Command | fulfillment | inventory |
 | Return decided | Event | fulfillment | order, notification |
 | Customer registered / contact changed | Event | identity | notification |
+| Verification code / staff invited | Event | identity | notification (email only: codes for email verification, password reset, email change; staff invitation links) |
 | Account deleted | Event | identity | notification, catalog, order, fulfillment (each anonymizes the personal data it holds; amounts, SKUs and dates are kept) |
 | Launch stage changed | Event | launch | order (release of allocated pre-orders, LCH-R19); catalog (launch membership and stage per SKU: visibility, buyability, and launch info returned to order at checkout) |
 | Tokens revoked | Event | identity | api-gateway |
@@ -304,7 +305,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 
 | Concern | Design | ADR |
 |---|---|---|
-| Authentication | identity issues ES256-signed JWT access tokens (15 min) and rotating refresh tokens (7 days). Reusing an old refresh token revokes the whole token family (no grace window). | [010](adr/HLD-ADR-010-authentication-tokens.md) |
+| Authentication | identity issues ES256-signed JWT access tokens (15 min) and rotating refresh tokens in an HttpOnly cookie (customers 7 days sliding, staff 12 h absolute). Reusing an old refresh token revokes all of the user's sessions (no grace window). Passwords hashed with Argon2id. | [010](adr/HLD-ADR-010-authentication-tokens.md) |
 | Token verification | Only the gateway verifies JWTs, using identity's JWKS (cached). | [010](adr/HLD-ADR-010-authentication-tokens.md) |
 | Revocation | identity publishes `Tokens revoked` (user, issued-before time). The gateway keeps the list in its Redis and checks every request. | [010](adr/HLD-ADR-010-authentication-tokens.md) |
 | Authorization | Gateway: coarse role rules per route. Services: resource ownership, using the trusted identity context. | [011](adr/HLD-ADR-011-service-trust.md) |

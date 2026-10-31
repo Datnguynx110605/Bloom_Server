@@ -44,7 +44,7 @@ Chosen:
 
 ### Google sign-in
 - ✅ Less friction. Shows OAuth/OIDC integration.
-- ❌ Needs account-linking rules. Decided: auto-link only when both Google and the Bloom account report the email as verified, which blocks account pre-hijacking (ACC-R02).
+- ❌ Needs account-linking rules. Decided: auto-link when Google reports the email as verified; pre-hijacking is impossible because every Bloom customer email is verified before the account exists (ACC-R01, ACC-R02).
 
 ### Staff MFA required
 - ✅ Protects refund and price powers.

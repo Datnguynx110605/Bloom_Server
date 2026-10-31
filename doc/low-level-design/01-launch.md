@@ -132,7 +132,7 @@ Keys are held only by `launch` (Sealed Secret). On rotation, the old key stays v
 | Method | Caller | Request → Response | Auth |
 |---|---|---|---|
 | `GetLaunch` | Anyone | `launch_id` → public launch info, stage, waiting-room state | Public |
-| `JoinWaitingRoom` | Customer | `launch_id` → `WaitingRoomStatus` | Customer, `email_verified` |
+| `JoinWaitingRoom` | Customer | `launch_id` → `WaitingRoomStatus` | Customer (every customer email is verified at sign-up, so LCH-R06 holds by construction) |
 | `GetWaitingRoomStatus` | Customer | `launch_id` → `WaitingRoomStatus` | Customer |
 | `HoldAllocation` | order | `order_id`, `pass_token`, `lines[{sku_id, quantity}]` → `hold_id`, `lines` | Service identity + forwarded customer context |
 | `CreateLaunch` | Catalog manager, Admin | name, launch time, release date, admission rate → launch | Staff role |
@@ -174,7 +174,6 @@ Keys are held only by `launch` (Sealed Secret). On rotation, the old key stays v
 
 | Reason | Status | When |
 |---|---|---|
-| `EMAIL_NOT_VERIFIED` | `FAILED_PRECONDITION` | Join without a verified email (LCH-R06) |
 | `WAITING_ROOM_NOT_OPEN` | `FAILED_PRECONDITION` | Join earlier than 15 min before launch time |
 | `WAITING_ROOM_CLOSED` | `FAILED_PRECONDITION` | Join after the room closed or after release |
 | `PASS_INVALID` | `FAILED_PRECONDITION` | Bad signature, unknown `kid`, other account or launch |
@@ -215,7 +214,7 @@ Waiting-room state is derived, not stored (except `waiting_room_closed_at`):
 
 ### 6.2 Join
 
-1. Check the identity context: customer, `email_verified = true`, otherwise `EMAIL_NOT_VERIFIED`.
+1. Check the identity context: caller is a customer (email verified by construction, [06-identity §6.0](06-identity.md)).
 2. Check state: `not_open` → `WAITING_ROOM_NOT_OPEN`; `closed` → `WAITING_ROOM_CLOSED`; `sold_out` → return `sold_out` (LCH-R17).
 3. If `wr:{L}:pass:{A}` exists → return `admitted` (sign the token, §6.4).
 4. Compute the score:
