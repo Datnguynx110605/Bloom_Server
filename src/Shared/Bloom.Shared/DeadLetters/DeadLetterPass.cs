@@ -27,7 +27,7 @@ internal class DeadLetterPass(RabbitMqConnection connection)
     private static readonly string[] ReplayStrips = ["x-attempt", "x-failure-reason", "x-failed-at"];
 
     /// <summary>Per message: <paramref name="decide"/>, publish (replay, or keep at the DLQ tail), <paramref name="audit"/> (replay and discard only), ACK.</summary>
-    /// <exception cref="RpcException"><c>DLQ_NOT_FOUND</c> when the queue is not declared; <c>DLQ_BUSY</c> when another consumer holds it.</exception>
+    /// <exception cref="RpcException"><c>DLQ_NOT_FOUND</c> when the queue is not declared; <c>DLQ_BUSY</c> when another operation holds the queue.</exception>
     public virtual async Task RunAsync(
         string dlq, Func<BasicDeliverEventArgs, PassAction> decide, Func<BasicDeliverEventArgs, PassAction, Task> audit, CancellationToken ct)
     {

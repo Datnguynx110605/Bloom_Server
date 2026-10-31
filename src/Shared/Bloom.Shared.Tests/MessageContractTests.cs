@@ -32,6 +32,7 @@ public class MessageContractTests
     [InlineData("order.v1", false)]
     [InlineData("order.paid.v0", false)]
     [InlineData("order..paid.v1", false)]
+    [InlineData("order.paid.v1\n", false)]
     public void Message_type_format(string type, bool valid) =>
         Assert.Equal(valid, MessageNames.IsValidMessageType(type));
 

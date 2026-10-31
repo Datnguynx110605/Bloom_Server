@@ -25,6 +25,6 @@ public static partial class MessageNames
 
     public static bool IsValidMessageType(string messageType) => MessageTypeRegex().IsMatch(messageType);
 
-    [GeneratedRegex(@"^[a-z][a-z0-9-]*(\.[a-z0-9]+(-[a-z0-9]+)*)+\.v[1-9][0-9]*$")]
+    [GeneratedRegex(@"^[a-z][a-z0-9-]*(\.[a-z0-9]+(-[a-z0-9]+)*)+\.v[1-9][0-9]*\z")]
     private static partial Regex MessageTypeRegex();
 }

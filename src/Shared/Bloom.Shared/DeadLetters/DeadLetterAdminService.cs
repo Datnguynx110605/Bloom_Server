@@ -10,7 +10,7 @@ using RabbitMQ.Client.Exceptions;
 
 namespace Bloom.Shared.DeadLetters;
 
-/// <summary>DLQ admin (00-reliability §7.7, LLD-ADR-009): Admin only, own service only, one exclusive pass per operation.</summary>
+/// <summary>DLQ admin (00-reliability §7.7, LLD-ADR-009): Admin only, own service only, one pass per operation and one at a time per DLQ.</summary>
 internal sealed class DeadLetterAdminService(
     BloomOptions options, ConsumerCatalog catalog, RabbitMqConnection connection, DeadLetterPass pass, OutboxWriter outbox, DbContext db)
     : DeadLetterAdmin.DeadLetterAdminBase

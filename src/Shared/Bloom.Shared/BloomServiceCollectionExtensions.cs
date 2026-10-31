@@ -75,7 +75,8 @@ public static partial class BloomServiceCollectionExtensions
         return builder;
     }
 
-    /// <summary>Hosts the <c>DeadLetterAdmin</c> gRPC service (00-reliability §7.7). The host must call <c>AddGrpc()</c> (and <c>AddJsonTranscoding()</c> for the HTTP routes).</summary>
+    /// <summary>Hosts the <c>DeadLetterAdmin</c> gRPC service (00-reliability §7.7). The host must call <c>AddGrpc()</c> (and <c>AddJsonTranscoding()</c> for the HTTP routes).
+    /// It must also register the same <c>AddConsumer</c> calls as the worker, or the DLQ catalog is empty and every queue is <c>DLQ_NOT_FOUND</c>.</summary>
     public static IEndpointRouteBuilder MapBloomDeadLetterAdmin(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGrpcService<DeadLetterAdminService>();
