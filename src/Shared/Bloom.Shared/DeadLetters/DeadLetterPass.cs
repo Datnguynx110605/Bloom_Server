@@ -17,6 +17,12 @@ internal enum PassAction { Keep, Replay, Discard }
 internal sealed class DeadLetterPass(RabbitMqConnection connection)
 {
     private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Longest wait for the next delivery. With prefetch 1 the next one follows the previous ACK within milliseconds, so
+    /// 10 s only elapses when the snapshot count is higher than what is left (queue purged or a message removed meanwhile).
+    /// </summary>
+    public TimeSpan DeliveryTimeout { get; init; } = TimeSpan.FromSeconds(10);
     private static readonly string[] ReplayStrips = ["x-attempt", "x-failure-reason", "x-failed-at"];
 
     /// <summary>Per message: <paramref name="decide"/>, publish (replay, or keep at the DLQ tail), <paramref name="audit"/> (replay and discard only), ACK.</summary>
@@ -43,6 +49,12 @@ internal sealed class DeadLetterPass(RabbitMqConnection connection)
         var consumer = new AsyncEventingBasicConsumer(channel);
         // The broker's buffers are reused once the handler returns, so keep a copy.
         consumer.ReceivedAsync += (_, d) => deliveries.Writer.WriteAsync(Copy(d), ct).AsTask();
+        // A channel that closes mid-pass (broker restart, dropped connection) ends the wait for deliveries at once.
+        channel.ChannelShutdownAsync += (_, e) =>
+        {
+            deliveries.Writer.TryComplete(new IOException($"The channel to '{dlq}' closed during the pass: {e.ReplyText}"));
+            return Task.CompletedTask;
+        };
         string tag;
         try
         {
@@ -64,7 +76,18 @@ internal sealed class DeadLetterPass(RabbitMqConnection connection)
 
         for (var i = 1u; i <= count; i++)
         {
-            var delivery = await deliveries.Reader.ReadAsync(ct);
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            wait.CancelAfter(DeliveryTimeout);
+            BasicDeliverEventArgs delivery;
+            try
+            {
+                delivery = await deliveries.Reader.ReadAsync(wait.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // No error reason in §8 fits; surfaces as UNKNOWN. Unacked deliveries go back when the channel is disposed (no nack).
+                throw new TimeoutException($"'{dlq}' held {i - 1} of the {count} messages counted at the start; no more arrived within {DeliveryTimeout.TotalSeconds:0} s.");
+            }
             var action = decide(delivery);
             switch (action)
             {

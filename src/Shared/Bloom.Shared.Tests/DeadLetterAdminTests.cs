@@ -401,6 +401,62 @@ public class DeadLetterAdminTests(Containers containers)
         await UntilCountAsync(app, app.Dlq, 1);
     }
 
+    /// <summary>Runs a 3-message pass that finds the DLQ emptied after the first message (count over-stated), then calls <paramref name="whileWaiting"/>.</summary>
+    private static async Task<(Exception Error, TimeSpan Elapsed)> OverstatedPassAsync(App app, TimeSpan deliveryTimeout, Func<Task>? whileWaiting = null)
+    {
+        var connection = app.Host.Services.GetRequiredService<RabbitMqConnection>();
+        var pass = new DeadLetterPass(connection) { DeliveryTimeout = deliveryTimeout };
+        var clock = Stopwatch.StartNew();
+        var decided = 0;
+
+        var error = await Record.ExceptionAsync(() => pass.RunAsync(app.Dlq,
+            delivery =>
+            {
+                if (decided++ == 0)
+                {
+                    DrainAsync(app, app.Dlq).GetAwaiter().GetResult(); // the other two vanish after the snapshot
+                    if (whileWaiting is not null) Task.Run(whileWaiting);
+                }
+                return PassAction.Replay;
+            },
+            (_, _) => Task.CompletedTask,
+            TestContext.Current.CancellationToken));
+
+        return (error!, clock.Elapsed);
+    }
+
+    [Fact]
+    public async Task Overstated_count_ends_after_the_delivery_timeout()
+    {
+        await using var app = await StartAsync();
+        var ids = await SeedAsync(app, 3);
+
+        var (error, elapsed) = await OverstatedPassAsync(app, TimeSpan.FromSeconds(1));
+
+        Assert.IsType<TimeoutException>(error);
+        Assert.InRange(elapsed, TimeSpan.FromSeconds(0.9), TimeSpan.FromSeconds(8));
+        Assert.Equal(ids.Take(1), await DrainAsync(app, app.Queue)); // the first message was replayed and ACKed, nothing was requeued
+        await UntilCountAsync(app, app.Dlq, 0);
+    }
+
+    [Fact]
+    public async Task Channel_closing_mid_pass_ends_the_pass_promptly()
+    {
+        await using var app = await StartAsync();
+        await SeedAsync(app, 3);
+        var connection = app.Host.Services.GetRequiredService<RabbitMqConnection>();
+
+        var (error, elapsed) = await OverstatedPassAsync(app, TimeSpan.FromSeconds(60), async () =>
+        {
+            await Task.Delay(300);
+            await (await connection.GetAsync(CancellationToken.None)).CloseAsync();
+        });
+
+        Assert.IsAssignableFrom<Exception>(error);
+        Assert.IsNotType<TimeoutException>(error);
+        Assert.True(elapsed < TimeSpan.FromSeconds(10), $"took {elapsed}");
+    }
+
     [Fact]
     public async Task List_returns_dlqs_with_counts()
     {
