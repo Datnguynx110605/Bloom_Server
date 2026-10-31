@@ -172,9 +172,10 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 
 | Message | When | Key payload |
 |---|---|---|
-| `order.paid.v1` | Payment confirmed (any order) | `orderId`, `accountId`, `launchId?`, `paidAt`, `lines[{skuId, quantity}]` |
+| `order.paid.v1` | Payment confirmed (any order) | `orderId`, `orderNumber`, `accountId`, `launchId?`, `paidAt`, `totalCents`, `lines[{skuId, quantity}]` |
 | `order.ready-to-fulfill.v1` | Order reaches `paid` | `orderId`, `accountId`, `number`, `shipTo`, `shippingOption`, `shippingCents`, `totalCents`, `lines[{lineNo, kind, skuId, productId, serialized, quantity, parentLineNo, coverageMonths, paidCents, taxCents}]` |
-| `order.cancelled.v1` | Any cancellation | `orderId`, `reason` |
+| `order.cancelled.v1` | Any cancellation | `orderId`, `orderNumber`, `accountId`, `reason` (`customer` \| `support` \| `checkout_expired` \| `checkout_failed` \| `late_payment`) |
+| `order.preorder-delayed.v1` | Launch released while a pre-order still has no stock allocated (once per order, INV-R11) | `orderId`, `orderNumber`, `accountId` |
 | `order.delivered.v1` | Delivered | `orderId`, `accountId`, `productIds[]`, `deliveredAt` |
 | `inventory.release-reservation.v1` | Command | `orderId` |
 | `launch.release-allocation-hold.v1` | Command | `orderId`, `reason` |
@@ -302,7 +303,7 @@ All amounts are integer cents.
 
 Whenever `stock_allocated` or `launch_released` becomes true on an `awaiting_stock` order, check both. If both are true: → `paid`; outbox `order.ready-to-fulfill.v1`; `handed_to_fulfillment = true`.
 
-On `launch.stage-changed.v1` with `stage = released`: process that launch's `awaiting_stock` orders in batches of 500 (guarded updates), so a 5,000-order launch doesn't run in one transaction.
+On `launch.stage-changed.v1` with `stage = released`: process that launch's `awaiting_stock` orders in batches of 500 (guarded updates), so a 5,000-order launch doesn't run in one transaction. Orders that still have `stock_allocated = false` get `order.preorder-delayed.v1` (once per order, INV-R11).
 
 ### 6.6 Cancellation (customer and Support)
 

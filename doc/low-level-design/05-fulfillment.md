@@ -166,7 +166,9 @@
 | `fulfillment.shipment-shipped.v1` | Published → order, inventory, notification | `orderId`, `refId`, `lines[{skuId, quantity, serials[]}]`, `trackingNumber` |
 | `fulfillment.shipment-delivered.v1` | Published → order, notification | `orderId`, `refId`, `deliveredAt` |
 | `fulfillment.delivery-failed.v1` | Published → order, notification | `orderId`, `kind` |
-| `fulfillment.return-requested.v1` / `return-closed.v1` | Published → order, notification | `orderId`, `returnId` |
+| `fulfillment.return-requested.v1` / `return-closed.v1` | Published → order, notification | `orderId`, `returnId`; `return-closed` adds `reason` (`decided` \| `expired`) |
+| `fulfillment.return-label-issued.v1` | Published → notification | `orderId`, `returnId`, `labelUrl` (when the return label is bought) |
+| `fulfillment.return-received.v1` | Published → notification | `orderId`, `returnId` (on `ReceiveReturn`) |
 | `fulfillment.return-decided.v1` | Published → order, notification | `orderId`, `returnId`, `accepted[{lineNo, quantity}]`, `refundCents` |
 | `payment.refund-payment.v1` | Command → payment | `orderId`, `refundId`, `amountCents`, `lines[{lineNo, amountCents}]` |
 | `inventory.receive-customer-return.v1` / `receive-returned-to-sender.v1` / `mark-lost-in-transit.v1` | Commands → inventory | per [02-inventory §5.3](02-inventory.md) |
@@ -235,7 +237,7 @@ Every update sets `last_tracking_at`. Transitions are guarded, so repeated or la
 |---|---|
 | `RequestReturn` | Order delivered and `now ≤ delivered_at + 14 days` (RET-R01). Units per line ≤ `quantity − refunded_units −` units in open requests. Product units → request `requested`, label worker buys a **return label** → `label_issued`. **Plan-only** request (WAR-R06): decided immediately as a full refund (no shipping, no inspection). Publish `return-requested`. |
 | Expiry (hourly) | `label_issued` past `expires_at` → `expired`; return label voided; publish `return-closed` (RET-R15). |
-| `ReceiveReturn` | `in_transit` / `label_issued` → `received`. |
+| `ReceiveReturn` | `in_transit` / `label_issued` → `received`; publish `return-received`. |
 | `RecordInspection` | Per unit: `result`, notes, `received_serial` for serialized lines (must be one shipped on this order, else `wrong_item`). → `inspected`. |
 | `DecideReturn` | §6.4.1. → `decided`; publish `return-decided` and `return-closed`. |
 
@@ -260,7 +262,7 @@ Every update sets `last_tracking_at`. Transitions are guarded, so repeated or la
 
 ### 6.6 Label worker
 
-- **Buy** (`label_pending`, every 5 s, `SKIP LOCKED`): search Shippo transactions by `metadata = shipment.id`; if one exists, reuse it; else create shipment + transaction with that metadata. Store transaction ID, tracking number, label URL → `label_ready`. Errors retry with the 1 s / 5 s / 30 s / 2 min schedule, then alert.
+- **Buy** (`label_pending`, every 5 s, `SKIP LOCKED`): search Shippo transactions by `metadata = shipment.id`; if one exists, reuse it; else create shipment + transaction with that metadata. Store transaction ID, tracking number, label URL → `label_ready`. For a return label, the same transaction sets the return request to `label_issued` and publishes `return-label-issued`. Errors retry with the 1 s / 5 s / 30 s / 2 min schedule, then alert.
 - **Void** (`void_pending`): Shippo refund request → `voided`.
 - **Daily check:** labels found in Shippo with Bloom metadata but no matching `shipments` row, or a second transaction for one shipment, are voided and reported (FR-05).
 

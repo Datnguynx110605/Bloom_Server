@@ -63,6 +63,7 @@ Bloom is a single-vendor US store selling Apple devices ([product overview](../p
 | QA-08 | Revocation | Revoked tokens rejected at the gateway within ~1 s (ACC-R10) |
 | QA-09 | Payment data | Card data never reaches Bloom servers (CHK-R10) |
 | QA-10 | Recoverability | PostgreSQL RPO ≤ 5 min, RTO ≤ 1 h |
+| QA-11 | Real-time connections | 100k concurrent in-app WebSocket connections at launch peak ([09-notification](../low-level-design/09-notification.md)) |
 
 ### 3.3 Functional ownership
 
@@ -198,6 +199,8 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Reservation released / hold released | Event | inventory / launch | order (saga completion; published for every release command, including no-ops) |
 | Cancel payment | Command | order | payment (cancel the provider payment when a checkout expires or fails) |
 | Packing started; return requested / return closed | Event | fulfillment | order (status *Packing*; open-return count for ACC-R13) |
+| Return label issued / return received | Event | fulfillment | notification |
+| Pre-order delayed | Event | order | notification (launch released without stock for the pre-order, INV-R11) |
 | Release allocation hold | Command | order | launch |
 | Refund payment | Command | order, fulfillment | payment |
 | Order delivered | Event | order | catalog (review eligibility) |
@@ -208,7 +211,7 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Verification code / staff invited | Event | identity | notification (email only: codes for email verification, password reset, email change; staff invitation links) |
 | Account deleted | Event | identity | notification, catalog, order, fulfillment (each anonymizes the personal data it holds; amounts, SKUs and dates are kept) |
 | Launch stage changed | Event | launch | order (release of allocated pre-orders, LCH-R19); catalog (launch membership and stage per SKU: visibility, buyability, and launch info returned to order at checkout) |
-| Tokens revoked | Event | identity | api-gateway |
+| Tokens revoked | Event | identity | api-gateway (revocation list); notification (close the user's WebSockets) |
 | Staff action recorded | Event | all services | identity (audit log) |
 
 ### 7.3 External integrations
@@ -406,6 +409,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | R-06 | Shared Postgres cluster: one noisy service can slow others. | Per-database credentials and connection limits; split clusters if metrics show interference. |
 | R-07 | 409 on every optimistic-lock conflict surfaces brief races to users. | Clients show "changed, reload"; monitor conflict rate per endpoint. |
 | R-08 | Eventual consistency: status can lag briefly across services (for example "paid" visible a moment after payment). | UI shows pending states; consumer lag is monitored. |
+| R-10 | 100k notification WebSockets at launch peak add a second scaling problem through ingress, gateway and notification. | Sized and autoscaled on connection count; 15-min connection life with jittered reconnects; included in the launch load test. |
 | R-09 | Push-based deploys from GitHub Actions: cluster state can drift from the repo after manual changes. | No manual changes to the cluster; manifests in the repo are the only source. |
 
 ## 12. Assumptions

@@ -114,6 +114,7 @@ Paths are the contract between gateway and services (services declare them in `.
 | `/api/returns/**`, `/api/warranty/**` | fulfillment | Customer | — | `user` |
 | `/api/admin/fulfillment/**` | fulfillment | Staff | Warehouse, Support, Admin | `user` |
 | `/api/notifications/**` | notification | Customer | — | `user` |
+| `/api/notifications/hub` (WebSocket) | notification | One-time ticket validated by notification (no JWT on upgrade); `Origin` must be allowed | — | `global` |
 | `POST /webhooks/stripe` | payment | None (signature in service) | — | `webhook` |
 | `POST /webhooks/shippo/{secret}` | fulfillment | None (secret in service) | — | `webhook` |
 | anything else | — | — | — | `404` |
