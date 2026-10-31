@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Bloom.Shared.Concurrency;
+using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
 using Microsoft.EntityFrameworkCore;
@@ -60,6 +61,7 @@ public static partial class BloomServiceCollectionExtensions
         services.AddSingleton<BloomMetrics>();
         services.AddScoped<ConcurrentUpdates>();
         services.AddScoped<OutboxWriter>();
+        services.AddScoped<IdempotencyGuard>();
         var builder = new BloomBuilder(services, options.ServiceName);
         services.AddSingleton(builder.Catalog);
         services.AddSingleton<RabbitMqConnection>();

@@ -10,7 +10,8 @@ namespace Bloom.Shared.Tests;
 public sealed class Containers : IAsyncLifetime
 {
     // Same exact tag as the Compose file (plan Task 11).
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:17.6").Build();
+    // Every test host keeps its own connection pool open, so the default limit of 100 runs out as the suite grows.
+    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:17.6").WithCommand("-c", "max_connections=1000").Build();
 
     // Same exact tag as the Compose file (plan Task 11).
     private readonly RabbitMqContainer _rabbit = new RabbitMqBuilder("rabbitmq:4.1.4-management").Build();
