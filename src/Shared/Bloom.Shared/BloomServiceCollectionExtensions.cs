@@ -3,6 +3,7 @@ using Bloom.Shared.Concurrency;
 using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
+using Bloom.Shared.Retention;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -36,6 +37,8 @@ public sealed class BloomBuilder(IServiceCollection services, string serviceName
         Services.AddHostedService<TopologyInitializer>();
         Services.AddHostedService<OutboxRelay>();
         Services.AddHostedService<ConsumerHost>();
+        Services.AddHostedService<RetentionPurger>();
+        Services.AddHostedService<GaugePoller>();
         return this;
     }
 }
