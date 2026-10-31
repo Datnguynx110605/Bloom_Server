@@ -30,11 +30,16 @@ public sealed class RequestHygiene(RequestDelegate next, GatewayMetrics metrics)
             return Task.CompletedTask;
         }, context);
 
-        try { await next(context); }
+        var status = StatusCodes.Status500InternalServerError; // what Kestrel answers if next throws
+        try
+        {
+            await next(context);
+            status = context.Response.StatusCode;
+        }
         finally
         {
             var route = context.GetEndpoint()?.Metadata.GetMetadata<RouteModel>()?.Config.RouteId ?? "none";
-            metrics.Request(route, context.Response.StatusCode, Stopwatch.GetElapsedTime(start).TotalSeconds,
+            metrics.Request(route, status, Stopwatch.GetElapsedTime(start).TotalSeconds,
                 context.Features.Get<UpstreamElapsed>()?.Seconds);
         }
     }

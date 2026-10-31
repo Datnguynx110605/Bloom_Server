@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Yarp.ReverseProxy.Configuration;
 using Yarp.ReverseProxy.Model;
@@ -22,7 +23,10 @@ public sealed class EdgeMiddleware(RequestDelegate next)
                 : GatewayErrors.WriteAsync(context, GatewayErrors.RouteNotFound);
         }
 
-        context.Features.Set(Parsed.GetValue(model.Config, EdgeRoute.From));
+        var route = Parsed.GetValue(model.Config, EdgeRoute.From);
+        context.Features.Set(route);
+        if (route.MaxBodyBytes is { } max)
+            context.Features.GetRequiredFeature<IHttpMaxRequestBodySizeFeature>().MaxRequestBodySize = max; // Kestrel enforces it for Content-Length and chunked bodies
         context.Request.Headers.Remove("Authorization");
         return next(context);
     }

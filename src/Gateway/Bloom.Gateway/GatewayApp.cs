@@ -13,7 +13,11 @@ public static class GatewayApp
         // Content root = the app's own folder, so appsettings.json is found wherever the process starts.
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = AppContext.BaseDirectory });
         configure?.Invoke(builder);
-        builder.WebHost.ConfigureKestrel(o => o.AddServerHeader = false); // Kestrel adds Server after OnStarting callbacks; there is no config key for it (plan P11)
+        builder.WebHost.ConfigureKestrel(o =>
+        {
+            o.AddServerHeader = false; // Kestrel adds Server after OnStarting callbacks; there is no config key for it (plan P11)
+            builder.Configuration.GetSection("Kestrel:Limits").Bind(o.Limits); // body and header size limits (LLD 07 §5.2, §8)
+        });
 
         var api = builder.Configuration["Gateway:Mode"] switch
         {
@@ -28,7 +32,7 @@ public static class GatewayApp
         if (api)
         {
             builder.Services.AddSingleton<GatewayMetrics>();
-            builder.Services.AddRequestTimeouts(); // YARP applies each route's Timeout through it
+            builder.Services.AddRequestTimeouts(o => o.DefaultPolicy = new() { Timeout = TimeSpan.FromSeconds(5) }); // YARP applies each route's Timeout through it; LLD 07 §5.2 default 5 s
             builder.Services.AddReverseProxy()
                 .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
                 .AddTransforms(c => c.UseDefaultForwarders = false); // no X-Forwarded-* the LLD doesn't list (plan P9)
