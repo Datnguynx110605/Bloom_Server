@@ -17,8 +17,6 @@ internal enum PassAction { Keep, Replay, Discard }
 /// </summary>
 internal class DeadLetterPass(RabbitMqConnection connection)
 {
-    private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
-
     /// <summary>
     /// Longest wait for the next delivery. With prefetch 1 the next one follows the previous ACK within milliseconds, so
     /// 10 s only elapses when the snapshot count is higher than what is left (queue purged or a message removed meanwhile).
@@ -86,8 +84,10 @@ internal class DeadLetterPass(RabbitMqConnection connection)
             var action = decide(delivery);
             switch (action)
             {
-                case PassAction.Replay: await PublishAsync(channel, dlq[..^".dlq".Length], delivery, strip: true, ct); break;
-                case PassAction.Keep: await PublishAsync(channel, dlq, delivery, strip: false, ct); break;
+                case PassAction.Replay:
+                    await RabbitMqConnection.RepublishAsync(channel, dlq[..^".dlq".Length], delivery, h => { foreach (var name in ReplayStrips) h.Remove(name); }, ct);
+                    break;
+                case PassAction.Keep: await RabbitMqConnection.RepublishAsync(channel, dlq, delivery, _ => { }, ct); break;
             }
             if (action != PassAction.Keep) await audit(delivery, action);
             if (i == count) await channel.BasicCancelAsync(tag, cancellationToken: ct); // before the last ACK, or the broker delivers a late arrival
@@ -102,14 +102,4 @@ internal class DeadLetterPass(RabbitMqConnection connection)
         new(d.ConsumerTag, d.DeliveryTag, d.Redelivered, d.Exchange, d.RoutingKey,
             new BasicProperties(d.BasicProperties) { Headers = d.BasicProperties.Headers is { } h ? new Dictionary<string, object?>(h) : null },
             d.Body.ToArray(), d.CancellationToken);
-
-    private static async Task PublishAsync(IChannel channel, string queue, BasicDeliverEventArgs delivery, bool strip, CancellationToken ct)
-    {
-        var headers = delivery.BasicProperties.Headers is { } h ? new Dictionary<string, object?>(h) : null;
-        if (strip) foreach (var name in ReplayStrips) headers?.Remove(name);
-        var properties = new BasicProperties(delivery.BasicProperties) { Headers = headers, DeliveryMode = DeliveryModes.Persistent };
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(ConfirmTimeout);
-        await channel.BasicPublishAsync("", queue, mandatory: false, properties, delivery.Body, timeout.Token);
-    }
 }

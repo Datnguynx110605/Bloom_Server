@@ -21,18 +21,12 @@ internal sealed class RetentionPurger(IServiceScopeFactory scopes, ILogger<Reten
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromHours(24));
-        try
+        do
         {
-            do
-            {
-                try { await PurgeOnceAsync(ct); }
-                catch (Exception ex) when (!ct.IsCancellationRequested) { logger.LogError(ex, "Retention purge failed"); }
-            }
-            while (await timer.WaitForNextTickAsync(ct));
+            try { await PurgeOnceAsync(ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { logger.LogError(ex, "Retention purge failed"); }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-        }
+        while (await timer.WaitForNextTickAsync(ct));
     }
 
     internal async Task PurgeOnceAsync(CancellationToken ct)

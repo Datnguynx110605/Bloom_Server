@@ -25,7 +25,7 @@ public sealed class OutboxWriter(DbContext db, BloomOptions options, IHttpContex
         if (!MessageNames.IsValidMessageType(messageType))
             throw new ArgumentException($"'{messageType}' is not a valid message type.", nameof(messageType));
 
-        var handling = MessageScope.Current;
+        var handling = MessageScope.Current.Value;
         var correlationId = handling?.CorrelationId
             ?? (Guid.TryParseExact(http.HttpContext?.Request.Headers[RequestIdHeader].ToString(), "D", out var requestId)
                 ? requestId

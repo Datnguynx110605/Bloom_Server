@@ -3,7 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using RabbitMQ.Client.Exceptions;
 
 namespace Bloom.Shared.Observability;
 
@@ -21,18 +20,12 @@ internal sealed class GaugePoller(
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
-        try
+        do
         {
-            do
-            {
-                try { await PollOnceAsync(ct); }
-                catch (Exception ex) when (!ct.IsCancellationRequested) { logger.LogError(ex, "Gauge poll failed"); }
-            }
-            while (await timer.WaitForNextTickAsync(ct));
+            try { await PollOnceAsync(ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { logger.LogError(ex, "Gauge poll failed"); }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-        }
+        while (await timer.WaitForNextTickAsync(ct));
     }
 
     internal async Task PollOnceAsync(CancellationToken ct)
@@ -50,17 +43,6 @@ internal sealed class GaugePoller(
         }
 
         foreach (var queue in catalog.DeadLetterQueues)
-        {
-            // A passive declare of a missing queue closes its channel with 404, so each queue gets its own.
-            await using var channel = await (await connection.GetAsync(ct)).CreateChannelAsync(cancellationToken: ct);
-            try
-            {
-                metrics.ReportDlqDepth(queue, (await channel.QueueDeclarePassiveAsync(queue, ct)).MessageCount);
-            }
-            catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == 404)
-            {
-                metrics.ReportDlqDepth(queue, 0);
-            }
-        }
+            metrics.ReportDlqDepth(queue, await connection.QueueDepthAsync(queue, ct));
     }
 }

@@ -138,9 +138,9 @@ public class OutboxWriterTests(Containers containers)
         var incoming = new Envelope(Guid.CreateVersion7(), "t.in.v1", "event", "other", DateTime.UtcNow, Guid.NewGuid(),
             JsonDocument.Parse("{}").RootElement);
 
-        MessageScope.Current = incoming;
+        MessageScope.Current.Value = incoming;
         try { writer.PublishEvent("t.thing-happened.v1", new { a = 1 }); }
-        finally { MessageScope.Current = null; }
+        finally { MessageScope.Current.Value = null; }
         await db.SaveChangesAsync(ct);
 
         var row = await db.Set<OutboxMessage>().AsNoTracking().SingleAsync(ct);

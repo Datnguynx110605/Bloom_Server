@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using Bloom.Shared.Observability;
 using Microsoft.EntityFrameworkCore;
@@ -23,17 +22,10 @@ internal sealed class ConsumerHost(
 {
     private const ushort Prefetch = 16; // R9
     private const int MaxAttempts = 5;
-    private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        try
-        {
-            await Task.WhenAll(catalog.Consumers.Select(c => SuperviseAsync(c, ct)));
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-        }
+        await Task.WhenAll(catalog.Consumers.Select(c => SuperviseAsync(c, ct)));
     }
 
     private async Task SuperviseAsync(ConsumerDefinition def, CancellationToken ct)
@@ -119,7 +111,7 @@ internal sealed class ConsumerHost(
             ["correlation_id"] = envelope.CorrelationId,
             ["consumer"] = def.Queue,
         });
-        ActivityContext.TryParse(HeaderString(headers, "traceparent"), null, out var parent);
+        ActivityContext.TryParse(RabbitMqConnection.HeaderString(headers, "traceparent"), null, out var parent);
         var started = Stopwatch.GetTimestamp();
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<DbContext>();
@@ -138,7 +130,7 @@ internal sealed class ConsumerHost(
             }
             else
             {
-                MessageScope.Current = envelope;
+                MessageScope.Current.Value = envelope;
                 using var activity = BloomActivity.Source.StartActivity($"{def.Queue} process", ActivityKind.Consumer, parent);
                 var handler = (IMessageHandler)scope.ServiceProvider.GetRequiredService(def.HandlerType);
                 await handler.HandleAsync(envelope, ct);
@@ -157,7 +149,7 @@ internal sealed class ConsumerHost(
         }
         finally
         {
-            MessageScope.Current = null;
+            MessageScope.Current.Value = null;
             if (tx is not null) await tx.DisposeAsync();
         }
 
@@ -175,7 +167,7 @@ internal sealed class ConsumerHost(
             await DeadLetterAsync(def, channel, delivery, $"{failure.GetType().Name}: {failure.Message}", ct);
             return;
         }
-        await PublishAsync(channel, MessageNames.RetryQueue(def.Queue, MessageNames.RetryDelays[attempt - 1].Delay), delivery,
+        await RabbitMqConnection.RepublishAsync(channel, MessageNames.RetryQueue(def.Queue, MessageNames.RetryDelays[attempt - 1].Delay), delivery,
             h => h["x-attempt"] = attempt + 1, ct);
         await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
         metrics.ConsumerMessage(def.Queue, "retry");
@@ -184,7 +176,7 @@ internal sealed class ConsumerHost(
     private async Task DeadLetterAsync(ConsumerDefinition def, IChannel channel, BasicDeliverEventArgs delivery, string reason, CancellationToken ct)
     {
         logger.LogWarning("Dead-lettering a message from {Consumer}: {Reason}", def.Queue, reason);
-        await PublishAsync(channel, MessageNames.DeadLetterQueue(def.Queue), delivery, h =>
+        await RabbitMqConnection.RepublishAsync(channel, MessageNames.DeadLetterQueue(def.Queue), delivery, h =>
         {
             h["x-failure-reason"] = reason;
             h["x-failed-at"] = DateTime.UtcNow.ToString("O");
@@ -192,20 +184,4 @@ internal sealed class ConsumerHost(
         await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
         metrics.ConsumerMessage(def.Queue, "dlq");
     }
-
-    /// <summary>Republishes the delivery (body, properties, headers) through the default exchange and awaits the confirm.</summary>
-    private static async Task PublishAsync(IChannel channel, string queue, BasicDeliverEventArgs delivery, Action<Dictionary<string, object?>> addHeaders, CancellationToken ct)
-    {
-        var headers = delivery.BasicProperties.Headers is { } h ? new Dictionary<string, object?>(h) : [];
-        addHeaders(headers);
-        var properties = new BasicProperties(delivery.BasicProperties) { Headers = headers, DeliveryMode = DeliveryModes.Persistent };
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(ConfirmTimeout);
-        await channel.BasicPublishAsync("", queue, mandatory: false, properties, delivery.Body, timeout.Token);
-    }
-
-    private static string? HeaderString(IDictionary<string, object?>? headers, string name) =>
-        headers is not null && headers.TryGetValue(name, out var v)
-            ? v switch { byte[] bytes => Encoding.UTF8.GetString(bytes), string s => s, _ => null }
-            : null;
 }

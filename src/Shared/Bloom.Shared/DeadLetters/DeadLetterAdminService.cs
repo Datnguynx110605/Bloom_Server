@@ -6,7 +6,6 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using RabbitMQ.Client.Events;
-using RabbitMQ.Client.Exceptions;
 
 namespace Bloom.Shared.DeadLetters;
 
@@ -21,20 +20,8 @@ internal sealed class DeadLetterAdminService(
     {
         Authorize(context, request.Service);
         var response = new ListDeadLetterQueuesResponse();
-        foreach (var queue in catalog.DeadLetterQueues)
-        {
-            // A passive declare of a missing queue closes its channel with 404, so each queue gets its own (R6: count 0).
-            await using var channel = await (await connection.GetAsync(context.CancellationToken)).CreateChannelAsync(cancellationToken: context.CancellationToken);
-            try
-            {
-                var declared = await channel.QueueDeclarePassiveAsync(queue, context.CancellationToken);
-                response.Queues.Add(new DeadLetterQueue { Name = queue, MessageCount = declared.MessageCount });
-            }
-            catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == 404)
-            {
-                response.Queues.Add(new DeadLetterQueue { Name = queue });
-            }
-        }
+        foreach (var queue in catalog.DeadLetterQueues) // R6: a queue not declared yet counts 0
+            response.Queues.Add(new DeadLetterQueue { Name = queue, MessageCount = await connection.QueueDepthAsync(queue, context.CancellationToken) });
         return response;
     }
 
@@ -163,8 +150,5 @@ internal sealed class DeadLetterAdminService(
         FailedAt = Header(d, "x-failed-at") ?? "",
     };
 
-    private static string? Header(BasicDeliverEventArgs d, string name) =>
-        d.BasicProperties.Headers is { } h && h.TryGetValue(name, out var v)
-            ? v switch { byte[] bytes => Encoding.UTF8.GetString(bytes), string s => s, _ => null }
-            : null;
+    private static string? Header(BasicDeliverEventArgs d, string name) => RabbitMqConnection.HeaderString(d.BasicProperties.Headers, name);
 }

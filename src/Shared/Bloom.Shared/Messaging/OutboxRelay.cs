@@ -21,7 +21,6 @@ internal sealed class OutboxRelay(
     : BackgroundService
 {
     private const int BatchSize = 100;
-    private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
 
     private IChannel? _channel;
     private bool _channelFailed; // set when a pass lost its channel; the loop then pauses 1 s (R7)
@@ -51,9 +50,6 @@ internal sealed class OutboxRelay(
                 }
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-        }
         finally
         {
             await DisposeChannelAsync();
@@ -81,7 +77,7 @@ internal sealed class OutboxRelay(
             // A channel closed by the broker (404 on a bad exchange, ...) is replaced before the next row.
             if (_channel is { IsOpen: false }) await DisposeChannelAsync();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(ConfirmTimeout);
+            timeout.CancelAfter(RabbitMqConnection.ConfirmTimeout);
             try
             {
                 _channel ??= await connection.CreateConfirmChannelAsync(timeout.Token);
@@ -97,7 +93,7 @@ internal sealed class OutboxRelay(
                 // Only the row in flight is unconfirmed (§7.2 step 5); the rest are untouched and tried next.
                 // ponytail: a broker that is down fails one row per pass, not the batch; the loop's 1 s pause keeps that cheap.
                 var brokerDown = _channel is null; // opening the channel failed, so every following row would fail too
-                var error = ex is OperationCanceledException ? $"No publisher confirm within {ConfirmTimeout.TotalSeconds:0} s" : ex.Message;
+                var error = ex is OperationCanceledException ? $"No publisher confirm within {RabbitMqConnection.ConfirmTimeout.TotalSeconds:0} s" : ex.Message;
                 failed.Add((row, error));
                 await DisposeChannelAsync();
                 if (brokerDown) break;
@@ -115,8 +111,8 @@ internal sealed class OutboxRelay(
         }
         await tx.CommitAsync(ct);
 
-        foreach (var _ in sent) metrics.OutboxPublish("confirmed");
-        foreach (var _ in failed) metrics.OutboxPublish("failed");
+        if (sent.Count > 0) metrics.OutboxPublish("confirmed", sent.Count);
+        if (failed.Count > 0) metrics.OutboxPublish("failed", failed.Count);
         return rows.Count;
     }
 

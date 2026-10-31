@@ -31,7 +31,7 @@ public sealed class BloomMetrics
         meter.CreateObservableGauge("dlq_depth", () => _dlqDepth.Select(d => new Measurement<long>(d.Value, _service, new("queue", d.Key))).ToArray());
     }
 
-    internal void OutboxPublish(string result) => _outboxPublish.Add(1, _service, new("result", result));
+    internal void OutboxPublish(string result, int count = 1) => _outboxPublish.Add(count, _service, new("result", result));
 
     internal void ConsumerMessage(string consumer, string result) =>
         _consumerMessages.Add(1, _service, new("consumer", consumer), new("result", result));
