@@ -80,7 +80,7 @@ A launch sells a limited number of new devices on a set date to many buyers at o
 
 | ID | Rule |
 |---|---|
-| LCH-R19 | A paid pre-order waits in *Awaiting stock* until stock is received for its SKUs. |
+| LCH-R19 | A paid pre-order waits in *Awaiting stock* until stock is allocated to it **and** the release date is reached. Stock that arrives early is allocated to it (so no one else can take it) but doesn't ship before the release date. |
 | LCH-R20 | Arriving stock fills pre-orders oldest first, before any regular sale (INV-R10). If too few units arrive, the rest keep waiting, and customers are notified of the delay (INV-R11). |
 | LCH-R21 | Customers can cancel a pre-order for a full refund until packing starts (ORD-R05). |
 

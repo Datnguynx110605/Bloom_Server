@@ -21,9 +21,9 @@ An order records what a customer bought, and moves from payment through packing 
 | ID | Rule |
 |---|---|
 | ORD-R01 | An order is created at checkout start in *Pending payment* (CHK-R04). |
-| ORD-R02 | A paid regular order moves to *Paid*. A paid launch order moves to *Awaiting stock* until stock is received for its lines (LCH-R19). |
+| ORD-R02 | A paid regular order moves to *Paid*. A paid launch order moves to *Awaiting stock* until stock is allocated to its lines and the release date is reached (LCH-R19). |
 | ORD-R03 | Order statuses: *Pending payment*, *Paid*, *Awaiting stock*, *Packing*, *Shipped*, *Delivered*, *Cancelled*, *Delivery failed*, *Partially returned*, *Returned*. |
-| ORD-R16 | When stock is allocated to a pre-order in *Awaiting stock*, it moves to *Paid* (ready to pack), the same as a regular order. |
+| ORD-R16 | A pre-order in *Awaiting stock* moves to *Paid* (ready to pack), the same as a regular order, once stock is allocated to it **and** the release date is reached. |
 | ORD-R04 | Every status change is recorded with time and actor (customer, staff member or system). |
 
 ### Cancellation
@@ -61,7 +61,7 @@ stateDiagram-v2
     PendingPayment --> Paid : payment succeeds (regular)
     PendingPayment --> AwaitingStock : payment succeeds (launch)
     PendingPayment --> Cancelled : checkout expires
-    AwaitingStock --> Paid : stock received
+    AwaitingStock --> Paid : stock allocated and release date reached
     Paid --> Packing : Warehouse starts packing
     Paid --> Cancelled : customer cancels (full refund)
     AwaitingStock --> Cancelled : customer cancels (full refund)

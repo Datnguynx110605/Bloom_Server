@@ -170,12 +170,13 @@ Every service has its own database in one PostgreSQL cluster ([HLD-ADR-004](adr/
 | Caller → callee | Purpose | Failure behaviour |
 |---|---|---|
 | order → catalog | Batched current prices and snapshot data (cart view, checkout start) | Checkout start fails; customer retries |
-| order → inventory | Reserve stock for a regular checkout | Checkout start fails; already-made holds are compensated |
+| order → inventory | Reserve stock for a regular checkout; availability for cart flags (CHK-R18) | Checkout start fails; already-made holds are compensated |
 | order → launch | Consume admission pass, hold allocation and purchase limit | Same |
 | order → payment | Create a payment for the order (returns the provider client secret) | Order stays *Pending payment*; customer retries within 15 min |
 | identity → order | "Does this customer have unsettled orders?" (ACC-R13) | Deletion refused with "try later" (fail safe) |
-| fulfillment → inventory | Assign, unassign or replace serials at packing (INV-R13, R14, R19) | Packing step fails; Warehouse retries |
+| fulfillment → inventory | Assign, unassign or replace serials at packing (INV-R13, R14, R19); commit stock for a reship (ORD-R13) | Packing step fails; Warehouse retries |
 | launch → catalog | Validate a SKU and its product when staff add it to a launch | Admin action fails; staff retry |
+| inventory → catalog | Lock a SKU's serialized flag at its first goods receipt (CAT-R14) | Receipt fails; Warehouse retries |
 
 Exact contracts (`.proto`) are specified in the LLD of each service.
 
@@ -195,7 +196,8 @@ Exact contracts (`.proto`) are specified in the LLD of each service.
 | Release allocation hold | Command | order | launch |
 | Refund payment | Command | order, fulfillment | payment |
 | Order delivered | Event | order | catalog (review eligibility) |
-| Shipment shipped / delivered / delivery failed | Event | fulfillment | order, notification |
+| Shipment shipped / delivered / delivery failed | Event | fulfillment | order, notification; inventory (shipped) |
+| Receive customer return / receive returned-to-sender / mark lost in transit | Command | fulfillment | inventory |
 | Return decided | Event | fulfillment | order, notification |
 | Customer registered / contact changed | Event | identity | notification |
 | Account deleted | Event | identity | notification, catalog, order, fulfillment (each anonymizes the personal data it holds; amounts, SKUs and dates are kept) |
@@ -288,7 +290,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 
 1. When a launch order is paid, `inventory` records a **backorder** (order, SKU, quantity, paid time) from the "Order paid" event.
 2. On goods receipt, `inventory` allocates received units to the **oldest backorders in the same transaction as the receipt**, so they never become available to regular buyers (INV-R10). Units left over go to on-hand stock. Unfilled backorders keep waiting (INV-R11).
-3. `inventory` publishes "Stock allocated to order". `order` moves the order *Awaiting stock* → *Paid* and emits "Order ready to fulfill" for `fulfillment`.
+3. `inventory` publishes "Stock allocated to order". Once the launch is also released (LCH-R19), `order` moves the order *Awaiting stock* → *Paid* and emits "Order ready to fulfill" for `fulfillment`.
 4. Cancelling a waiting pre-order sends "Release reservation / backorder", which removes the backorder.
 
 ## 9. Cross-cutting concerns
