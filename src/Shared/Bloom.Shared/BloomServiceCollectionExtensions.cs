@@ -33,6 +33,7 @@ public sealed class BloomBuilder(IServiceCollection services, string serviceName
     public BloomBuilder AddWorker()
     {
         Services.AddHostedService<TopologyInitializer>();
+        Services.AddHostedService<OutboxRelay>();
         return this;
     }
 }
