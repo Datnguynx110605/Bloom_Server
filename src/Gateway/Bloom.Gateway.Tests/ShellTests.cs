@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 
 namespace Bloom.Gateway.Tests;
 
+[Collection("gateway-worker")] // its worker test consumes the same queue as RevocationWorkerTests
 public class ShellTests(Containers containers)
 {
     [Fact]

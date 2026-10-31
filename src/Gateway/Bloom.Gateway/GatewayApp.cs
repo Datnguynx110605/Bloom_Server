@@ -32,18 +32,19 @@ public static class GatewayApp
         builder.AddBloomTelemetry(api ? "api-gateway" : "gateway-worker");
         builder.Services.AddOpenTelemetry().WithMetrics(m => m.AddMeter(GatewayMetrics.MeterName));
 
+        builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+        {
+            var options = ConfigurationOptions.Parse(builder.Configuration["Gateway:Redis"]!);
+            options.AbortOnConnectFail = false; // start and serve while Redis is down (P16)
+            options.BacklogPolicy = BacklogPolicy.FailFast; // an outage fails requests at once instead of queueing them
+            return ConnectionMultiplexer.Connect(options);
+        });
+
         if (api)
         {
             builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first
             builder.Services.AddSingleton<GatewayMetrics>();
             builder.Services.AddSingleton(RateLimitPolicy.Bind(builder.Configuration));
-            builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
-            {
-                var options = ConfigurationOptions.Parse(builder.Configuration["Gateway:Redis"]!);
-                options.AbortOnConnectFail = false; // start and serve while Redis is down (P16)
-                options.BacklogPolicy = BacklogPolicy.FailFast; // an outage fails requests at once instead of queueing them
-                return ConnectionMultiplexer.Connect(options);
-            });
             builder.Services.AddSingleton<EdgeStore>();
             builder.Services.AddSingleton<FallbackLimiters>();
             builder.Services.AddSingleton<JwksCache>();
@@ -71,6 +72,11 @@ public static class GatewayApp
                 foreach (var cidr in trusted)
                     o.KnownIPNetworks.Add(System.Net.IPNetwork.Parse(cidr));
             });
+        }
+        else
+        {
+            builder.Services.AddSingleton<RevocationWriter>();
+            builder.Services.AddHostedService<RevocationConsumer>();
         }
 
         var app = builder.Build();
