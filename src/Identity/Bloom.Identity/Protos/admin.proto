@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package bloom.identity.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Identity.V1";
+
+// 06-identity §5.1, admin only. Task 11 adds InviteStaff and ListStaff.
+service Admin {
+  rpc InviteStaff(InviteStaffRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/invitations" body: "*" };
+  }
+  rpc ListStaff(google.protobuf.Empty) returns (ListStaffResponse) {
+    option (google.api.http) = { get: "/api/admin/staff/members" };
+  }
+}
+
+message InviteStaffRequest {
+  string email = 1;
+  string role = 2;
+}
+
+message StaffMember {
+  string account_id = 1;
+  string email = 2;
+  string name = 3;
+  string role = 4;
+  string status = 5;
+  bool mfa_enrolled = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp last_sign_in_at = 8;
+}
+
+message ListStaffResponse {
+  repeated StaffMember staff = 1;
+}

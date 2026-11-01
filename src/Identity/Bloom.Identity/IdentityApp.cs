@@ -1,4 +1,5 @@
 using System.Security.Cryptography.X509Certificates;
+using Bloom.Identity.Audit;
 using Bloom.Identity.Codes;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
@@ -59,6 +60,7 @@ public static class IdentityApp
             builder.Services.AddScoped<SessionService>();
             builder.Services.AddScoped<Credentials>();
             builder.Services.AddScoped<CodeService>();
+            builder.Services.AddScoped<AuditWriter>();
             builder.Services.AddSingleton<RegistrationTokens>();
             builder.Services.AddSingleton<AuthStore>();
             builder.Services.AddHttpClient(GoogleTokenVerifier.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(5));
@@ -86,6 +88,7 @@ public static class IdentityApp
             app.MapGrpcService<AuthService>();
             app.MapGrpcService<AccountService>();
             app.MapGrpcService<StaffService>();
+            app.MapGrpcService<AdminService>();
             app.MapGet("/.well-known/jwks.json", (SigningKeys keys) => Results.Text(keys.JwksJson, "application/json"));
         }
         return app;

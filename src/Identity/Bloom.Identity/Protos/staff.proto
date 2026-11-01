@@ -7,14 +7,27 @@ import "Protos/auth.proto";
 
 option csharp_namespace = "Bloom.Identity.V1";
 
-// 06-identity §5.1. Task 11 adds AcceptStaffInvitation.
+// 06-identity §5.1.
 service Staff {
   rpc VerifyStaffMfa(VerifyStaffMfaRequest) returns (TokenResponse) {
     option (google.api.http) = { post: "/api/auth/staff/mfa" body: "*" };
+  }
+  rpc AcceptStaffInvitation(AcceptStaffInvitationRequest) returns (TokenResponse) {
+    option (google.api.http) = { post: "/api/auth/staff/invitations/accept" body: "*" };
   }
 }
 
 message VerifyStaffMfaRequest {
   string mfa_challenge_id = 1;
   string code = 2;
+}
+
+// A new staff member sends name, password and totp_*; current_password is for re-enrolment after ResetStaffMfa (spec §4).
+message AcceptStaffInvitationRequest {
+  string invite_token = 1;
+  string name = 2;
+  string password = 3;
+  string current_password = 4;
+  string totp_secret = 5; // base32, at least 160 bits
+  string totp_code = 6;
 }
