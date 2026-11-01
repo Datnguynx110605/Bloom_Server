@@ -11,12 +11,17 @@ public sealed class GoogleTokenVerifier(IHttpClientFactory httpFactory, Identity
 {
     public const string HttpClientName = "google-jwks";
 
-    private static readonly TimeSpan CacheLifetime = TimeSpan.FromHours(1);
+    private static readonly TimeSpan CacheLifetime = TimeSpan.FromHours(1), UnknownKidInterval = TimeSpan.FromSeconds(30);
     private static readonly string[] Issuers = ["accounts.google.com", "https://accounts.google.com"];
 
     private readonly SemaphoreSlim _fetch = new(1, 1);
-    private JsonWebKeySet? _keys;
-    private DateTimeOffset _fetchedAt;
+    private volatile Snapshot? _snapshot; // replaced, never mutated: a fresh hit reads it without the lock
+    private DateTimeOffset _lastUnknownKidFetch = DateTimeOffset.MinValue; // under _fetch
+
+    private sealed record Snapshot(JsonWebKeySet Keys, DateTimeOffset FetchedAt)
+    {
+        public bool Knows(string? kid) => Keys.Keys.Any(k => k.Kid == kid);
+    }
 
     /// <exception cref="Grpc.Core.RpcException"><c>INVALID_CREDENTIALS</c></exception>
     public async Task<GoogleIdentity> VerifyAsync(string idToken)
@@ -51,21 +56,28 @@ public sealed class GoogleTokenVerifier(IHttpClientFactory httpFactory, Identity
         throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "The Google sign-in is not valid.");
     }
 
-    /// <summary>The cached JWKS (1 h), fetched again once when it lacks <paramref name="kid"/> (Google rotates keys).</summary>
+    /// <summary>
+    /// The cached JWKS (1 h). An unknown <paramref name="kid"/> refetches (Google rotates keys), at most once per 30 s across all kids (R42);
+    /// the same rule as the gateway's JwksCache.
+    /// </summary>
     private async Task<JsonWebKeySet> KeysAsync(string? kid)
     {
+        if (_snapshot is { } hit && time.GetUtcNow() - hit.FetchedAt <= CacheLifetime && hit.Knows(kid)) return hit.Keys;
+
         await _fetch.WaitAsync();
         try
         {
-            var stale = _keys is null || time.GetUtcNow() - _fetchedAt > CacheLifetime;
-            // ponytail: an unknown kid refetches every time, so a flood of forged kids hits Google; rely on the gateway's rate limit, add a cooldown if it matters.
-            if (stale || _keys!.Keys.All(k => k.Kid != kid))
+            var now = time.GetUtcNow();
+            var current = _snapshot;
+            if (current is not null && now - current.FetchedAt <= CacheLifetime)
             {
-                using var client = httpFactory.CreateClient(HttpClientName);
-                _keys = new JsonWebKeySet(await client.GetStringAsync(options.Google.JwksUrl));
-                _fetchedAt = time.GetUtcNow();
+                if (current.Knows(kid) || now - _lastUnknownKidFetch < UnknownKidInterval) return current.Keys; // fetched meanwhile, or cooling down
+                _lastUnknownKidFetch = now;
             }
-            return _keys!;
+            using var client = httpFactory.CreateClient(HttpClientName);
+            var keys = new JsonWebKeySet(await client.GetStringAsync(options.Google.JwksUrl));
+            _snapshot = new Snapshot(keys, now);
+            return keys;
         }
         finally
         {

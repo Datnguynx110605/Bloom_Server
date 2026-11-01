@@ -205,6 +205,23 @@ public class GoogleTests(Containers containers)
     }
 
     [Fact]
+    public async Task Forged_unknown_kids_refetch_jwks_at_most_once_per_interval() // R42
+    {
+        await using var google = await FakeGoogle.StartAsync();
+        await using var t = await StartAsync(google);
+        await ExpectTokensAsync(await SignInAsync(t, google.Mint(NewSub(), NewEmail())));
+        var before = google.JwksRequests;
+
+        foreach (var kid in new[] { "forged-1", "forged-2" })
+            await SignInAsync(t, google.Mint(NewSub(), NewEmail(), kid: kid)); // the outcome is irrelevant: only the fetches count
+        Assert.Equal(before + 1, google.JwksRequests);
+
+        t.Clock.Advance(TimeSpan.FromSeconds(31));
+        await SignInAsync(t, google.Mint(NewSub(), NewEmail(), kid: "forged-3"));
+        Assert.Equal(before + 2, google.JwksRequests);
+    }
+
+    [Fact]
     public async Task Link_google_rules()
     {
         await using var google = await FakeGoogle.StartAsync();

@@ -53,7 +53,7 @@ public sealed class FakeGoogle : IAsyncDisposable
     }
 
     public string Mint(
-        string sub, string email, bool emailVerified = true, string? name = "Ann Lee", string? aud = null, string? iss = null, DateTimeOffset? exp = null)
+        string sub, string email, bool emailVerified = true, string? name = "Ann Lee", string? aud = null, string? iss = null, DateTimeOffset? exp = null, string? kid = null)
     {
         (string Kid, RSA Key) signer;
         lock (_keys) signer = _keys[^1];
@@ -69,7 +69,7 @@ public sealed class FakeGoogle : IAsyncDisposable
             ["exp"] = (exp ?? now.AddHours(1)).ToUnixTimeSeconds(),
         };
         if (name is not null) payload["name"] = name;
-        var signingInput = Encode(new { alg = "RS256", kid = signer.Kid, typ = "JWT" }) + "." + Encode(payload);
+        var signingInput = Encode(new { alg = "RS256", kid = kid ?? signer.Kid, typ = "JWT" }) + "." + Encode(payload);
         var signature = signer.Key.SignData(Encoding.ASCII.GetBytes(signingInput), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         return signingInput + "." + Base64UrlEncoder.Encode(signature);
     }
