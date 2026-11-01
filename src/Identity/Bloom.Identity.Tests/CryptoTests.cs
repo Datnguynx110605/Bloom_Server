@@ -103,6 +103,19 @@ public class CryptoTests
     }
 
     [Fact]
+    public void SecretBox_is_safe_under_concurrent_use()
+    {
+        var box = new SecretBox(RandomNumberGenerator.GetBytes(32));
+        var failures = 0;
+        Parallel.For(0, 500, i =>
+        {
+            var plain = Encoding.UTF8.GetBytes($"secret-{i}");
+            if (!box.Open(box.Seal(plain)).AsSpan().SequenceEqual(plain)) Interlocked.Increment(ref failures);
+        });
+        Assert.Equal(0, failures);
+    }
+
+    [Fact]
     public void Code_hash_depends_on_subject_purpose_and_code()
     {
         var hasher = new CodeHasher(RandomNumberGenerator.GetBytes(32));
