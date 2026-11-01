@@ -4,9 +4,11 @@ using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.GoogleSignIn;
 using Bloom.Identity.Observability;
+using Bloom.Identity.Orders;
 using Bloom.Identity.Redis;
 using Bloom.Identity.Services;
 using Bloom.Identity.Sessions;
+using Bloom.Order.Contracts;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -50,6 +52,8 @@ public static class IdentityApp
         {
             builder.Services.AddGrpc().AddJsonTranscoding(o =>
                 o.TypeRegistry = TypeRegistry.FromMessages(ErrorInfo.Descriptor)); // error details are Any(ErrorInfo)
+            builder.Services.AddGrpcClient<OrderInternal.OrderInternalClient>(o => o.Address = new Uri(options.OrderUrl));
+            builder.Services.AddScoped<OrderCheck>();
             builder.Services.AddSingleton<SigningKeys>();
             builder.Services.AddSingleton<TokenIssuer>();
             builder.Services.AddScoped<SessionService>();

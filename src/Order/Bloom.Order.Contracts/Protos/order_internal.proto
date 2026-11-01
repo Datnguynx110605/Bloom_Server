@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package bloom.order.v1;
+
+option csharp_namespace = "Bloom.Order.Contracts";
+
+// 03-order §5: internal API, callable only by identity.
+service OrderInternal {
+  rpc HasUnsettledOrders(HasUnsettledOrdersRequest) returns (HasUnsettledOrdersResponse);
+}
+
+message HasUnsettledOrdersRequest {
+  string account_id = 1;
+}
+
+message HasUnsettledOrdersResponse {
+  bool has_unsettled_orders = 1;
+}

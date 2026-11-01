@@ -5,6 +5,8 @@ using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Errors;
 using Bloom.Identity.GoogleSignIn;
+using Bloom.Identity.Observability;
+using Bloom.Identity.Orders;
 using Bloom.Identity.Sessions;
 using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
@@ -22,7 +24,7 @@ namespace Bloom.Identity.Services;
 /// <summary>LLD 06-identity §3 component <c>Account</c>: the signed-in caller's own account.</summary>
 public sealed class AccountService(
     IdentityDbContext db, CodeService codes, Credentials credentials, PasswordPolicy passwordPolicy, PasswordHasher passwordHasher,
-    SessionService sessions, OutboxWriter outbox, TimeProvider time, GoogleTokenVerifier google, ConcurrentUpdates updates) : V1.Account.AccountBase
+    SessionService sessions, OutboxWriter outbox, TimeProvider time, GoogleTokenVerifier google, ConcurrentUpdates updates, OrderCheck orders, IdentityMetrics metrics) : V1.Account.AccountBase
 {
     private const int MaxAddresses = 10;
 
@@ -178,6 +180,45 @@ public sealed class AccountService(
         var deleted = Guid.TryParse(request.Id, out var id)
             && await db.Addresses.Where(a => a.Id == id && a.AccountId == caller.UserId).ExecuteDeleteAsync(context.CancellationToken) == 1;
         return deleted ? new Empty() : throw IdentityErrors.Error(IdentityErrors.NotFound, "No such address.");
+    }
+
+    public override async Task<Empty> DeleteAccount(Empty request, ServerCallContext context)
+    {
+        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(time);
+        var account = await LoadAsync(caller, context);
+        if (account.Status == AccountStatuses.Deleted) throw IdentityErrors.Error(IdentityErrors.NotFound, "No such account.");
+
+        // §6.8 step 2, before any write: a refused or failed check leaves everything as it was.
+        bool unsettled;
+        try
+        {
+            unsettled = await orders.HasUnsettledOrdersAsync(account.Id);
+        }
+        catch (RpcException)
+        {
+            metrics.AccountDeletion("order_unavailable");
+            throw;
+        }
+        if (unsettled)
+        {
+            metrics.AccountDeletion("unsettled_orders");
+            throw IdentityErrors.Error(IdentityErrors.UnsettledOrders, "Orders are still open. Try again once they are settled.");
+        }
+
+        var ct = context.CancellationToken;
+        var oldEmail = account.EmailNormalized;
+        account.Status = AccountStatuses.Deleted;
+        account.EmailNormalized = $"deleted+{account.Id:D}@invalid"; // frees the real email (§6.8)
+        account.EmailDisplay = account.Name = account.PasswordHash = account.GoogleSub = null;
+        await using var tx = await db.Database.BeginTransactionAsync(ct); // ExecuteDelete/Update mixed with tracked changes (plan I29)
+        await db.Addresses.Where(a => a.AccountId == account.Id).ExecuteDeleteAsync(ct);
+        await db.VerificationCodes.Where(c => c.AccountId == account.Id || c.TargetEmail == oldEmail).ExecuteDeleteAsync(ct); // plan I30
+        await sessions.RevokeAllAsync(account, "account_deleted");
+        outbox.PublishEvent(IdentityMessages.AccountDeleted, new AccountDeletedV1(account.Id));
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        metrics.AccountDeletion("deleted");
+        return new Empty();
     }
 
     // Losing the default changes the row, so its version moves too.

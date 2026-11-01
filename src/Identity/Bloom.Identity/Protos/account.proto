@@ -7,7 +7,7 @@ import "google/protobuf/empty.proto";
 
 option csharp_namespace = "Bloom.Identity.V1";
 
-// 06-identity §5.1. Task 10 adds DeleteAccount.
+// 06-identity §5.1.
 service Account {
   rpc GetMe(google.protobuf.Empty) returns (GetMeResponse) {
     option (google.api.http) = { get: "/api/me/profile" };
@@ -35,6 +35,9 @@ service Account {
   }
   rpc DeleteAddress(DeleteAddressRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = { delete: "/api/me/addresses/{id}" };
+  }
+  rpc DeleteAccount(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    option (google.api.http) = { delete: "/api/me/account" };
   }
 }
 

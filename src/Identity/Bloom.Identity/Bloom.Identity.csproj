@@ -12,6 +12,7 @@
     <Protobuf Include="Protos\staff.proto" GrpcServices="Server" />
     <InternalsVisibleTo Include="Bloom.Identity.Tests" />
     <ProjectReference Include="..\..\Shared\Bloom.Shared\Bloom.Shared.csproj" />
+    <ProjectReference Include="..\..\Order\Bloom.Order.Contracts\Bloom.Order.Contracts.csproj" />
     <ProjectReference Include="..\Bloom.Identity.Contracts\Bloom.Identity.Contracts.csproj" />
   </ItemGroup>
 
