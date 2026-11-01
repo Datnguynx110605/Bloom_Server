@@ -18,6 +18,9 @@ service Auth {
   rpc CompleteSignUp(CompleteSignUpRequest) returns (TokenResponse) {
     option (google.api.http) = { post: "/api/auth/sign-up/complete" body: "*" };
   }
+  rpc SignIn(SignInRequest) returns (SignInResponse) {
+    option (google.api.http) = { post: "/api/auth/sign-in" body: "*" };
+  }
   rpc Refresh(google.protobuf.Empty) returns (TokenResponse) {
     option (google.api.http) = { post: "/auth/refresh" };
   }
@@ -46,6 +49,19 @@ message CompleteSignUpRequest {
   string registration_token = 1;
   string password = 2;
   string name = 3;
+}
+
+message SignInRequest {
+  string email = 1;
+  string password = 2;
+}
+
+// Customers get an access token (and the cookie); staff get an MFA challenge instead.
+message SignInResponse {
+  oneof result {
+    string access_token = 1;
+    string mfa_challenge_id = 2;
+  }
 }
 
 message SignOutRequest {

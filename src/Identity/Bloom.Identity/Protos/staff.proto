@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package bloom.identity.v1;
+
+import "google/api/annotations.proto";
+import "Protos/auth.proto";
+
+option csharp_namespace = "Bloom.Identity.V1";
+
+// 06-identity §5.1. Task 11 adds AcceptStaffInvitation.
+service Staff {
+  rpc VerifyStaffMfa(VerifyStaffMfaRequest) returns (TokenResponse) {
+    option (google.api.http) = { post: "/api/auth/staff/mfa" body: "*" };
+  }
+}
+
+message VerifyStaffMfaRequest {
+  string mfa_challenge_id = 1;
+  string code = 2;
+}

@@ -4,6 +4,8 @@ using Bloom.Identity.Context;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Errors;
+using Bloom.Identity.Observability;
+using Bloom.Identity.Redis;
 using Bloom.Identity.Sessions;
 using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
@@ -18,7 +20,8 @@ namespace Bloom.Identity.Services;
 /// <summary>LLD 06-identity §3 component <c>Auth</c>.</summary>
 public sealed class AuthService(
     SessionService sessions, IdentityDbContext db, CodeService codes, RegistrationTokens registrationTokens,
-    PasswordPolicy passwordPolicy, PasswordHasher passwordHasher, OutboxWriter outbox, TimeProvider time) : Auth.AuthBase
+    PasswordPolicy passwordPolicy, PasswordHasher passwordHasher, OutboxWriter outbox, TimeProvider time,
+    Credentials credentials, AuthStore authStore, IdentityMetrics metrics) : Auth.AuthBase
 {
     public override async Task<Empty> StartSignUp(StartSignUpRequest request, ServerCallContext context)
     {
@@ -69,6 +72,35 @@ public sealed class AuthService(
             throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
         }
         return RefreshCookie.Respond(context, session);
+    }
+
+    public override async Task<SignInResponse> SignIn(SignInRequest request, ServerCallContext context)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            var account = await credentials.CheckPasswordAsync(request.Email, request.Password);
+            if (account.Type == AccountTypes.Staff)
+            {
+                if (account.TotpSecretEnc is null) // after ResetStaffMfa: only the re-enrol link gets them back in (spec §4)
+                {
+                    metrics.SignIn(account.Type, "password", "invalid");
+                    throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "Wrong email or password.");
+                }
+                var challenge = await authStore.CreateChallengeAsync(account.Id);
+                metrics.SignIn(account.Type, "password", "mfa_required");
+                return new SignInResponse { MfaChallengeId = challenge };
+            }
+
+            var session = await sessions.StartAsync(account);
+            await db.SaveChangesAsync(context.CancellationToken);
+            metrics.SignIn(account.Type, "password", "success");
+            return new SignInResponse { AccessToken = RefreshCookie.Respond(context, session).AccessToken };
+        }
+        finally
+        {
+            metrics.SignInDuration(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
+        }
     }
 
     public override async Task<TokenResponse> Refresh(Empty request, ServerCallContext context)

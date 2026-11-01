@@ -52,6 +52,7 @@ public static class IdentityApp
             builder.Services.AddSingleton<SigningKeys>();
             builder.Services.AddSingleton<TokenIssuer>();
             builder.Services.AddScoped<SessionService>();
+            builder.Services.AddScoped<Credentials>();
             builder.Services.AddScoped<CodeService>();
             builder.Services.AddSingleton<RegistrationTokens>();
             builder.Services.AddSingleton<AuthStore>();
@@ -76,6 +77,7 @@ public static class IdentityApp
         if (api)
         {
             app.MapGrpcService<AuthService>();
+            app.MapGrpcService<StaffService>();
             app.MapGet("/.well-known/jwks.json", (SigningKeys keys) => Results.Text(keys.JwksJson, "application/json"));
         }
         return app;
