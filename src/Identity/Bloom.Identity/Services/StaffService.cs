@@ -15,7 +15,7 @@ namespace Bloom.Identity.Services;
 
 /// <summary>LLD 06-identity §3 component <c>Staff</c>.</summary>
 public sealed class StaffService(
-    IdentityDbContext db, AuthStore authStore, SessionService sessions, IdentityMetrics metrics, TimeProvider time,
+    IdentityDbContext db, AuthStore authStore, SessionService sessions, Credentials credentials, IdentityMetrics metrics, TimeProvider time,
     PasswordPolicy passwordPolicy, PasswordHasher passwordHasher, [FromKeyedServices("totp")] SecretBox totpBox) : Staff.StaffBase
 {
     public override async Task<TokenResponse> VerifyStaffMfa(VerifyStaffMfaRequest request, ServerCallContext context)
@@ -51,13 +51,13 @@ public sealed class StaffService(
         var hash = Opaque.Sha256(request.InviteToken);
         var invitation = await db.StaffInvitations.AsNoTracking().SingleOrDefaultAsync(i => i.TokenHash == hash && i.AcceptedAt == null && i.ExpiresAt > now, ct)
             ?? throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
-        if (await db.Accounts.AnyAsync(a => a.EmailNormalized == invitation.EmailNormalized, ct)) // Task 12: a staff account here is the MFA re-enrol branch
-            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
+        var existing = await db.Accounts.SingleOrDefaultAsync(a => a.EmailNormalized == invitation.EmailNormalized, ct);
+        if (existing is { Type: AccountTypes.Staff }) return await ReenrolAsync(request, invitation, existing, context); // after ResetStaffMfa (spec §4)
+        if (existing is not null) throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
 
         var password = passwordPolicy.Validate(request.Password);
         var name = Inputs.Name(request.Name);
-        if (!Base32.TryDecode(request.TotpSecret, out var secret) || secret.Length < MinTotpSecretBytes)
-            throw IdentityErrors.Validation("totp_secret", "The authenticator secret must be base32 and at least 160 bits.");
+        var secret = ParseSecret(request.TotpSecret);
 
         // The first code proves the device. A wrong one leaves the invitation usable (plan I27); the account id is assigned up front for the replay mark.
         var id = Guid.CreateVersion7();
@@ -96,6 +96,33 @@ public sealed class StaffService(
         await tx.CommitAsync(ct);
         return RefreshCookie.Respond(context, session);
     }
+
+    /// <summary>MFA re-enrolment: the current password and a first code on the new secret; name, password and role stay (plan I27).</summary>
+    private async Task<TokenResponse> ReenrolAsync(AcceptStaffInvitationRequest request, StaffInvitation invitation, Account account, ServerCallContext context)
+    {
+        var ct = context.CancellationToken;
+        var now = time.GetUtcNow();
+        var secret = ParseSecret(request.TotpSecret);
+        await credentials.CheckAccountPasswordAsync(account, request.CurrentPassword); // may save a rehash, so before anything is staged
+        if (account.Status != AccountStatuses.Active) throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "Wrong email or password.");
+        if (!Totp.Verify(secret, request.TotpCode, now, out var step) || !await authStore.TryMarkTotpUsedAsync(account.Id, step))
+            throw Invalid();
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var claimed = await db.StaffInvitations.Where(i => i.Id == invitation.Id && i.AcceptedAt == null && i.ExpiresAt > now)
+            .ExecuteUpdateAsync(s => s.SetProperty(i => i.AcceptedAt, now), ct);
+        if (claimed == 0) throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
+        account.TotpSecretEnc = totpBox.Seal(secret);
+        var session = await sessions.StartAsync(account);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        return RefreshCookie.Respond(context, session);
+    }
+
+    private static byte[] ParseSecret(string base32) =>
+        Base32.TryDecode(base32, out var secret) && secret.Length >= MinTotpSecretBytes
+            ? secret
+            : throw IdentityErrors.Validation("totp_secret", "The authenticator secret must be base32 and at least 160 bits.");
 
     private const int MinTotpSecretBytes = 20; // 160 bits (spec §7)
 

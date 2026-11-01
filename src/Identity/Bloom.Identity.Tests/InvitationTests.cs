@@ -17,7 +17,7 @@ public class InvitationTests(Containers containers)
 
     private const string Base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
-    private static string ToBase32(byte[] bytes)
+    internal static string ToBase32(byte[] bytes)
     {
         var chars = new List<char>();
         int buffer = 0, bits = 0;

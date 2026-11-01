@@ -8,7 +8,7 @@ import "google/protobuf/timestamp.proto";
 
 option csharp_namespace = "Bloom.Identity.V1";
 
-// 06-identity §5.1, admin only. Task 11 adds InviteStaff and ListStaff.
+// 06-identity §5.1, admin only.
 service Admin {
   rpc InviteStaff(InviteStaffRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = { post: "/api/admin/staff/invitations" body: "*" };
@@ -16,10 +16,31 @@ service Admin {
   rpc ListStaff(google.protobuf.Empty) returns (ListStaffResponse) {
     option (google.api.http) = { get: "/api/admin/staff/members" };
   }
+  rpc ChangeStaffRole(ChangeStaffRoleRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/role" body: "*" };
+  }
+  rpc DeactivateStaff(StaffMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/deactivate" body: "*" };
+  }
+  rpc ReactivateStaff(StaffMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/reactivate" body: "*" };
+  }
+  rpc ResetStaffMfa(StaffMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/reset-mfa" body: "*" };
+  }
 }
 
 message InviteStaffRequest {
   string email = 1;
+  string role = 2;
+}
+
+message StaffMemberRequest {
+  string id = 1;
+}
+
+message ChangeStaffRoleRequest {
+  string id = 1;
   string role = 2;
 }
 
