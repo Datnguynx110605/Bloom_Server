@@ -68,7 +68,7 @@ public sealed class TestIdentity : IAsyncDisposable
         });
         if (fresh)
         {
-            await using var db = NewDb(connectionString);
+            await using var db = NewDb(connectionString, clock);
             await db.Database.MigrateAsync();
         }
         await app.StartAsync();
@@ -83,10 +83,10 @@ public sealed class TestIdentity : IAsyncDisposable
     }
 
     /// <summary>A test-side context on the same database.</summary>
-    public IdentityDbContext NewDb() => NewDb(ConnectionString);
+    public IdentityDbContext NewDb() => NewDb(ConnectionString, Clock);
 
-    private static IdentityDbContext NewDb(string connectionString) =>
-        new(new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql(connectionString).Options);
+    private static IdentityDbContext NewDb(string connectionString, TimeProvider clock) =>
+        new(new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql(connectionString).Options, clock);
 
     public async ValueTask DisposeAsync()
     {
