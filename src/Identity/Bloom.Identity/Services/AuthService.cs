@@ -4,6 +4,7 @@ using Bloom.Identity.Context;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Errors;
+using Bloom.Identity.GoogleSignIn;
 using Bloom.Identity.Observability;
 using Bloom.Identity.Redis;
 using Bloom.Identity.Sessions;
@@ -22,7 +23,7 @@ namespace Bloom.Identity.Services;
 public sealed class AuthService(
     SessionService sessions, IdentityDbContext db, CodeService codes, RegistrationTokens registrationTokens,
     PasswordPolicy passwordPolicy, PasswordHasher passwordHasher, OutboxWriter outbox, TimeProvider time,
-    Credentials credentials, AuthStore authStore, IdentityMetrics metrics) : Auth.AuthBase
+    Credentials credentials, AuthStore authStore, IdentityMetrics metrics, GoogleTokenVerifier google) : Auth.AuthBase
 {
     public override async Task<Empty> StartSignUp(StartSignUpRequest request, ServerCallContext context)
     {
@@ -102,6 +103,69 @@ public sealed class AuthService(
         {
             metrics.SignInDuration(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
         }
+    }
+
+    public override async Task<TokenResponse> SignInWithGoogle(SignInWithGoogleRequest request, ServerCallContext context)
+    {
+        GoogleIdentity identity;
+        try
+        {
+            identity = await google.VerifyAsync(request.IdToken);
+        }
+        catch (RpcException)
+        {
+            metrics.SignIn("unknown", "google", "invalid");
+            throw;
+        }
+
+        var (email, display) = Inputs.Email(identity.Email);
+        // 06-identity §6.2: the sub first, then the email.
+        var account = await db.Accounts.SingleOrDefaultAsync(a => a.GoogleSub == identity.Sub, context.CancellationToken)
+            ?? await db.Accounts.SingleOrDefaultAsync(a => a.EmailNormalized == email, context.CancellationToken);
+        if (account?.Type == AccountTypes.Staff)
+        {
+            metrics.SignIn(AccountTypes.Staff, "google", "not_allowed");
+            throw IdentityErrors.Error(IdentityErrors.GoogleNotAllowed, "Staff sign in with their password.");
+        }
+        if (account is not null && account.Status != AccountStatuses.Active)
+        {
+            metrics.SignIn(account.Type, "google", "invalid");
+            throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "The Google sign-in is not valid.");
+        }
+
+        if (account is null)
+        {
+            var now = time.GetUtcNow();
+            // I19: the name claim, else the email's local part, at most 100 scalars.
+            var raw = string.IsNullOrWhiteSpace(identity.Name) ? display[..display.LastIndexOf('@')] : identity.Name.Trim();
+            account = new Account
+            {
+                Id = Guid.CreateVersion7(),
+                Type = AccountTypes.Customer,
+                EmailNormalized = email,
+                EmailDisplay = display,
+                GoogleSub = identity.Sub,
+                Name = string.Concat(raw.EnumerateRunes().Take(100)),
+                Status = AccountStatuses.Active,
+                CreatedAt = now,
+                UpdatedAt = now,
+            };
+            db.Accounts.Add(account);
+            outbox.PublishEvent(IdentityMessages.CustomerRegistered, new CustomerRegisteredV1(account.Id, display, account.Name));
+        }
+        else account.GoogleSub = identity.Sub;
+
+        var session = await sessions.StartAsync(account);
+        try
+        {
+            await db.SaveChangesAsync(context.CancellationToken);
+        }
+        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account."); // a concurrent first sign-in won
+        }
+        metrics.SignIn(AccountTypes.Customer, "google", "success");
+        return RefreshCookie.Respond(context, session);
     }
 
     public override async Task<Empty> RequestPasswordReset(RequestPasswordResetRequest request, ServerCallContext context)

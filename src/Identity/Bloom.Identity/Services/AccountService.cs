@@ -4,6 +4,7 @@ using Bloom.Identity.Context;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Errors;
+using Bloom.Identity.GoogleSignIn;
 using Bloom.Identity.Sessions;
 using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
@@ -19,7 +20,7 @@ namespace Bloom.Identity.Services;
 /// <summary>LLD 06-identity §3 component <c>Account</c>: the signed-in caller's own account.</summary>
 public sealed class AccountService(
     IdentityDbContext db, CodeService codes, Credentials credentials, PasswordPolicy passwordPolicy, PasswordHasher passwordHasher,
-    SessionService sessions, OutboxWriter outbox, TimeProvider time) : V1.Account.AccountBase
+    SessionService sessions, OutboxWriter outbox, TimeProvider time, GoogleTokenVerifier google) : V1.Account.AccountBase
 {
     public override async Task<GetMeResponse> GetMe(Empty request, ServerCallContext context)
     {
@@ -80,6 +81,37 @@ public sealed class AccountService(
         {
             throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
         }
+        return new Empty();
+    }
+
+    public override async Task<Empty> LinkGoogle(LinkGoogleRequest request, ServerCallContext context)
+    {
+        var caller = TrustedCaller.From(context).RequireCustomer(); // no re-auth: plan I18 does not list it
+        var identity = await google.VerifyAsync(request.IdToken);
+        var account = await LoadAsync(caller, context);
+
+        // Replaces the caller's own sub (plan I19); a sub on another account is refused.
+        account.GoogleSub = identity.Sub;
+        try
+        {
+            await db.SaveChangesAsync(context.CancellationToken);
+        }
+        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            throw IdentityErrors.Error(IdentityErrors.GoogleAlreadyLinked, "This Google account is linked to another account.");
+        }
+        return new Empty();
+    }
+
+    public override async Task<Empty> UnlinkGoogle(Empty request, ServerCallContext context)
+    {
+        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(time);
+        var account = await LoadAsync(caller, context);
+        if (account.PasswordHash is null)
+            throw IdentityErrors.Error(IdentityErrors.PasswordRequired, "Set a password before unlinking Google.");
+
+        account.GoogleSub = null;
+        await db.SaveChangesAsync(context.CancellationToken);
         return new Empty();
     }
 

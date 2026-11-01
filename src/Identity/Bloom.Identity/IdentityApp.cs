@@ -2,6 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 using Bloom.Identity.Codes;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
+using Bloom.Identity.GoogleSignIn;
 using Bloom.Identity.Observability;
 using Bloom.Identity.Redis;
 using Bloom.Identity.Services;
@@ -56,6 +57,8 @@ public static class IdentityApp
             builder.Services.AddScoped<CodeService>();
             builder.Services.AddSingleton<RegistrationTokens>();
             builder.Services.AddSingleton<AuthStore>();
+            builder.Services.AddHttpClient(GoogleTokenVerifier.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(5));
+            builder.Services.AddSingleton<GoogleTokenVerifier>();
             builder.Services.AddDataProtection()
                 .SetApplicationName("bloom-identity")
                 .PersistKeysToDbContext<IdentityDbContext>()

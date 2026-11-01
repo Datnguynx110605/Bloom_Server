@@ -21,6 +21,12 @@ service Account {
   rpc ChangePassword(ChangePasswordRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = { post: "/api/me/password" body: "*" };
   }
+  rpc LinkGoogle(LinkGoogleRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/me/google" body: "*" };
+  }
+  rpc UnlinkGoogle(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    option (google.api.http) = { delete: "/api/me/google" };
+  }
 }
 
 message GetMeResponse {
@@ -44,4 +50,8 @@ message ConfirmEmailChangeRequest {
 message ChangePasswordRequest {
   string current_password = 1;
   string new_password = 2;
+}
+
+message LinkGoogleRequest {
+  string id_token = 1;
 }
