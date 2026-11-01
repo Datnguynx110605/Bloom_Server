@@ -56,9 +56,9 @@ public sealed class CodeService(
 
     /// <summary>
     /// Checks <paramref name="code"/> against the latest open code: of the account when <paramref name="accountId"/> is given
-    /// (<c>change_email</c>), else of <paramref name="targetEmail"/>. Marks it consumed; the caller saves.
-    /// A try is counted in the database before the comparison, so concurrent guesses cannot exceed 5; call this before opening a
-    /// transaction that could roll that count back.
+    /// (<c>change_email</c>), else of <paramref name="targetEmail"/>. A try is counted, and a correct code consumed, by conditional
+    /// updates committed at once: concurrent guesses cannot exceed 5, and of two correct submissions only one wins (plan R10, R11).
+    /// Call this before opening a transaction that could roll either back.
     /// </summary>
     /// <exception cref="Grpc.Core.RpcException"><c>CODE_INVALID</c></exception>
     public async Task<VerificationCode> VerifyAsync(string purpose, string code, string? targetEmail, Guid? accountId)
@@ -76,7 +76,9 @@ public sealed class CodeService(
         var expected = hasher.Hash(Subject(row.TargetEmail, row.AccountId), purpose, code);
         if (!CryptographicOperations.FixedTimeEquals(expected, row.CodeHmac)) throw Invalid(purpose);
 
-        row.ConsumedAt = now;
+        if (await db.VerificationCodes.Where(c => c.Id == row.Id && c.ConsumedAt == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.ConsumedAt, now)) == 0)
+            throw Invalid(purpose);
         return row;
     }
 
