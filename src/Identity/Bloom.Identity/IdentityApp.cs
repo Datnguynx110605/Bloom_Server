@@ -1,3 +1,4 @@
+using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Observability;
 using Bloom.Shared;
@@ -39,6 +40,11 @@ public static class IdentityApp
         if (api)
         {
             builder.Services.AddGrpc().AddJsonTranscoding();
+            builder.Services.AddSingleton<PasswordHasher>();
+            builder.Services.AddSingleton<PasswordPolicy>();
+            builder.Services.AddSingleton(new CodeHasher(options.CodePepperBytes));
+            builder.Services.AddKeyedSingleton("code", new SecretBox(options.CodeEncryptionKeyBytes));
+            builder.Services.AddKeyedSingleton("totp", new SecretBox(options.TotpKeyBytes));
             builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
             {
                 var redis = ConfigurationOptions.Parse(options.Redis);
