@@ -9,6 +9,7 @@ using Bloom.Identity.Orders;
 using Bloom.Identity.Redis;
 using Bloom.Identity.Services;
 using Bloom.Identity.Sessions;
+using Bloom.Identity.Worker;
 using Bloom.Order.Contracts;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
@@ -43,11 +44,12 @@ public static class IdentityApp
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan I3)
         builder.Services.AddSingleton<IdentityMetrics>();
         builder.Services.AddDbContext<IdentityDbContext>(o => o.UseNpgsql(options.Database));
-        builder.Services.AddBloom<IdentityDbContext>(o =>
+        var bloom = builder.Services.AddBloom<IdentityDbContext>(o =>
         {
             o.ServiceName = "identity";
             o.RabbitMqUri = options.RabbitMq;
         });
+        bloom.AddConsumer<AuditConsumer>("audit", AuditConsumer.Bindings); // both modes: the DLQ admin catalog needs it (plan I8)
 
         if (api)
         {
@@ -80,6 +82,11 @@ public static class IdentityApp
                 redis.AbortOnConnectFail = false; // start and serve while Redis is down
                 return ConnectionMultiplexer.Connect(redis);
             });
+        }
+        else
+        {
+            bloom.AddWorker();
+            builder.Services.AddHostedService<CleanupJob>();
         }
 
         var app = builder.Build();
