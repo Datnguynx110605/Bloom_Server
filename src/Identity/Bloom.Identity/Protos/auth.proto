@@ -9,6 +9,15 @@ option csharp_namespace = "Bloom.Identity.V1";
 
 // 06-identity §5.1. Token-issuing methods return TokenResponse and set the bloom_rt cookie.
 service Auth {
+  rpc StartSignUp(StartSignUpRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/auth/sign-up/start" body: "*" };
+  }
+  rpc VerifySignUpCode(VerifySignUpCodeRequest) returns (VerifySignUpCodeResponse) {
+    option (google.api.http) = { post: "/api/auth/sign-up/verify" body: "*" };
+  }
+  rpc CompleteSignUp(CompleteSignUpRequest) returns (TokenResponse) {
+    option (google.api.http) = { post: "/api/auth/sign-up/complete" body: "*" };
+  }
   rpc Refresh(google.protobuf.Empty) returns (TokenResponse) {
     option (google.api.http) = { post: "/auth/refresh" };
   }
@@ -18,6 +27,25 @@ service Auth {
   rpc SignOutEverywhere(google.protobuf.Empty) returns (google.protobuf.Empty) {
     option (google.api.http) = { post: "/api/me/sign-out-everywhere" };
   }
+}
+
+message StartSignUpRequest {
+  string email = 1;
+}
+
+message VerifySignUpCodeRequest {
+  string email = 1;
+  string code = 2;
+}
+
+message VerifySignUpCodeResponse {
+  string registration_token = 1;
+}
+
+message CompleteSignUpRequest {
+  string registration_token = 1;
+  string password = 2;
+  string name = 3;
 }
 
 message SignOutRequest {

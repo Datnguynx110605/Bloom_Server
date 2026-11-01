@@ -1,12 +1,16 @@
+using System.Security.Cryptography.X509Certificates;
+using Bloom.Identity.Codes;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Observability;
+using Bloom.Identity.Redis;
 using Bloom.Identity.Services;
 using Bloom.Identity.Sessions;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
 using Google.Rpc;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
@@ -48,6 +52,13 @@ public static class IdentityApp
             builder.Services.AddSingleton<SigningKeys>();
             builder.Services.AddSingleton<TokenIssuer>();
             builder.Services.AddScoped<SessionService>();
+            builder.Services.AddScoped<CodeService>();
+            builder.Services.AddSingleton<RegistrationTokens>();
+            builder.Services.AddSingleton<AuthStore>();
+            builder.Services.AddDataProtection()
+                .SetApplicationName("bloom-identity")
+                .PersistKeysToDbContext<IdentityDbContext>()
+                .ProtectKeysWithCertificate(X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(options.DataProtection.Certificate), null)); // plan I5
             builder.Services.AddSingleton<PasswordHasher>();
             builder.Services.AddSingleton<PasswordPolicy>();
             builder.Services.AddSingleton(new CodeHasher(options.CodePepperBytes));

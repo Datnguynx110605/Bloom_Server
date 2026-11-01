@@ -1,17 +1,76 @@
+using Bloom.Identity.Codes;
+using Bloom.Identity.Contracts;
 using Bloom.Identity.Context;
+using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Errors;
 using Bloom.Identity.Sessions;
+using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
+using Bloom.Shared.Messaging;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Bloom.Identity.Services;
 
 /// <summary>LLD 06-identity §3 component <c>Auth</c>.</summary>
-public sealed class AuthService(SessionService sessions, IdentityDbContext db) : Auth.AuthBase
+public sealed class AuthService(
+    SessionService sessions, IdentityDbContext db, CodeService codes, RegistrationTokens registrationTokens,
+    PasswordPolicy passwordPolicy, PasswordHasher passwordHasher, OutboxWriter outbox, TimeProvider time) : Auth.AuthBase
 {
+    public override async Task<Empty> StartSignUp(StartSignUpRequest request, ServerCallContext context)
+    {
+        var (email, _) = Inputs.Email(request.Email);
+        if (await db.Accounts.AnyAsync(a => a.EmailNormalized == email, context.CancellationToken))
+            throw IdentityErrors.Error(IdentityErrors.EmailAlreadyRegistered, "This email already has an account.");
+        await codes.IssueAsync(email, CodePurposes.SignUp, null);
+        await db.SaveChangesAsync(context.CancellationToken);
+        return new Empty();
+    }
+
+    public override async Task<VerifySignUpCodeResponse> VerifySignUpCode(VerifySignUpCodeRequest request, ServerCallContext context)
+    {
+        var (email, display) = Inputs.Email(request.Email);
+        await codes.VerifyAsync(CodePurposes.SignUp, request.Code, email, null);
+        await db.SaveChangesAsync(context.CancellationToken);
+        return new VerifySignUpCodeResponse { RegistrationToken = registrationTokens.Create(display) };
+    }
+
+    public override async Task<TokenResponse> CompleteSignUp(CompleteSignUpRequest request, ServerCallContext context)
+    {
+        var (email, display) = Inputs.Email(registrationTokens.Read(request.RegistrationToken)); // the email comes from the token only (ID-T01c)
+        var password = passwordPolicy.Validate(request.Password);
+        var name = Inputs.Name(request.Name);
+
+        var now = time.GetUtcNow();
+        var account = new Account
+        {
+            Id = Guid.CreateVersion7(),
+            Type = AccountTypes.Customer,
+            EmailNormalized = email,
+            EmailDisplay = display,
+            PasswordHash = passwordHasher.Hash(password),
+            Name = name,
+            Status = AccountStatuses.Active,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        db.Accounts.Add(account);
+        outbox.PublishEvent(IdentityMessages.CustomerRegistered, new CustomerRegisteredV1(account.Id, display, name));
+        var session = await sessions.StartAsync(account);
+        try
+        {
+            await db.SaveChangesAsync(context.CancellationToken);
+        }
+        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
+        }
+        return RefreshCookie.Respond(context, session);
+    }
+
     public override async Task<TokenResponse> Refresh(Empty request, ServerCallContext context)
     {
         var http = context.GetHttpContext();
