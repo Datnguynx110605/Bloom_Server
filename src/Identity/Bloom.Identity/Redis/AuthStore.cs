@@ -17,12 +17,16 @@ public sealed class AuthStore(IConnectionMultiplexer redis)
         if (!await db.StringSetAsync($"code:cooldown:{email}:{purpose}", 1, TimeSpan.FromSeconds(60), When.NotExists))
             throw IdentityErrors.Error(IdentityErrors.CodeRateLimited, "Wait a minute before asking for another code.");
 
-        var hourly = $"code:hourly:{email}:{purpose}";
-        var count = await db.StringIncrementAsync(hourly);
-        if (count == 1) await db.KeyExpireAsync(hourly, TimeSpan.FromHours(1));
+        var count = (long)await db.ScriptEvaluateAsync(CountScript, [$"code:hourly:{email}:{purpose}"], [3600]);
         if (count > HourlyCap)
             throw IdentityErrors.Error(IdentityErrors.CodeRateLimited, "Too many codes requested. Try again later.");
     }
+
+    // INCR and the first EXPIRE in one call: a crash between them would leave a counter that never expires.
+    private const string CountScript = @"
+        local n = redis.call('INCR', KEYS[1])
+        if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+        return n";
 
     // Failure counter and block (I12): the 5th failure sets the block and drops the counter, atomically.
     private const string FailureScript = @"

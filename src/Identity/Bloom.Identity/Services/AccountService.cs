@@ -62,7 +62,7 @@ public sealed class AccountService(
     public override async Task<Empty> ChangeEmail(ChangeEmailRequest request, ServerCallContext context)
     {
         var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(time);
-        var (email, _) = Inputs.Email(request.NewEmail, "newEmail");
+        var (email, _) = Inputs.Email(request.NewEmail, "new_email");
         if (await db.Accounts.AnyAsync(a => a.EmailNormalized == email, context.CancellationToken))
             throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
         await codes.IssueAsync(email, CodePurposes.ChangeEmail, caller.UserId);

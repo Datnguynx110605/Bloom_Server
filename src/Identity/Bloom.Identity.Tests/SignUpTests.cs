@@ -256,5 +256,7 @@ public class SignUpTests(Containers containers)
         Assert.Equal(display, account.EmailDisplay);
         Assert.Equal(display, Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.CustomerRegistered)).GetPayload<CustomerRegisteredV1>().Email);
         await (await StartAsync(t, $"{local.ToUpperInvariant()}@example.com")).ExpectErrorAsync(409, "EMAIL_ALREADY_REGISTERED");
+        var signIn = await t.SendAsync(HttpMethod.Post, "/api/auth/sign-in", new { email = normalized, password = Seed.Password });
+        Assert.Equal(HttpStatusCode.OK, signIn.StatusCode);
     }
 }

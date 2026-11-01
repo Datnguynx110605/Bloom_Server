@@ -174,7 +174,7 @@ public sealed class AuthService(
         var account = await db.Accounts.SingleOrDefaultAsync(a => a.EmailNormalized == email && a.Status == AccountStatuses.Active, context.CancellationToken);
         // The limits apply to unknown and inactive emails too, so the answer never reveals an account (ID-05, plan I14).
         if (account is null) await authStore.CheckCodeLimitsAsync(email, CodePurposes.ResetPassword);
-        else await codes.IssueAsync(email, CodePurposes.ResetPassword, null);
+        else await codes.IssueAsync(email, CodePurposes.ResetPassword, account.Id);
         await db.SaveChangesAsync(context.CancellationToken);
         return new Empty();
     }

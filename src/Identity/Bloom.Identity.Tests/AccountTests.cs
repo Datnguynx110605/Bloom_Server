@@ -190,6 +190,8 @@ public class AccountTests(Containers containers)
         var staffCaller = TestCaller.Staff(staff.Id, staff.Role!, t.Clock.GetUtcNow());
 
         await (await ChangeEmailAsync(t, staffCaller, NewEmail())).ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
+        var invalid = await (await ChangeEmailAsync(t, TestCaller.Customer(Guid.NewGuid(), t.Clock.GetUtcNow()), "not-an-email")).ExpectErrorAsync(400, "VALIDATION_FAILED");
+        Assert.Equal("new_email", invalid.GetProperty("metadata").GetProperty("field").GetString());
         await (await ConfirmEmailAsync(t, staffCaller, "123456")).ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
 
         var account = await Seed.CustomerAsync(t);
@@ -247,6 +249,8 @@ public class AccountTests(Containers containers)
         Assert.Equal(t.Clock.GetUtcNow().AddMinutes(10), sent.ExpiresAt);
 
         var code = await Outbox.LatestCodeAsync(t, account.EmailNormalized, "reset_password");
+        await using (var db = t.NewDb()) // the HMAC subject is the account id (spec §7, R45)
+            Assert.Equal(account.Id, (await db.VerificationCodes.SingleAsync(Ct)).AccountId);
         var reset = await ResetAsync(t, account.EmailNormalized, code, NewPassword);
 
         Assert.Equal(HttpStatusCode.OK, reset.StatusCode);

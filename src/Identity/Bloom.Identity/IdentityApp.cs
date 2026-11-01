@@ -92,6 +92,7 @@ public static class IdentityApp
         var app = builder.Build();
         if (api)
         {
+            _ = app.Services.GetRequiredService<PasswordHasher>(); // computes the dummy hash now, not on the first request (spec §7)
             app.MapGrpcService<AuthService>();
             app.MapGrpcService<AccountService>();
             app.MapGrpcService<StaffService>();
