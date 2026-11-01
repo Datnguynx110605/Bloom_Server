@@ -7,7 +7,7 @@ import "google/protobuf/empty.proto";
 
 option csharp_namespace = "Bloom.Identity.V1";
 
-// 06-identity §5.1. Task 8 adds the Google and address methods, Task 9 DeleteAccount.
+// 06-identity §5.1. Task 10 adds DeleteAccount.
 service Account {
   rpc GetMe(google.protobuf.Empty) returns (GetMeResponse) {
     option (google.api.http) = { get: "/api/me/profile" };
@@ -26,6 +26,15 @@ service Account {
   }
   rpc UnlinkGoogle(google.protobuf.Empty) returns (google.protobuf.Empty) {
     option (google.api.http) = { delete: "/api/me/google" };
+  }
+  rpc ListAddresses(google.protobuf.Empty) returns (ListAddressesResponse) {
+    option (google.api.http) = { get: "/api/me/addresses" };
+  }
+  rpc UpsertAddress(Address) returns (Address) {
+    option (google.api.http) = { put: "/api/me/addresses" body: "*" };
+  }
+  rpc DeleteAddress(DeleteAddressRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { delete: "/api/me/addresses/{id}" };
   }
 }
 
@@ -54,4 +63,27 @@ message ChangePasswordRequest {
 
 message LinkGoogleRequest {
   string id_token = 1;
+}
+
+// Empty id on UpsertAddress creates; id + version updates (spec §6).
+message Address {
+  string id = 1;
+  int64 version = 2;
+  string label = 3;
+  string recipient = 4;
+  string line1 = 5;
+  string line2 = 6;
+  string city = 7;
+  string state = 8;
+  string zip = 9;
+  string phone = 10;
+  bool is_default = 11;
+}
+
+message ListAddressesResponse {
+  repeated Address addresses = 1;
+}
+
+message DeleteAddressRequest {
+  string id = 1;
 }

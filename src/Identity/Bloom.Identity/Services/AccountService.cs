@@ -8,20 +8,24 @@ using Bloom.Identity.GoogleSignIn;
 using Bloom.Identity.Sessions;
 using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
+using Bloom.Shared.Concurrency;
 using Bloom.Shared.Messaging;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Account = Bloom.Identity.Data.Account;
+using AddressRow = Bloom.Identity.Data.Address;
 
 namespace Bloom.Identity.Services;
 
 /// <summary>LLD 06-identity §3 component <c>Account</c>: the signed-in caller's own account.</summary>
 public sealed class AccountService(
     IdentityDbContext db, CodeService codes, Credentials credentials, PasswordPolicy passwordPolicy, PasswordHasher passwordHasher,
-    SessionService sessions, OutboxWriter outbox, TimeProvider time, GoogleTokenVerifier google) : V1.Account.AccountBase
+    SessionService sessions, OutboxWriter outbox, TimeProvider time, GoogleTokenVerifier google, ConcurrentUpdates updates) : V1.Account.AccountBase
 {
+    private const int MaxAddresses = 10;
+
     public override async Task<GetMeResponse> GetMe(Empty request, ServerCallContext context)
     {
         var account = await LoadAsync(TrustedCaller.From(context), context);
@@ -114,6 +118,78 @@ public sealed class AccountService(
         await db.SaveChangesAsync(context.CancellationToken);
         return new Empty();
     }
+
+    public override async Task<ListAddressesResponse> ListAddresses(Empty request, ServerCallContext context)
+    {
+        var caller = TrustedCaller.From(context).RequireCustomer();
+        var rows = await db.Addresses.AsNoTracking().Where(a => a.AccountId == caller.UserId).OrderBy(a => a.Id).ToListAsync(context.CancellationToken);
+        return new ListAddressesResponse { Addresses = { rows.Select(ToMessage) } };
+    }
+
+    public override async Task<V1.Address> UpsertAddress(V1.Address request, ServerCallContext context)
+    {
+        var caller = TrustedCaller.From(context).RequireCustomer();
+        var recipient = Inputs.Text(request.Recipient, "recipient", 1);
+        var line1 = Inputs.Text(request.Line1, "line1", 1);
+        var city = Inputs.Text(request.City, "city", 1);
+        var label = Inputs.Text(request.Label, "label", 0);
+        var line2 = Inputs.Text(request.Line2, "line2", 0);
+        var state = Inputs.State(request.State);
+        var zip = Inputs.Zip(request.Zip);
+        var phone = Inputs.Phone(request.Phone);
+        var ct = context.CancellationToken;
+
+        // One transaction: the default flag clears the other rows with ExecuteUpdate (plan I29).
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var stored = new AddressRow
+        {
+            Id = Guid.CreateVersion7(), AccountId = caller.UserId, Label = label, Recipient = recipient, Line1 = line1, Line2 = line2,
+            City = city, State = state, Zip = zip, Phone = phone, IsDefault = request.IsDefault,
+        };
+        if (request.Id.Length == 0)
+        {
+            // Lock the account row so two concurrent creates cannot pass the limit together.
+            await db.Database.ExecuteSqlAsync($"SELECT 1 FROM accounts WHERE id = {caller.UserId} FOR UPDATE", ct);
+            if (await db.Addresses.CountAsync(a => a.AccountId == caller.UserId, ct) >= MaxAddresses)
+                throw IdentityErrors.Error(IdentityErrors.AddressLimitReached, $"At most {MaxAddresses} addresses.");
+            if (request.IsDefault) await ClearDefaultsAsync(caller.UserId, stored.Id, ct);
+            db.Addresses.Add(stored);
+            await db.SaveChangesAsync(ct);
+        }
+        else
+        {
+            if (!Guid.TryParse(request.Id, out var id)) throw IdentityErrors.Error(IdentityErrors.NotFound, "No such address.");
+            stored.Id = id;
+            var row = db.Addresses.Where(a => a.Id == stored.Id && a.AccountId == caller.UserId);
+            if (request.IsDefault) await ClearDefaultsAsync(caller.UserId, stored.Id, ct);
+            stored.Version = await updates.UpdateVersionedAsync("address", row, request.Version, b => b
+                .SetProperty(a => a.Label, label).SetProperty(a => a.Recipient, recipient).SetProperty(a => a.Line1, line1)
+                .SetProperty(a => a.Line2, line2).SetProperty(a => a.City, city).SetProperty(a => a.State, state)
+                .SetProperty(a => a.Zip, zip).SetProperty(a => a.Phone, phone).SetProperty(a => a.IsDefault, request.IsDefault),
+                IdentityErrors.NotFound, ct);
+        }
+        await tx.CommitAsync(ct);
+        return ToMessage(stored);
+    }
+
+    public override async Task<Empty> DeleteAddress(DeleteAddressRequest request, ServerCallContext context)
+    {
+        var caller = TrustedCaller.From(context).RequireCustomer();
+        var deleted = Guid.TryParse(request.Id, out var id)
+            && await db.Addresses.Where(a => a.Id == id && a.AccountId == caller.UserId).ExecuteDeleteAsync(context.CancellationToken) == 1;
+        return deleted ? new Empty() : throw IdentityErrors.Error(IdentityErrors.NotFound, "No such address.");
+    }
+
+    // Losing the default changes the row, so its version moves too.
+    private Task<int> ClearDefaultsAsync(Guid accountId, Guid except, CancellationToken ct) =>
+        db.Addresses.Where(a => a.AccountId == accountId && a.Id != except && a.IsDefault)
+            .ExecuteUpdateAsync(b => b.SetProperty(a => a.IsDefault, false).SetProperty(a => a.Version, a => a.Version + 1), ct);
+
+    private static V1.Address ToMessage(AddressRow a) => new()
+    {
+        Id = a.Id.ToString("D"), Version = a.Version, Label = a.Label ?? "", Recipient = a.Recipient, Line1 = a.Line1, Line2 = a.Line2 ?? "",
+        City = a.City, State = a.State, Zip = a.Zip, Phone = a.Phone ?? "", IsDefault = a.IsDefault,
+    };
 
     private async Task<Account> LoadAsync(TrustedCaller caller, ServerCallContext context) =>
         await db.Accounts.SingleOrDefaultAsync(a => a.Id == caller.UserId, context.CancellationToken)
