@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package bloom.identity.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+option csharp_namespace = "Bloom.Identity.V1";
+
+// 06-identity §5.1. Token-issuing methods return TokenResponse and set the bloom_rt cookie.
+service Auth {
+  rpc Refresh(google.protobuf.Empty) returns (TokenResponse) {
+    option (google.api.http) = { post: "/auth/refresh" };
+  }
+  rpc SignOut(SignOutRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/me/sign-out" body: "*" };
+  }
+  rpc SignOutEverywhere(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/me/sign-out-everywhere" };
+  }
+}
+
+message SignOutRequest {
+  string sid = 1;
+}
+
+message TokenResponse {
+  string access_token = 1;
+}

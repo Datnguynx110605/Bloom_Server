@@ -7,6 +7,7 @@
   <ItemGroup>
     <Content Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="Crypto\breached-passwords.txt" LogicalName="breached-passwords.txt" />
+    <Protobuf Include="Protos\auth.proto" GrpcServices="Server" />
     <InternalsVisibleTo Include="Bloom.Identity.Tests" />
     <ProjectReference Include="..\..\Shared\Bloom.Shared\Bloom.Shared.csproj" />
     <ProjectReference Include="..\Bloom.Identity.Contracts\Bloom.Identity.Contracts.csproj" />

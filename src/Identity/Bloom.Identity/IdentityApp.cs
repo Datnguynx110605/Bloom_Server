@@ -1,8 +1,12 @@
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
 using Bloom.Identity.Observability;
+using Bloom.Identity.Services;
+using Bloom.Identity.Sessions;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
+using Google.Protobuf.Reflection;
+using Google.Rpc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
@@ -39,7 +43,11 @@ public static class IdentityApp
 
         if (api)
         {
-            builder.Services.AddGrpc().AddJsonTranscoding();
+            builder.Services.AddGrpc().AddJsonTranscoding(o =>
+                o.TypeRegistry = TypeRegistry.FromMessages(ErrorInfo.Descriptor)); // error details are Any(ErrorInfo)
+            builder.Services.AddSingleton<SigningKeys>();
+            builder.Services.AddSingleton<TokenIssuer>();
+            builder.Services.AddScoped<SessionService>();
             builder.Services.AddSingleton<PasswordHasher>();
             builder.Services.AddSingleton<PasswordPolicy>();
             builder.Services.AddSingleton(new CodeHasher(options.CodePepperBytes));
@@ -53,6 +61,12 @@ public static class IdentityApp
             });
         }
 
-        return builder.Build();
+        var app = builder.Build();
+        if (api)
+        {
+            app.MapGrpcService<AuthService>();
+            app.MapGet("/.well-known/jwks.json", (SigningKeys keys) => Results.Text(keys.JwksJson, "application/json"));
+        }
+        return app;
     }
 }
