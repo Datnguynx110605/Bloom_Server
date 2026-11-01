@@ -207,7 +207,9 @@ public sealed class AuthService(
         var caller = TrustedCaller.From(context);
         if (!Guid.TryParse(request.Sid, out var familyId))
             throw IdentityErrors.Error(IdentityErrors.NotFound, "No such session.");
+        await using var tx = await db.Database.BeginTransactionAsync(context.CancellationToken);
         await sessions.RevokeFamilyAsync(caller.UserId, familyId);
+        await tx.CommitAsync(context.CancellationToken);
         RefreshCookie.Clear(context.GetHttpContext());
         return new Empty();
     }

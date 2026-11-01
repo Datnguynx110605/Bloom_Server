@@ -42,6 +42,14 @@ public sealed class SessionService(
     {
         await using var tx = await db.Database.BeginTransactionAsync();
         var now = time.GetUtcNow();
+        // Lock order everywhere: the account row, then its tokens (R41). Otherwise a revoke-all could miss the token this rotation inserts.
+        var accountId = await db.RefreshTokens.Where(t => t.TokenHash == hash).Select(t => (Guid?)t.AccountId).SingleOrDefaultAsync();
+        if (accountId is null)
+        {
+            metrics.Refresh("invalid");
+            return null;
+        }
+        await LockAccountAsync(accountId.Value);
         // Materialised before the lock wait ends: the loser of a race re-reads the committed row, sees "rotated" and takes the reuse path.
         var token = (await db.RefreshTokens.FromSqlInterpolated($"SELECT * FROM refresh_tokens WHERE token_hash = {hash} FOR UPDATE").ToListAsync()).SingleOrDefault();
         if (token is null || token.ExpiresAt <= now)
@@ -78,10 +86,14 @@ public sealed class SessionService(
         return session;
     }
 
+    private Task LockAccountAsync(Guid accountId) =>
+        db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM accounts WHERE id = {accountId} FOR UPDATE");
+
     /// <summary>Revokes every refresh token of the account in the caller's transaction; the caller saves.</summary>
     public async Task RevokeAllAsync(Account account, string trigger)
     {
         var now = time.GetUtcNow();
+        await LockAccountAsync(account.Id); // waits for a rotation in flight, so its new token is visible to the UPDATE (R41)
         await db.RefreshTokens.Where(t => t.AccountId == account.Id && t.Status != RefreshStatuses.Revoked)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, RefreshStatuses.Revoked));
         account.TokensValidAfter = now;
@@ -89,10 +101,11 @@ public sealed class SessionService(
         metrics.Revocation(trigger);
     }
 
-    /// <summary>Revokes one family of the account. Already revoked is a no-op.</summary>
+    /// <summary>Revokes one family of the account in the caller's transaction. Already revoked is a no-op.</summary>
     /// <exception cref="Grpc.Core.RpcException"><c>NOT_FOUND</c> when the account has no such family.</exception>
     public async Task RevokeFamilyAsync(Guid accountId, Guid familyId)
     {
+        await LockAccountAsync(accountId);
         var revoked = await db.RefreshTokens.Where(t => t.AccountId == accountId && t.FamilyId == familyId && t.Status != RefreshStatuses.Revoked)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, RefreshStatuses.Revoked));
         if (revoked > 0) metrics.Revocation("sign_out");

@@ -232,6 +232,42 @@ public class SessionTests(Containers containers)
     }
 
     [Fact]
+    public async Task SignOutEverywhere_waits_for_a_rotation_in_flight_and_revokes_its_new_token() // R41
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var account = await Seed.CustomerAsync(t);
+        var session = await Seed.SessionAsync(t, account);
+        var hash = Opaque.Sha256(session.RefreshToken);
+
+        // A rotation that has not committed yet, in the service's lock order: account row, old token, then the new token.
+        await using var rotating = t.NewDb();
+        await using var tx = await rotating.Database.BeginTransactionAsync(Ct);
+        await rotating.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE", Ct);
+        await rotating.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE refresh_tokens SET status = 'rotated', used_at = {t.Clock.GetUtcNow()} WHERE token_hash = {hash}", Ct);
+        await rotating.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO refresh_tokens (id, family_id, account_id, token_hash, status, auth_time, expires_at, created_at)
+            SELECT {Guid.NewGuid()}, family_id, account_id, {Opaque.Sha256(Opaque.NewToken())}, 'active', auth_time, expires_at, created_at
+            FROM refresh_tokens WHERE token_hash = {hash}
+            """, Ct);
+
+        var signOut = t.SendAsync(HttpMethod.Post, "/api/me/sign-out-everywhere", caller: TestCaller.Customer(account.Id, t.Clock.GetUtcNow()));
+        await Poll.UntilAsync(async () =>
+        {
+            await using var db = t.NewDb(); // a fresh transaction: pg_stat_activity is a per-transaction snapshot
+            return (await db.Database.SqlQuery<string>(
+                $"SELECT wait_event_type AS \"Value\" FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").ToListAsync(Ct)).Count > 0;
+        },
+        10, "sign-out-everywhere waiting on the rotation");
+        await tx.CommitAsync(Ct);
+
+        Assert.Equal(HttpStatusCode.OK, (await signOut).StatusCode);
+        var rows = await RowsAsync(t, account.Id);
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.Equal(RefreshStatuses.Revoked, r.Status));
+    }
+
+    [Fact]
     public async Task SignOut_revokes_only_that_family_and_clears_cookie()
     {
         await using var t = await TestIdentity.StartAsync(containers);
