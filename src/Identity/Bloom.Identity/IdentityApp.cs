@@ -96,6 +96,7 @@ public static class IdentityApp
             app.MapGrpcService<AccountService>();
             app.MapGrpcService<StaffService>();
             app.MapGrpcService<AdminService>();
+            app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
             app.MapGet("/.well-known/jwks.json", (SigningKeys keys) => Results.Text(keys.JwksJson, "application/json"));
         }
         return app;

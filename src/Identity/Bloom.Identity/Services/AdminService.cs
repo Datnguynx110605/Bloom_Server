@@ -1,3 +1,5 @@
+using System.Buffers.Text;
+using System.Text;
 using Bloom.Identity.Audit;
 using Bloom.Identity.Contracts;
 using Bloom.Identity.Context;
@@ -21,6 +23,7 @@ public sealed class AdminService(
     ILogger<AdminService> logger) : Admin.AdminBase
 {
     private static readonly TimeSpan InvitationLifetime = TimeSpan.FromHours(72);
+    private const int DefaultPageSize = 50, MaxPageSize = 200;
 
     public override async Task<Empty> InviteStaff(InviteStaffRequest request, ServerCallContext context)
     {
@@ -123,6 +126,69 @@ public sealed class AdminService(
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return new Empty();
+    }
+
+    /// <summary>§5.1 / plan I22: ANDed filters, newest first by (occurred_at, id), keyset paging; the token is the last row's key.</summary>
+    public override async Task<QueryAuditLogResponse> QueryAuditLog(QueryAuditLogRequest request, ServerCallContext context)
+    {
+        TrustedCaller.From(context).RequireAdmin();
+        if (request.PageSize is < 0 or > MaxPageSize) throw IdentityErrors.Validation("page_size", $"Use a page size from 1 to {MaxPageSize}.");
+        var size = request.PageSize == 0 ? DefaultPageSize : request.PageSize;
+
+        var rows = db.AuditEntries.AsNoTracking();
+        if (request.From is { } from) { var at = from.ToDateTimeOffset(); rows = rows.Where(a => a.OccurredAt >= at); }
+        if (request.To is { } to) { var at = to.ToDateTimeOffset(); rows = rows.Where(a => a.OccurredAt < at); }
+        if (request.ActorId != "")
+        {
+            if (!Guid.TryParse(request.ActorId, out var actor)) return new QueryAuditLogResponse(); // no row has a non-UUID actor
+            rows = rows.Where(a => a.ActorId == actor);
+        }
+        if (request.Service != "") rows = rows.Where(a => a.Service == request.Service);
+        if (request.Action != "") rows = rows.Where(a => a.Action == request.Action);
+        if (request.TargetType != "") rows = rows.Where(a => a.TargetType == request.TargetType);
+        if (request.TargetId != "") rows = rows.Where(a => a.TargetId == request.TargetId);
+        if (request.PageToken != "")
+        {
+            var (at, id) = ReadPageToken(request.PageToken);
+            rows = rows.Where(a => a.OccurredAt < at || (a.OccurredAt == at && a.Id.CompareTo(id) < 0));
+        }
+
+        var page = await rows.OrderByDescending(a => a.OccurredAt).ThenByDescending(a => a.Id).Take(size + 1).ToListAsync(context.CancellationToken);
+        var response = new QueryAuditLogResponse
+        {
+            Entries =
+            {
+                page.Take(size).Select(a => new AuditLogEntry
+                {
+                    Id = a.Id.ToString(),
+                    OccurredAt = Timestamp.FromDateTimeOffset(a.OccurredAt),
+                    ActorId = a.ActorId.ToString(),
+                    ActorRole = a.ActorRole,
+                    Service = a.Service,
+                    Action = a.Action,
+                    TargetType = a.TargetType,
+                    TargetId = a.TargetId,
+                    DetailsJson = a.Details,
+                }),
+            },
+        };
+        if (page.Count > size) response.NextPageToken = WritePageToken(page[size - 1]);
+        return response;
+    }
+
+    private static string WritePageToken(AuditEntry last) =>
+        Base64Url.EncodeToString(Encoding.UTF8.GetBytes($"{last.OccurredAt.UtcTicks}|{last.Id}"));
+
+    private static (DateTimeOffset At, Guid Id) ReadPageToken(string token)
+    {
+        try
+        {
+            var parts = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(token)).Split('|');
+            if (parts.Length == 2 && long.TryParse(parts[0], out var ticks) && ticks >= 0 && ticks <= DateTime.MaxValue.Ticks && Guid.TryParse(parts[1], out var id))
+                return (new DateTimeOffset(ticks, TimeSpan.Zero), id);
+        }
+        catch (FormatException) { }
+        throw IdentityErrors.Validation("page_token", "The page token is not valid.");
     }
 
     /// <summary>
