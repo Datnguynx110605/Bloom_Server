@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -19,8 +20,7 @@ public class UpstreamTests(Containers containers)
         using var response = await gateway.Client.SendAsync(request, Ct);
         stopwatch.Stop();
 
-        Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
-        await AssertErrorAsync(response, 4, "UPSTREAM_TIMEOUT");
+        await AssertErrorAsync(response, HttpStatusCode.GatewayTimeout, 4, "UPSTREAM_TIMEOUT");
         Assert.InRange(stopwatch.Elapsed.TotalSeconds, 4.5, 6.5);
     }
 
@@ -61,8 +61,7 @@ public class UpstreamTests(Containers containers)
 
         using var response = await gateway.Client.GetAsync("/api/catalog/x", Ct);
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        await AssertErrorAsync(response, 14, "UPSTREAM_UNAVAILABLE");
+        await AssertErrorAsync(response, HttpStatusCode.ServiceUnavailable, 14, "UPSTREAM_UNAVAILABLE");
     }
 
     [Theory]
@@ -74,13 +73,14 @@ public class UpstreamTests(Containers containers)
         await using var gateway = await TestGateway.StartAsync(containers);
 
         using var atLimit = await gateway.Client.PostAsync(path, new ByteArrayContent(new byte[limit]), Ct);
+        var reachedUpstream = gateway.Upstream.RequestCount;
         using var overLimit = await gateway.Client.PostAsync(path, new ByteArrayContent(new byte[limit + 1]), Ct);
 
         Assert.Equal(HttpStatusCode.OK, atLimit.StatusCode);
         using var echo = JsonDocument.Parse(await atLimit.Content.ReadAsStringAsync(Ct));
         Assert.Equal(limit, echo.RootElement.GetProperty("bodyLength").GetInt32());
-        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, overLimit.StatusCode);
-        await AssertErrorAsync(overLimit, 3, "PAYLOAD_TOO_LARGE");
+        await AssertErrorAsync(overLimit, HttpStatusCode.RequestEntityTooLarge, 3, "PAYLOAD_TOO_LARGE");
+        Assert.Equal(reachedUpstream, gateway.Upstream.RequestCount); // refused from the declared Content-Length, before the upstream was contacted
     }
 
     [Fact]
@@ -92,8 +92,7 @@ public class UpstreamTests(Containers containers)
 
         using var response = await gateway.Client.SendAsync(request, Ct);
 
-        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
-        await AssertErrorAsync(response, 3, "PAYLOAD_TOO_LARGE");
+        await AssertErrorAsync(response, HttpStatusCode.RequestEntityTooLarge, 3, "PAYLOAD_TOO_LARGE");
     }
 
     [Fact]
@@ -106,13 +105,5 @@ public class UpstreamTests(Containers containers)
         using var response = await gateway.Client.SendAsync(request, Ct);
 
         Assert.Equal((HttpStatusCode)431, response.StatusCode);
-    }
-
-    private static async Task AssertErrorAsync(HttpResponseMessage response, int code, string reason)
-    {
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
-        Assert.Equal(code, body.RootElement.GetProperty("code").GetInt32());
-        var detail = Assert.Single(body.RootElement.GetProperty("details").EnumerateArray());
-        Assert.Equal(reason, detail.GetProperty("reason").GetString());
     }
 }

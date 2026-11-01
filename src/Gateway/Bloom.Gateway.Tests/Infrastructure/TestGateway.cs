@@ -30,35 +30,26 @@ public sealed class TestGateway : IAsyncDisposable
 
     private readonly WebApplication _app;
 
-    private TestGateway(WebApplication app, EchoUpstream upstream, FakeJwks jwks, TestKeys defaultKey, FakeTimeProvider clock, LogCapture logs, string clientIp)
-    {
-        _app = app;
-        Upstream = upstream;
-        Jwks = jwks;
-        DefaultKey = defaultKey;
-        Clock = clock;
-        Logs = logs;
-        ClientIp = clientIp;
-    }
+    private TestGateway(WebApplication app) => _app = app;
 
-    public Uri Address { get; private set; } = null!;
+    public required Uri Address { get; init; }
 
-    public HttpClient Client { get; private set; } = null!;
+    public required HttpClient Client { get; init; }
 
     /// <summary>Unique per instance, from 198.18.0.0/15, so rate-limit keys never collide across tests.</summary>
-    public string ClientIp { get; }
+    public required string ClientIp { get; init; }
 
-    public EchoUpstream Upstream { get; }
+    public required EchoUpstream Upstream { get; init; }
 
     /// <summary>Serves <see cref="DefaultKey"/> until a test swaps the keys.</summary>
-    public FakeJwks Jwks { get; }
+    public required FakeJwks Jwks { get; init; }
 
-    public TestKeys DefaultKey { get; }
+    public required TestKeys DefaultKey { get; init; }
 
     /// <summary>The gateway's <see cref="TimeProvider"/>: token lifetimes and JWKS timing. Starts at the real time.</summary>
-    public FakeTimeProvider Clock { get; }
+    public required FakeTimeProvider Clock { get; init; }
 
-    public LogCapture Logs { get; }
+    public required LogCapture Logs { get; init; }
 
     public IServiceProvider Services => _app.Services;
 
@@ -86,13 +77,21 @@ public sealed class TestGateway : IAsyncDisposable
             b.Configuration.AddInMemoryCollection(options.Config);
             b.Services.AddSingleton<TimeProvider>(clock);
             b.Services.AddSingleton<ILoggerProvider>(logs);
-            b.Logging.AddFilter<LogCapture>(null, LogLevel.Trace);
         });
         await app.StartAsync();
 
-        var gateway = new TestGateway(app, upstream, jwks, defaultKey, clock, logs, NextClientIp());
-        gateway.Address = new Uri(app.Urls.Single());
-        gateway.Client = new HttpClient { BaseAddress = gateway.Address };
+        var address = new Uri(app.Urls.Single());
+        var gateway = new TestGateway(app)
+        {
+            Upstream = upstream,
+            Jwks = jwks,
+            DefaultKey = defaultKey,
+            Clock = clock,
+            Logs = logs,
+            ClientIp = NextClientIp(),
+            Address = address,
+            Client = new HttpClient { BaseAddress = address },
+        };
         gateway.Client.DefaultRequestHeaders.Add("X-Forwarded-For", gateway.ClientIp);
         if (options.WaitForReady)
             await Poll.UntilAsync(async () => (await gateway.Client.GetAsync("/readyz", TestContext.Current.CancellationToken)).IsSuccessStatusCode, 10, "/readyz is 200");

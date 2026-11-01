@@ -64,11 +64,8 @@ public sealed class EchoUpstream : IAsyncDisposable
             return;
         }
 
-        long bodyLength = 0;
-        var buffer = new byte[8192];
-        int read;
-        while ((read = await request.Body.ReadAsync(buffer, context.RequestAborted)) > 0)
-            bodyLength += read;
+        using var body = new MemoryStream();
+        await request.Body.CopyToAsync(body, context.RequestAborted);
 
         await context.Response.WriteAsJsonAsync(new
         {
@@ -76,7 +73,7 @@ public sealed class EchoUpstream : IAsyncDisposable
             path = request.Path.Value,
             query = request.QueryString.Value,
             headers = request.Headers.ToDictionary(h => h.Key.ToLowerInvariant(), h => h.Value.ToString()),
-            bodyLength,
+            bodyLength = body.Length,
         });
     }
 

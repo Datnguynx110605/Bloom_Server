@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -27,7 +28,7 @@ public class HubTests(Containers containers)
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/notifications/hub?ticket=t1");
         request.Headers.Add("Origin", "https://evil.test");
         using var response = await gateway.Client.SendAsync(request, Ct);
-        await CorsOriginTests.AssertOriginRejectedAsync(response);
+        await AssertOriginRejectedAsync(response);
         Assert.Equal(0, gateway.Upstream.RequestCount);
     }
 

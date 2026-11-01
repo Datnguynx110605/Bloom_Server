@@ -37,8 +37,15 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
             await GatewayErrors.WriteAsync(context, GatewayErrors.OriginNotAllowed);
             return;
         }
+        var bodyLimit = context.Features.GetRequiredFeature<IHttpMaxRequestBodySizeFeature>();
         if (route.MaxBodyBytes is { } max)
-            context.Features.GetRequiredFeature<IHttpMaxRequestBodySizeFeature>().MaxRequestBodySize = max; // Kestrel enforces it for Content-Length and chunked bodies
+            bodyLimit.MaxRequestBodySize = max; // Kestrel enforces it for chunked bodies
+        if (context.Request.ContentLength > bodyLimit.MaxRequestBodySize)
+        {
+            // A declared length over the limit is refused here, before YARP sends headers upstream (Kestrel would only throw on the first body read).
+            await GatewayErrors.WriteAsync(context, GatewayErrors.PayloadTooLarge);
+            return;
+        }
 
         // Step 5: JWT validation. Public and None routes ignore Authorization entirely (spec §7); the proxy never forwards it.
         var authorization = context.Request.Headers.Authorization.ToString();
@@ -46,20 +53,19 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
         Caller? caller = null;
         if (route.Auth is not (AuthMode.Public or AuthMode.None))
         {
-            var anonymousAllowed = route.Auth == AuthMode.PublicOptionalUser;
-            if (authorization.Length == 0 && anonymousAllowed)
+            // No Authorization header on a public-optional-user route is an anonymous caller.
+            if (authorization.Length > 0 || route.Auth != AuthMode.PublicOptionalUser)
             {
-                // anonymous
-            }
-            else if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            {
-                await FailAsync(context, GatewayErrors.TokenMissing);
-                return;
-            }
-            else if ((caller = await validator.ValidateAsync(authorization["Bearer ".Length..].Trim())) is null)
-            {
-                await FailAsync(context, GatewayErrors.TokenInvalid);
-                return;
+                if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                {
+                    await FailAsync(context, GatewayErrors.TokenMissing);
+                    return;
+                }
+                if ((caller = await validator.ValidateAsync(authorization["Bearer ".Length..].Trim())) is null)
+                {
+                    await FailAsync(context, GatewayErrors.TokenInvalid);
+                    return;
+                }
             }
         }
 

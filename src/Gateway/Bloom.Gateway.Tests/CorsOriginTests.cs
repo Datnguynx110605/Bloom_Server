@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -84,15 +85,6 @@ public class CorsOriginTests(Containers containers)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
         Assert.Equal("bloom_rt=x", body.RootElement.GetProperty("headers").GetProperty("cookie").GetString());
-    }
-
-    internal static async Task AssertOriginRejectedAsync(HttpResponseMessage response)
-    {
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
-        Assert.Equal(7, body.RootElement.GetProperty("code").GetInt32());
-        var detail = Assert.Single(body.RootElement.GetProperty("details").EnumerateArray());
-        Assert.Equal("ORIGIN_NOT_ALLOWED", detail.GetProperty("reason").GetString());
     }
 
     private static HttpRequestMessage Preflight(string path, string origin)

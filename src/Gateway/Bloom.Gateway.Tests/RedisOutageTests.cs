@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using StackExchange.Redis;
 using Testcontainers.Redis;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -125,19 +126,4 @@ public class RedisOutageTests(Containers containers)
 
     private Task<TestGateway> StartDuringOutageAsync() =>
         TestGateway.StartAsync(containers, o => o.Config["Gateway:Redis"] = Outage);
-
-    private static Task<HttpResponseMessage> SendAsync(TestGateway gateway, string method, string path, string? token = null) =>
-        gateway.Client.SendAsync(new HttpRequestMessage(new HttpMethod(method), path)
-        {
-            Headers = { Authorization = token is null ? null : new AuthenticationHeaderValue("Bearer", token) },
-        }, Ct);
-
-    private static async Task AssertErrorAsync(HttpResponseMessage response, HttpStatusCode status, int code, string reason)
-    {
-        Assert.Equal(status, response.StatusCode);
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
-        Assert.Equal(code, body.RootElement.GetProperty("code").GetInt32());
-        var detail = Assert.Single(body.RootElement.GetProperty("details").EnumerateArray());
-        Assert.Equal(reason, detail.GetProperty("reason").GetString());
-    }
 }

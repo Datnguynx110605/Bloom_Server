@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Yarp.ReverseProxy;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -247,12 +248,4 @@ public class RoutingTests(Containers containers)
 
     private static async Task<JsonElement> ReadEchoAsync(HttpResponseMessage response) =>
         JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
-
-    /// <summary>Sends the request and returns the headers the upstream received, lower-cased.</summary>
-    private static async Task<Dictionary<string, string>> EchoHeadersAsync(TestGateway gateway, HttpRequestMessage request)
-    {
-        using var response = await gateway.Client.SendAsync(request, TestContext.Current.CancellationToken);
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        return (await ReadEchoAsync(response)).GetProperty("headers").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!);
-    }
 }

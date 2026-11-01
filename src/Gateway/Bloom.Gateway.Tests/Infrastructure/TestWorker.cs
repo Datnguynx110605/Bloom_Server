@@ -9,8 +9,6 @@ namespace Bloom.Gateway.Tests;
 /// <summary>The gateway in worker mode (<see cref="GatewayApp.Build"/>), consuming from the test RabbitMQ and writing to <c>redis</c>.</summary>
 public sealed class TestWorker : IAsyncDisposable
 {
-    public const string Queue = "api-gateway.tokens-revoked";
-
     private readonly WebApplication _app;
 
     private TestWorker(WebApplication app) => _app = app;
@@ -41,7 +39,7 @@ public sealed class TestWorker : IAsyncDisposable
         var output = await containers.RabbitCtlAsync(["list_queues", "--silent", "name", .. columns]);
         var row = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.TrimEnd('\r').Split('\t'))
-            .FirstOrDefault(cells => cells[0] == Queue);
+            .FirstOrDefault(cells => cells[0] == RevocationConsumer.Queue);
         return row?[1..] ?? [];
     }
 

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.IdentityModel.Tokens;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -21,7 +22,7 @@ public class AuthTests(Containers containers)
         await using var gateway = await TestGateway.StartAsync(containers);
         var sub = Guid.NewGuid();
 
-        using var customer = Get("/api/cart", TestTokens.Issue(gateway.DefaultKey, sub: sub, edit: c => c["auth_time"] = 1730000000L));
+        using var customer = Request("GET", "/api/cart", TestTokens.Issue(gateway.DefaultKey, sub: sub, edit: c => c["auth_time"] = 1730000000L));
         customer.Headers.Add("x-bloom-user-id", Guid.NewGuid().ToString());
         customer.Headers.Add("x-bloom-role", "admin");
         var seen = await EchoHeadersAsync(gateway, customer);
@@ -32,7 +33,7 @@ public class AuthTests(Containers containers)
         Assert.DoesNotContain("x-bloom-role", seen.Keys);
         Assert.DoesNotContain("authorization", seen.Keys);
 
-        using var staff = Get("/api/admin/orders/x", TestTokens.Issue(gateway.DefaultKey, "staff", "admin"));
+        using var staff = Request("GET", "/api/admin/orders/x", TestTokens.Issue(gateway.DefaultKey, "staff", "admin"));
         seen = await EchoHeadersAsync(gateway, staff);
 
         Assert.Equal("staff", seen["x-bloom-user-type"]);
@@ -44,7 +45,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
 
-        using var response = await gateway.Client.SendAsync(Get("/api/cart", TestTokens.IssueHs256(gateway.DefaultKey)), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", "/api/cart", TestTokens.IssueHs256(gateway.DefaultKey)), Ct);
 
         await AssertErrorAsync(response, HttpStatusCode.Unauthorized, 16, "TOKEN_INVALID");
         Assert.Equal(0, gateway.Upstream.RequestCount);
@@ -55,7 +56,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
 
-        using var response = await gateway.Client.SendAsync(Get("/api/cart", TestTokens.IssueUnsigned(gateway.DefaultKey)), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", "/api/cart", TestTokens.IssueUnsigned(gateway.DefaultKey)), Ct);
 
         await AssertErrorAsync(response, HttpStatusCode.Unauthorized, 16, "TOKEN_INVALID");
     }
@@ -101,7 +102,7 @@ public class AuthTests(Containers containers)
         };
         var path = name == "staff-without-role" ? "/api/admin/orders/x" : "/api/cart";
 
-        using var response = await gateway.Client.SendAsync(Get(path, token), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", path, token), Ct);
 
         await AssertErrorAsync(response, HttpStatusCode.Unauthorized, 16, "TOKEN_INVALID");
         Assert.Equal(0, gateway.Upstream.RequestCount);
@@ -113,7 +114,7 @@ public class AuthTests(Containers containers)
         await using var gateway = await TestGateway.StartAsync(containers);
         var token = TestTokens.Issue(gateway.DefaultKey, iat: gateway.Clock.GetUtcNow() - TimeSpan.FromMinutes(15) - TimeSpan.FromSeconds(20));
 
-        using var response = await gateway.Client.SendAsync(Get("/api/cart", token), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", "/api/cart", token), Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -123,7 +124,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
 
-        using var response = await gateway.Client.SendAsync(Get("/api/admin/orders/x", TestTokens.Issue(gateway.DefaultKey)), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", "/api/admin/orders/x", TestTokens.Issue(gateway.DefaultKey)), Ct);
 
         await AssertErrorAsync(response, HttpStatusCode.Forbidden, 7, "ROLE_NOT_ALLOWED");
         Assert.Equal(0, gateway.Upstream.RequestCount);
@@ -134,7 +135,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
 
-        using var response = await gateway.Client.SendAsync(Get("/api/cart", TestTokens.Issue(gateway.DefaultKey, "staff", "admin")), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", "/api/cart", TestTokens.Issue(gateway.DefaultKey, "staff", "admin")), Ct);
 
         await AssertErrorAsync(response, HttpStatusCode.Forbidden, 7, "ROLE_NOT_ALLOWED");
     }
@@ -144,7 +145,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
 
-        using var response = await gateway.Client.SendAsync(Get("/api/admin/payments/x", TestTokens.Issue(gateway.DefaultKey, "staff", "warehouse")), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", "/api/admin/payments/x", TestTokens.Issue(gateway.DefaultKey, "staff", "warehouse")), Ct);
 
         await AssertErrorAsync(response, HttpStatusCode.Forbidden, 7, "ROLE_NOT_ALLOWED");
     }
@@ -154,7 +155,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
 
-        using var response = await gateway.Client.SendAsync(Get("/api/admin/catalog/x", TestTokens.Issue(gateway.DefaultKey, "staff", "support")), Ct);
+        using var response = await gateway.Client.SendAsync(Request("GET", "/api/admin/catalog/x", TestTokens.Issue(gateway.DefaultKey, "staff", "support")), Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -164,8 +165,8 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
 
-        using var customer = await gateway.Client.SendAsync(Get("/api/me", TestTokens.Issue(gateway.DefaultKey)), Ct);
-        using var staff = await gateway.Client.SendAsync(Get("/api/me", TestTokens.Issue(gateway.DefaultKey, "staff", "support")), Ct);
+        using var customer = await gateway.Client.SendAsync(Request("GET", "/api/me", TestTokens.Issue(gateway.DefaultKey)), Ct);
+        using var staff = await gateway.Client.SendAsync(Request("GET", "/api/me", TestTokens.Issue(gateway.DefaultKey, "staff", "support")), Ct);
 
         Assert.Equal(HttpStatusCode.OK, customer.StatusCode);
         Assert.Equal(HttpStatusCode.OK, staff.StatusCode);
@@ -177,9 +178,9 @@ public class AuthTests(Containers containers)
         await using var gateway = await TestGateway.StartAsync(containers);
         var sub = Guid.NewGuid();
 
-        var anonymous = await EchoHeadersAsync(gateway, Get("/api/catalog/x", null));
-        var signedIn = await EchoHeadersAsync(gateway, Get("/api/catalog/x", TestTokens.Issue(gateway.DefaultKey, sub: sub)));
-        using var bad = await gateway.Client.SendAsync(Get("/api/catalog/x", "garbage"), Ct);
+        var anonymous = await EchoHeadersAsync(gateway, Request("GET", "/api/catalog/x", null));
+        var signedIn = await EchoHeadersAsync(gateway, Request("GET", "/api/catalog/x", TestTokens.Issue(gateway.DefaultKey, sub: sub)));
+        using var bad = await gateway.Client.SendAsync(Request("GET", "/api/catalog/x", "garbage"), Ct);
 
         Assert.DoesNotContain("x-bloom-user-id", anonymous.Keys);
         Assert.Equal(sub.ToString("D"), signedIn["x-bloom-user-id"]);
@@ -196,7 +197,7 @@ public class AuthTests(Containers containers)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
         var expired = TestTokens.Issue(gateway.DefaultKey, iat: gateway.Clock.GetUtcNow() - TimeSpan.FromHours(1));
-        using var request = Get(path, expired, method);
+        using var request = Request(method, path, expired);
         request.Headers.Add("Origin", "https://bloom.test");
 
         var seen = await EchoHeadersAsync(gateway, request);
@@ -213,19 +214,19 @@ public class AuthTests(Containers containers)
         gateway.Jwks.SetKeys(gateway.DefaultKey, rotated);
         var before = gateway.Jwks.FetchCount;
 
-        using var first = await gateway.Client.SendAsync(Get("/api/cart", TestTokens.Issue(rotated)), Ct);
+        using var first = await gateway.Client.SendAsync(Request("GET", "/api/cart", TestTokens.Issue(rotated)), Ct);
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.Equal(before + 1, gateway.Jwks.FetchCount);
 
-        using var second = await gateway.Client.SendAsync(Get("/api/cart", TestTokens.Issue(later)), Ct); // not published yet, and inside the 30 s window
+        using var second = await gateway.Client.SendAsync(Request("GET", "/api/cart", TestTokens.Issue(later)), Ct); // not published yet, and inside the 30 s window
 
         await AssertErrorAsync(second, HttpStatusCode.Unauthorized, 16, "TOKEN_INVALID");
         Assert.Equal(before + 1, gateway.Jwks.FetchCount);
 
         gateway.Jwks.SetKeys(gateway.DefaultKey, rotated, later);
         gateway.Clock.Advance(TimeSpan.FromSeconds(30));
-        using var third = await gateway.Client.SendAsync(Get("/api/cart", TestTokens.Issue(later)), Ct);
+        using var third = await gateway.Client.SendAsync(Request("GET", "/api/cart", TestTokens.Issue(later)), Ct);
 
         Assert.Equal(HttpStatusCode.OK, third.StatusCode);
         Assert.Equal(before + 2, gateway.Jwks.FetchCount);
@@ -241,7 +242,7 @@ public class AuthTests(Containers containers)
 
         var responses = await Task.WhenAll(Enumerable.Range(0, 20).Select(async _ =>
         {
-            using var response = await gateway.Client.SendAsync(Get("/api/cart", TestTokens.Issue(rotated)), Ct);
+            using var response = await gateway.Client.SendAsync(Request("GET", "/api/cart", TestTokens.Issue(rotated)), Ct);
             return response.StatusCode;
         }));
 
@@ -260,6 +261,24 @@ public class AuthTests(Containers containers)
 
         await Poll.UntilAsync(() => gateway.Jwks.FetchCount == before + 1, 5, "the periodic refresh");
         await Poll.UntilAsync(() => metrics.Sum("jwks_refresh_total", ("result", "success")) == 1, 5, "the refresh is counted");
+    }
+
+    [Fact]
+    public async Task JWKS_without_a_usable_key_is_a_failed_fetch()
+    {
+        await using var gateway = await TestGateway.StartAsync(containers);
+        using var metrics = new MetricCapture(gateway.Services);
+        var token = TestTokens.Issue(gateway.DefaultKey);
+        gateway.Jwks.SetKeys(); // a parseable key set with no key in it
+
+        gateway.Clock.Advance(TimeSpan.FromMinutes(10));
+
+        await Poll.UntilAsync(() => metrics.Sum("jwks_refresh_total", ("result", "error")) == 1, 5, "the empty key set is counted as an error");
+        Assert.Equal(0, metrics.Sum("jwks_refresh_total", ("result", "success")));
+        using var ready = await gateway.Client.GetAsync("/readyz", Ct);
+        using var response = await SendAsync(gateway, "GET", "/api/cart", token);
+        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode); // the previous keys stay in use
     }
 
     [Fact]
@@ -294,7 +313,7 @@ public class AuthTests(Containers containers)
         using var metrics = new MetricCapture(gateway.Services);
 
         (await gateway.Client.GetAsync("/api/cart", Ct)).Dispose();
-        (await gateway.Client.SendAsync(Get("/api/cart", "garbage"), Ct)).Dispose();
+        (await gateway.Client.SendAsync(Request("GET", "/api/cart", "garbage"), Ct)).Dispose();
 
         await Poll.UntilAsync(() => metrics.Sum("gateway_auth_failures_total", ("reason", "TOKEN_MISSING")) == 1, 5, "TOKEN_MISSING counted");
         Assert.Equal(1, metrics.Sum("gateway_auth_failures_total", ("reason", "TOKEN_INVALID")));
@@ -309,7 +328,7 @@ public class AuthTests(Containers containers)
 
         foreach (var (path, token) in new[] { ("/api/cart", good), ("/api/cart", bad), ("/api/admin/orders/x", good) })
         {
-            using var request = Get(path, token);
+            using var request = Request("GET", path, token);
             request.Headers.Add("Cookie", "bloom_rt=s3cr3t");
             (await gateway.Client.SendAsync(request, Ct)).Dispose();
         }
@@ -325,31 +344,32 @@ public class AuthTests(Containers containers)
         }
     }
 
+    [Fact]
+    public async Task URL_secrets_are_never_logged()
+    {
+        // Logs are captured through the app's own Logging configuration, so what is checked is what would be exported.
+        await using var gateway = await TestGateway.StartAsync(containers);
+        using var webhook = await gateway.Client.PostAsync("/webhooks/shippo/s3cret", new ByteArrayContent([]), Ct);
+        using var hub = Request("GET", "/api/notifications/hub/negotiate?ticket=t1secret");
+        hub.Headers.Add("Origin", "https://bloom.test");
+        using var negotiate = await gateway.Client.SendAsync(hub, Ct);
+        Assert.Equal(HttpStatusCode.OK, webhook.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, negotiate.StatusCode);
+
+        var entries = gateway.Logs.Entries;
+        Assert.NotEmpty(entries);
+        foreach (var entry in entries)
+        {
+            var text = entry.Message + string.Concat(entry.State.Select(s => s.Key + "=" + s.Value));
+            Assert.DoesNotContain("s3cret", text);
+            Assert.DoesNotContain("t1secret", text);
+        }
+    }
+
     /// <summary>The header and signature of <paramref name="signed"/> with the payload of <paramref name="other"/>.</summary>
     private static string TamperedPayload(string signed, string other)
     {
         var (a, b) = (signed.Split('.'), other.Split('.'));
         return $"{a[0]}.{b[1]}.{a[2]}";
-    }
-
-    private static HttpRequestMessage Get(string path, string? token, string method = "GET") =>
-        new(new HttpMethod(method), path) { Headers = { Authorization = token is null ? null : new AuthenticationHeaderValue("Bearer", token) } };
-
-    /// <summary>Sends the request and returns the headers the upstream received, lower-cased.</summary>
-    private static async Task<Dictionary<string, string>> EchoHeadersAsync(TestGateway gateway, HttpRequestMessage request)
-    {
-        using var response = await gateway.Client.SendAsync(request, Ct);
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
-        return body.RootElement.GetProperty("headers").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!);
-    }
-
-    private static async Task AssertErrorAsync(HttpResponseMessage response, HttpStatusCode status, int code, string reason)
-    {
-        Assert.Equal(status, response.StatusCode);
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
-        Assert.Equal(code, body.RootElement.GetProperty("code").GetInt32());
-        var detail = Assert.Single(body.RootElement.GetProperty("details").EnumerateArray());
-        Assert.Equal(reason, detail.GetProperty("reason").GetString());
     }
 }

@@ -6,6 +6,7 @@ using Bloom.Identity.Contracts;
 using RabbitMQ.Client;
 using StackExchange.Redis;
 using Testcontainers.Redis;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -27,7 +28,7 @@ public class RevocationWorkerTests(Containers containers)
 
         Assert.Equal(["quorum", "true"], await TestWorker.QueueAsync(containers, "type", "durable"));
         Assert.Contains("identity.events\ttopic\ttrue", await containers.RabbitCtlAsync("list_exchanges", "--silent", "name", "type", "durable"));
-        Assert.Contains($"identity.events\texchange\t{TestWorker.Queue}\tqueue\t{RoutingKey}",
+        Assert.Contains($"identity.events\texchange\t{RevocationConsumer.Queue}\tqueue\t{RoutingKey}",
             await containers.RabbitCtlAsync("list_bindings", "--silent", "source_name", "source_kind", "destination_name", "destination_kind", "routing_key"));
     }
 
@@ -54,7 +55,7 @@ public class RevocationWorkerTests(Containers containers)
         await using var worker = await TestWorker.StartAsync(containers);
         var id = Guid.NewGuid();
         var token = TestTokens.Issue(gateway.DefaultKey, sub: id);
-        using (var before = await GetCartAsync(gateway, token))
+        using (var before = await SendAsync(gateway, "GET", "/api/cart", token))
             Assert.Equal(HttpStatusCode.OK, before.StatusCode);
 
         // The token's iat comes from the gateway's frozen clock; the mark must lie after it.
@@ -63,11 +64,11 @@ public class RevocationWorkerTests(Containers containers)
         await PublishAsync(TestWorker.RevocationEnvelope(id, issuedBefore));
         await Poll.UntilAsync(async () =>
         {
-            using var response = await GetCartAsync(gateway, token);
+            using var response = await SendAsync(gateway, "GET", "/api/cart", token);
             return response.StatusCode == HttpStatusCode.Unauthorized;
         }, 2, "GET /api/cart is 401");
 
-        using var revoked = await GetCartAsync(gateway, token);
+        using var revoked = await SendAsync(gateway, "GET", "/api/cart", token);
         Assert.Contains("TOKEN_REVOKED", await revoked.Content.ReadAsStringAsync(Ct));
         TestContext.Current.SendDiagnosticMessage($"G03: revocation reached the gateway in {(DateTime.UtcNow - started).TotalMilliseconds:F0} ms");
     }
@@ -124,6 +125,37 @@ public class RevocationWorkerTests(Containers containers)
     }
 
     [Fact]
+    public async Task Broker_connection_lost_while_a_delivery_is_held_for_Redis()
+    {
+        await using var redis = new RedisBuilder("redis:8.2.3").Build();
+        await redis.StartAsync(Ct);
+        var connection = $"{redis.GetConnectionString()},asyncTimeout=500";
+        await using var inspector = await ConnectionMultiplexer.ConnectAsync(connection);
+        await using var worker = await TestWorker.StartAsync(containers, connection);
+        var id = Guid.NewGuid();
+
+        await redis.PauseAsync(Ct);
+        try
+        {
+            await PublishAsync(TestWorker.RevocationEnvelope(id, 5000));
+            await Poll.UntilAsync(async () => (await TestWorker.QueueAsync(containers, "messages_unacknowledged")).FirstOrDefault() == "1", 15, "one delivery is unacknowledged");
+
+            await containers.RabbitCtlAsync("close_all_connections", "test");
+
+            // The broker requeues the held delivery and the worker, reconnected, holds it again: nothing was acknowledged or lost.
+            await Poll.UntilAsync(async () => await TestWorker.QueueAsync(containers, "consumers", "messages_unacknowledged") is ["1", "1"], 15, "the worker reconnects and holds the redelivery");
+            Assert.Equal(["1"], await TestWorker.QueueAsync(containers, "messages"));
+        }
+        finally
+        {
+            await redis.UnpauseAsync(Ct);
+        }
+
+        await Poll.UntilAsync(async () => (string?)await inspector.GetDatabase().StringGetAsync($"rev:{id:D}") == "5000", 15, "the mark is written");
+        await Poll.UntilAsync(async () => (await TestWorker.QueueAsync(containers, "messages")).FirstOrDefault() == "0", 15, "the queue is drained");
+    }
+
+    [Fact]
     public async Task Worker_reconnects_after_the_broker_closes_its_connection()
     {
         await using var worker = await TestWorker.StartAsync(containers);
@@ -151,7 +183,4 @@ public class RevocationWorkerTests(Containers containers)
         await Poll.UntilAsync(async () => await Db.KeyExistsAsync($"rev:{sentinel:D}"), 15, "the worker has caught up");
         await Poll.UntilAsync(async () => (await TestWorker.QueueAsync(containers, "messages")).FirstOrDefault() == "0", 15, "the queue is drained");
     }
-
-    private static Task<HttpResponseMessage> GetCartAsync(TestGateway gateway, string token) =>
-        gateway.Client.SendAsync(new HttpRequestMessage(HttpMethod.Get, "/api/cart") { Headers = { Authorization = new AuthenticationHeaderValue("Bearer", token) } }, Ct);
 }

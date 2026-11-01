@@ -59,7 +59,11 @@ public sealed class JwksCache(IConfiguration configuration, TimeProvider time, G
         try
         {
             var json = await _http.GetStringAsync(configuration["Gateway:JwksUrl"], ct);
-            Keys = new JsonWebKeySet(json).GetSigningKeys().ToList();
+            // Only EC keys can verify an ES256 token; a set without one counts as a failed fetch, so /readyz cannot go green on it.
+            var keys = new JsonWebKeySet(json).GetSigningKeys().OfType<ECDsaSecurityKey>().ToList();
+            if (keys.Count == 0)
+                throw new InvalidOperationException("the key set has no EC signing key");
+            Keys = keys;
             IsLoaded = true;
             metrics.JwksRefresh("success");
         }

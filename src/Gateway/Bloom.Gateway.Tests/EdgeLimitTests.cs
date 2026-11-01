@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using StackExchange.Redis;
+using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
 
@@ -271,12 +272,6 @@ public class EdgeLimitTests(Containers containers)
         }
     }
 
-    private static Task<HttpResponseMessage> SendAsync(TestGateway gateway, string method, string path, string? token = null) =>
-        gateway.Client.SendAsync(new HttpRequestMessage(new HttpMethod(method), path)
-        {
-            Headers = { Authorization = token is null ? null : new AuthenticationHeaderValue("Bearer", token) },
-        }, Ct);
-
     /// <summary>The next 60 s fixed-window boundary after the gateway's clock; the clock can only move forward.</summary>
     private static DateTimeOffset StartOfNextWindow(TestGateway gateway) =>
         DateTimeOffset.FromUnixTimeMilliseconds((gateway.Clock.GetUtcNow().ToUnixTimeMilliseconds() / 60000 + 1) * 60000);
@@ -285,13 +280,4 @@ public class EdgeLimitTests(Containers containers)
 
     private List<string> Keys(string pattern) =>
         containers.Redis.GetServers().SelectMany(s => s.Keys(pattern: pattern)).Select(k => k.ToString()).ToList();
-
-    private static async Task AssertErrorAsync(HttpResponseMessage response, HttpStatusCode status, int code, string reason)
-    {
-        Assert.Equal(status, response.StatusCode);
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
-        Assert.Equal(code, body.RootElement.GetProperty("code").GetInt32());
-        var detail = Assert.Single(body.RootElement.GetProperty("details").EnumerateArray());
-        Assert.Equal(reason, detail.GetProperty("reason").GetString());
-    }
 }
