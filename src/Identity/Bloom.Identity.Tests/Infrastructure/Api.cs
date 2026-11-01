@@ -22,14 +22,14 @@ public sealed record TestCaller(Guid Id, string Type, string? Role, DateTimeOffs
 public static class Api
 {
     /// <summary>Sends a request to the test host; <paramref name="body"/> is JSON with lowerCamel names.</summary>
-    public static Task<HttpResponseMessage> SendAsync(
+    public static async Task<HttpResponseMessage> SendAsync(
         this TestIdentity identity, HttpMethod method, string path, object? body = null, TestCaller? caller = null, string? cookie = null)
     {
         using var request = new HttpRequestMessage(method, path);
         if (body is not null) request.Content = JsonContent.Create(body, options: JsonSerializerOptions.Web);
         caller?.Apply(request);
         if (cookie is not null) request.Headers.Add("Cookie", cookie);
-        return identity.Http.SendAsync(request, TestContext.Current.CancellationToken);
+        return await identity.Http.SendAsync(request, TestContext.Current.CancellationToken); // awaited, so the request outlives the send
     }
 
     /// <summary>Asserts the HTTP status and the <c>bloom</c> <c>ErrorInfo</c> reason, and returns the <c>ErrorInfo</c> element.</summary>
