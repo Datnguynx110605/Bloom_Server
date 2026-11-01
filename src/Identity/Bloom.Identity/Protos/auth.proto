@@ -21,6 +21,12 @@ service Auth {
   rpc SignIn(SignInRequest) returns (SignInResponse) {
     option (google.api.http) = { post: "/api/auth/sign-in" body: "*" };
   }
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/auth/password-reset/request" body: "*" };
+  }
+  rpc ResetPassword(ResetPasswordRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/auth/password-reset/confirm" body: "*" };
+  }
   rpc Refresh(google.protobuf.Empty) returns (TokenResponse) {
     option (google.api.http) = { post: "/auth/refresh" };
   }
@@ -62,6 +68,16 @@ message SignInResponse {
     string access_token = 1;
     string mfa_challenge_id = 2;
   }
+}
+
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+message ResetPasswordRequest {
+  string email = 1;
+  string code = 2;
+  string new_password = 3;
 }
 
 message SignOutRequest {

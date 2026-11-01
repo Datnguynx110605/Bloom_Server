@@ -77,6 +77,7 @@ public static class IdentityApp
         if (api)
         {
             app.MapGrpcService<AuthService>();
+            app.MapGrpcService<AccountService>();
             app.MapGrpcService<StaffService>();
             app.MapGet("/.well-known/jwks.json", (SigningKeys keys) => Results.Text(keys.JwksJson, "application/json"));
         }

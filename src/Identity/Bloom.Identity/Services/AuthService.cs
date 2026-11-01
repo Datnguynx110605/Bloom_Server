@@ -14,6 +14,7 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Account = Bloom.Identity.Data.Account;
 
 namespace Bloom.Identity.Services;
 
@@ -101,6 +102,33 @@ public sealed class AuthService(
         {
             metrics.SignInDuration(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
         }
+    }
+
+    public override async Task<Empty> RequestPasswordReset(RequestPasswordResetRequest request, ServerCallContext context)
+    {
+        var (email, _) = Inputs.Email(request.Email);
+        var account = await db.Accounts.SingleOrDefaultAsync(a => a.EmailNormalized == email && a.Status == AccountStatuses.Active, context.CancellationToken);
+        // The limits apply to unknown and inactive emails too, so the answer never reveals an account (ID-05, plan I14).
+        if (account is null) await authStore.CheckCodeLimitsAsync(email, CodePurposes.ResetPassword);
+        else await codes.IssueAsync(email, CodePurposes.ResetPassword, null);
+        await db.SaveChangesAsync(context.CancellationToken);
+        return new Empty();
+    }
+
+    public override async Task<Empty> ResetPassword(ResetPasswordRequest request, ServerCallContext context)
+    {
+        var (email, _) = Inputs.Email(request.Email);
+        var password = passwordPolicy.Validate(request.NewPassword); // before the code, so a weak password spends no attempt (plan I16)
+        await codes.VerifyAsync(CodePurposes.ResetPassword, request.Code, email, null);
+        var account = await db.Accounts.SingleOrDefaultAsync(a => a.EmailNormalized == email && a.Status == AccountStatuses.Active, context.CancellationToken)
+            ?? throw IdentityErrors.Error(IdentityErrors.CodeInvalid, "The code is wrong or has expired.");
+
+        account.PasswordHash = passwordHasher.Hash(password);
+        await using var tx = await db.Database.BeginTransactionAsync(context.CancellationToken);
+        await sessions.RevokeAllAsync(account, "password_reset");
+        await db.SaveChangesAsync(context.CancellationToken);
+        await tx.CommitAsync(context.CancellationToken);
+        return new Empty();
     }
 
     public override async Task<TokenResponse> Refresh(Empty request, ServerCallContext context)

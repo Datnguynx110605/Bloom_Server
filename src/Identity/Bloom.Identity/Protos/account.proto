@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package bloom.identity.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+option csharp_namespace = "Bloom.Identity.V1";
+
+// 06-identity §5.1. Task 8 adds the Google and address methods, Task 9 DeleteAccount.
+service Account {
+  rpc GetMe(google.protobuf.Empty) returns (GetMeResponse) {
+    option (google.api.http) = { get: "/api/me/profile" };
+  }
+  rpc ChangeEmail(ChangeEmailRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/me/email" body: "*" };
+  }
+  rpc ConfirmEmailChange(ConfirmEmailChangeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/me/email/confirm" body: "*" };
+  }
+  rpc ChangePassword(ChangePasswordRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/me/password" body: "*" };
+  }
+}
+
+message GetMeResponse {
+  string account_id = 1;
+  string type = 2;
+  string email = 3;
+  string name = 4;
+  optional string role = 5; // staff only
+  bool google_linked = 6;
+  bool has_password = 7;
+}
+
+message ChangeEmailRequest {
+  string new_email = 1;
+}
+
+message ConfirmEmailChangeRequest {
+  string code = 1;
+}
+
+message ChangePasswordRequest {
+  string current_password = 1;
+  string new_password = 2;
+}
