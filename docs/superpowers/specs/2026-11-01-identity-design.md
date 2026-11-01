@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft — pending owner review |
+| **Status** | Approved (2026-11-01) |
 | **Date** | 2026-11-01 |
 | **Branch / PR base** | `feat/identity` → `feat/api-gateway` |
 | **Implements** | [06-identity](../../../doc/low-level-design/06-identity.md) (all sections), ACC-R01 … R14, BI-06, HLD §5, §7.1, §9.1, HLD-ADR-010, HLD-ADR-011, HLD-ADR-014 (API/worker split), HLD-ADR-016, [LLD-ADR-008](../../../doc/low-level-design/adr/LLD-ADR-008-verify-first-signup.md) |
