@@ -23,7 +23,7 @@ public sealed class AuthService(SessionService sessions, IdentityDbContext db) :
     {
         var caller = TrustedCaller.From(context);
         if (!Guid.TryParse(request.Sid, out var familyId))
-            throw IdentityErrors.Validation("sid", "sid must be the sid claim of the access token.");
+            throw IdentityErrors.Error(IdentityErrors.NotFound, "No such session.");
         await sessions.RevokeFamilyAsync(caller.UserId, familyId);
         RefreshCookie.Clear(context.GetHttpContext());
         return new Empty();

@@ -263,6 +263,7 @@ public class SessionTests(Containers containers)
 
         await (await SignOutAsync(t, account, (await RowAsync(t, foreign.RefreshToken)).FamilyId)).ExpectErrorAsync(404, "NOT_FOUND");
         await (await SignOutAsync(t, account, Guid.NewGuid())).ExpectErrorAsync(404, "NOT_FOUND");
+        await (await SignOutAsync(t, account, "not-a-guid")).ExpectErrorAsync(404, "NOT_FOUND");
         Assert.Equal(RefreshStatuses.Active, (await RowAsync(t, foreign.RefreshToken)).Status);
 
         var familyId = (await RowAsync(t, own.RefreshToken)).FamilyId;
@@ -289,6 +290,6 @@ public class SessionTests(Containers containers)
         Assert.Equal(1, metrics.Sum("revocations_total", ("trigger", "sign_out_everywhere")));
     }
 
-    private static Task<HttpResponseMessage> SignOutAsync(TestIdentity t, Account account, Guid sid) =>
+    private static Task<HttpResponseMessage> SignOutAsync(TestIdentity t, Account account, object sid) =>
         t.SendAsync(HttpMethod.Post, "/api/me/sign-out", new { sid }, TestCaller.Customer(account.Id, t.Clock.GetUtcNow()));
 }
