@@ -290,6 +290,34 @@ public class StaffAdminTests(Containers containers)
     }
 
     [Fact]
+    public async Task Leftover_reenrol_link_of_an_enrolled_staff_account_is_INVITATION_INVALID() // R43
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var (admin, _) = await Seed.StaffAsync(t, StaffRoles.Admin);
+        var (staff, current) = await Seed.StaffAsync(t, StaffRoles.Warehouse);
+        await ActAsync(t, admin, staff.Id.ToString(), "reset-mfa");
+        var token = InviteToken((await Outbox.EnvelopesAsync(t, IdentityMessages.StaffInvited)).Single());
+        await using (var db = t.NewDb()) // enrolled again some other way: the first link is left over
+        {
+            var account = await db.Accounts.SingleAsync(a => a.Id == staff.Id, Ct);
+            account.TotpSecretEnc = t.Services.GetRequiredKeyedService<SecretBox>("totp").Seal(current);
+            await db.SaveChangesAsync(Ct);
+        }
+        var sealedSecret = (await ReloadAsync(t, staff.Id)).TotpSecretEnc;
+        var secret = RandomNumberGenerator.GetBytes(20);
+
+        foreach (var password in new[] { Seed.Password, "Wrong-password-99" })
+            await (await t.SendAsync(HttpMethod.Post, "/api/auth/staff/invitations/accept",
+                new { inviteToken = token, currentPassword = password, totpSecret = InvitationTests.ToBase32(secret), totpCode = CodeAt(t, secret) }))
+                .ExpectErrorAsync(400, "INVITATION_INVALID");
+
+        Assert.Equal(sealedSecret, (await ReloadAsync(t, staff.Id)).TotpSecretEnc);
+        Assert.False(await Redis.KeyExistsAsync($"signin:fail:{staff.Id}"));
+        await using var check = t.NewDb();
+        Assert.Null((await check.StaffInvitations.SingleAsync(Ct)).AcceptedAt);
+    }
+
+    [Fact]
     public async Task Reenrol_needs_an_active_account()
     {
         await using var t = await TestIdentity.StartAsync(containers);

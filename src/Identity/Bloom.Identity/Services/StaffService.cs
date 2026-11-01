@@ -52,17 +52,18 @@ public sealed class StaffService(
         var invitation = await db.StaffInvitations.AsNoTracking().SingleOrDefaultAsync(i => i.TokenHash == hash && i.AcceptedAt == null && i.ExpiresAt > now, ct)
             ?? throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
         var existing = await db.Accounts.SingleOrDefaultAsync(a => a.EmailNormalized == invitation.EmailNormalized, ct);
-        if (existing is { Type: AccountTypes.Staff }) return await ReenrolAsync(request, invitation, existing, context); // after ResetStaffMfa (spec §4)
+        if (existing is { Type: AccountTypes.Staff }) // re-enrol only after ResetStaffMfa (spec §4, R43): an enrolled account's leftover link is dead, before any password check
+            return existing.TotpSecretEnc is null
+                ? await ReenrolAsync(request, invitation, existing, context)
+                : throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
         if (existing is not null) throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
 
         var password = passwordPolicy.Validate(request.Password);
         var name = Inputs.Name(request.Name);
         var secret = ParseSecret(request.TotpSecret);
 
-        // The first code proves the device. A wrong one leaves the invitation usable (plan I27); the account id is assigned up front for the replay mark.
-        var id = Guid.CreateVersion7();
-        if (!Totp.Verify(secret, request.TotpCode, now, out var step) || !await authStore.TryMarkTotpUsedAsync(id, step))
-            throw Invalid();
+        var id = Guid.CreateVersion7(); // assigned up front for the replay mark
+        await VerifyFirstCodeAsync(secret, request.TotpCode, id, now);
 
         var account = new Account
         {
@@ -78,11 +79,9 @@ public sealed class StaffService(
             CreatedAt = now,
             UpdatedAt = now,
         };
-        // Claiming the invitation and creating the account commit together; of two concurrent accepts only one claims it.
+        // Claiming the invitation and creating the account commit together.
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var claimed = await db.StaffInvitations.Where(i => i.Id == invitation.Id && i.AcceptedAt == null && i.ExpiresAt > now)
-            .ExecuteUpdateAsync(s => s.SetProperty(i => i.AcceptedAt, now), ct);
-        if (claimed == 0) throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
+        await ClaimInvitationAsync(invitation, now, ct);
         db.Accounts.Add(account);
         var session = await sessions.StartAsync(account);
         try
@@ -105,18 +104,30 @@ public sealed class StaffService(
         var secret = ParseSecret(request.TotpSecret);
         await credentials.CheckAccountPasswordAsync(account, request.CurrentPassword); // may save a rehash, so before anything is staged
         if (account.Status != AccountStatuses.Active) throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "Wrong email or password.");
-        if (!Totp.Verify(secret, request.TotpCode, now, out var step) || !await authStore.TryMarkTotpUsedAsync(account.Id, step))
-            throw Invalid();
+        await VerifyFirstCodeAsync(secret, request.TotpCode, account.Id, now);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var claimed = await db.StaffInvitations.Where(i => i.Id == invitation.Id && i.AcceptedAt == null && i.ExpiresAt > now)
-            .ExecuteUpdateAsync(s => s.SetProperty(i => i.AcceptedAt, now), ct);
-        if (claimed == 0) throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
+        await ClaimInvitationAsync(invitation, now, ct);
         account.TotpSecretEnc = totpBox.Seal(secret);
         var session = await sessions.StartAsync(account);
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return RefreshCookie.Respond(context, session);
+    }
+
+    /// <summary>The first code proves the device. A wrong or replayed one leaves the invitation usable (plan I27).</summary>
+    private async Task VerifyFirstCodeAsync(byte[] secret, string code, Guid accountId, DateTimeOffset now)
+    {
+        if (!Totp.Verify(secret, code, now, out var step) || !await authStore.TryMarkTotpUsedAsync(accountId, step))
+            throw Invalid();
+    }
+
+    /// <summary>Of two concurrent accepts only one claims the invitation.</summary>
+    private async Task ClaimInvitationAsync(StaffInvitation invitation, DateTimeOffset now, CancellationToken ct)
+    {
+        var claimed = await db.StaffInvitations.Where(i => i.Id == invitation.Id && i.AcceptedAt == null && i.ExpiresAt > now)
+            .ExecuteUpdateAsync(s => s.SetProperty(i => i.AcceptedAt, now), ct);
+        if (claimed == 0) throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
     }
 
     private static byte[] ParseSecret(string base32) =>
