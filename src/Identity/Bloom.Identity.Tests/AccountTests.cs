@@ -18,8 +18,6 @@ public class AccountTests(Containers containers)
 
     private static string NewEmail() => $"{Guid.NewGuid():N}@example.com";
 
-    private static TestCaller Recent(TestIdentity t, Account a) => TestCaller.Customer(a.Id, t.Clock.GetUtcNow());
-
     private static TestCaller Stale(TestIdentity t, Account a) => TestCaller.Customer(a.Id, t.Clock.GetUtcNow().AddMinutes(-10));
 
     private static Task<HttpResponseMessage> ChangePasswordAsync(TestIdentity t, TestCaller caller, string current, string next) =>
@@ -40,12 +38,6 @@ public class AccountTests(Containers containers)
     private static Task<HttpResponseMessage> SignInAsync(TestIdentity t, string email, string password) =>
         t.SendAsync(HttpMethod.Post, "/api/auth/sign-in", new { email, password });
 
-    private static async Task<Account> StoredAsync(TestIdentity t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Accounts.AsNoTracking().SingleAsync(a => a.Id == id, Ct);
-    }
-
     private static async Task<string> BodyAsync(HttpResponseMessage response) => await response.Content.ReadAsStringAsync(Ct);
 
     [Fact]
@@ -56,7 +48,7 @@ public class AccountTests(Containers containers)
         var googleOnly = await Seed.CustomerAsync(t, password: null, googleSub: "sub-1");
         var (staff, _) = await Seed.StaffAsync(t, StaffRoles.Admin);
 
-        var me = await (await t.SendAsync(HttpMethod.Get, "/api/me/profile", caller: Recent(t, customer))).Content.ReadFromJsonAsync<JsonElement>(Ct);
+        var me = await (await t.SendAsync(HttpMethod.Get, "/api/me/profile", caller: TestCaller.Customer(t, customer))).Content.ReadFromJsonAsync<JsonElement>(Ct);
         Assert.Equal(customer.Id.ToString("D"), me.GetProperty("accountId").GetString());
         Assert.Equal("customer", me.GetProperty("type").GetString());
         Assert.Equal("Ann@Example.COM", me.GetProperty("email").GetString());
@@ -65,7 +57,7 @@ public class AccountTests(Containers containers)
         Assert.False(me.TryGetProperty("googleLinked", out var linked) && linked.GetBoolean());
         Assert.False(me.TryGetProperty("role", out _));
 
-        var google = await (await t.SendAsync(HttpMethod.Get, "/api/me/profile", caller: Recent(t, googleOnly))).Content.ReadFromJsonAsync<JsonElement>(Ct);
+        var google = await (await t.SendAsync(HttpMethod.Get, "/api/me/profile", caller: TestCaller.Customer(t, googleOnly))).Content.ReadFromJsonAsync<JsonElement>(Ct);
         Assert.True(google.GetProperty("googleLinked").GetBoolean());
         Assert.False(google.TryGetProperty("hasPassword", out var has) && has.GetBoolean());
 
@@ -83,7 +75,7 @@ public class AccountTests(Containers containers)
 
         await (await ChangePasswordAsync(t, Stale(t, account), Seed.Password, NewPassword)).ExpectErrorAsync(400, "REAUTH_REQUIRED");
 
-        Assert.Equal(account.PasswordHash, (await StoredAsync(t, account.Id)).PasswordHash);
+        Assert.Equal(account.PasswordHash, (await t.AccountAsync(account.Id)).PasswordHash);
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.TokensRevoked));
     }
 
@@ -96,7 +88,7 @@ public class AccountTests(Containers containers)
         await Seed.SessionAsync(t, account);
         await Seed.SessionAsync(t, account);
 
-        var response = await ChangePasswordAsync(t, Recent(t, account), Seed.Password, NewPassword);
+        var response = await ChangePasswordAsync(t, TestCaller.Customer(t, account), Seed.Password, NewPassword);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(response.Headers.Contains("Set-Cookie"));
@@ -106,7 +98,7 @@ public class AccountTests(Containers containers)
             Assert.Equal(2, tokens.Count);
             Assert.All(tokens, x => Assert.Equal(RefreshStatuses.Revoked, x.Status));
         }
-        var stored = await StoredAsync(t, account.Id);
+        var stored = await t.AccountAsync(account.Id);
         Assert.Equal(t.Clock.GetUtcNow(), stored.TokensValidAfter!.Value, TimeSpan.FromMilliseconds(1));
         var revoked = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.TokensRevoked)).GetPayload<TokensRevokedV1>();
         Assert.Equal(account.Id, revoked.AccountId);
@@ -122,13 +114,13 @@ public class AccountTests(Containers containers)
         await using var t = await TestIdentity.StartAsync(containers);
         var account = await Seed.CustomerAsync(t);
 
-        await (await ChangePasswordAsync(t, Recent(t, account), "Wrong-horse-4242", NewPassword)).ExpectErrorAsync(401, "INVALID_CREDENTIALS");
+        await (await ChangePasswordAsync(t, TestCaller.Customer(t, account), "Wrong-horse-4242", NewPassword)).ExpectErrorAsync(401, "INVALID_CREDENTIALS");
         Assert.Equal(1, (long)await Redis.StringGetAsync($"signin:fail:{account.Id}"));
 
         // The new password is checked first: a weak one never reaches the current-password check or the counter.
-        await (await ChangePasswordAsync(t, Recent(t, account), "Wrong-horse-4242", "short")).ExpectErrorAsync(400, "PASSWORD_WEAK");
+        await (await ChangePasswordAsync(t, TestCaller.Customer(t, account), "Wrong-horse-4242", "short")).ExpectErrorAsync(400, "PASSWORD_WEAK");
         Assert.Equal(1, (long)await Redis.StringGetAsync($"signin:fail:{account.Id}"));
-        Assert.Equal(account.PasswordHash, (await StoredAsync(t, account.Id)).PasswordHash);
+        Assert.Equal(account.PasswordHash, (await t.AccountAsync(account.Id)).PasswordHash);
     }
 
     [Fact]
@@ -138,7 +130,7 @@ public class AccountTests(Containers containers)
         var account = await Seed.CustomerAsync(t);
         var next = NewEmail();
 
-        var request = await ChangeEmailAsync(t, Recent(t, account), $" {next.ToUpperInvariant()} ");
+        var request = await ChangeEmailAsync(t, TestCaller.Customer(t, account), $" {next.ToUpperInvariant()} ");
         Assert.Equal(HttpStatusCode.OK, request.StatusCode);
         var sent = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.VerificationCode)).GetPayload<VerificationCodeV1>();
         Assert.Equal(next, sent.Email);
@@ -146,9 +138,9 @@ public class AccountTests(Containers containers)
         Assert.Equal(t.Clock.GetUtcNow().AddMinutes(15), sent.ExpiresAt);
 
         var code = await Outbox.LatestCodeAsync(t, next, "change_email");
-        Assert.Equal(HttpStatusCode.OK, (await ConfirmEmailAsync(t, Recent(t, account), code)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await ConfirmEmailAsync(t, TestCaller.Customer(t, account), code)).StatusCode);
 
-        var stored = await StoredAsync(t, account.Id);
+        var stored = await t.AccountAsync(account.Id);
         Assert.Equal(next, stored.EmailNormalized);
         Assert.Equal(next, stored.EmailDisplay);
         var changed = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.ContactChanged)).GetPayload<ContactChangedV1>();
@@ -156,7 +148,7 @@ public class AccountTests(Containers containers)
 
         // The old address is free again, and the code can't be used twice.
         Assert.Equal(HttpStatusCode.OK, (await t.SendAsync(HttpMethod.Post, "/api/auth/sign-up/start", new { email = account.EmailNormalized })).StatusCode);
-        await (await ConfirmEmailAsync(t, Recent(t, account), code)).ExpectErrorAsync(400, "CODE_INVALID");
+        await (await ConfirmEmailAsync(t, TestCaller.Customer(t, account), code)).ExpectErrorAsync(400, "CODE_INVALID");
     }
 
     [Fact]
@@ -167,18 +159,18 @@ public class AccountTests(Containers containers)
         var other = await Seed.CustomerAsync(t);
 
         foreach (var typed in new[] { other.EmailNormalized, other.EmailNormalized.ToUpperInvariant(), $" {other.EmailNormalized.ToUpperInvariant()} " })
-            await (await ChangeEmailAsync(t, Recent(t, account), typed)).ExpectErrorAsync(409, "EMAIL_TAKEN");
+            await (await ChangeEmailAsync(t, TestCaller.Customer(t, account), typed)).ExpectErrorAsync(409, "EMAIL_TAKEN");
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.VerificationCode));
 
         // Taken in between request and confirm.
         var next = NewEmail();
-        Assert.Equal(HttpStatusCode.OK, (await ChangeEmailAsync(t, Recent(t, account), next)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await ChangeEmailAsync(t, TestCaller.Customer(t, account), next)).StatusCode);
         await Seed.CustomerAsync(t, email: next);
         var code = await Outbox.LatestCodeAsync(t, next, "change_email");
 
-        await (await ConfirmEmailAsync(t, Recent(t, account), code)).ExpectErrorAsync(409, "EMAIL_TAKEN");
+        await (await ConfirmEmailAsync(t, TestCaller.Customer(t, account), code)).ExpectErrorAsync(409, "EMAIL_TAKEN");
 
-        Assert.Equal(account.EmailNormalized, (await StoredAsync(t, account.Id)).EmailNormalized);
+        Assert.Equal(account.EmailNormalized, (await t.AccountAsync(account.Id)).EmailNormalized);
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.ContactChanged));
     }
 
@@ -199,12 +191,12 @@ public class AccountTests(Containers containers)
         await (await ChangeEmailAsync(t, Stale(t, account), next)).ExpectErrorAsync(400, "REAUTH_REQUIRED");
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.VerificationCode));
 
-        Assert.Equal(HttpStatusCode.OK, (await ChangeEmailAsync(t, Recent(t, account), next)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await ChangeEmailAsync(t, TestCaller.Customer(t, account), next)).StatusCode);
         var code = await Outbox.LatestCodeAsync(t, next, "change_email");
         await (await ConfirmEmailAsync(t, Stale(t, account), code)).ExpectErrorAsync(400, "REAUTH_REQUIRED");
 
         // The refused confirm spent nothing: the same code works with a fresh sign-in.
-        Assert.Equal(HttpStatusCode.OK, (await ConfirmEmailAsync(t, Recent(t, account), code)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await ConfirmEmailAsync(t, TestCaller.Customer(t, account), code)).StatusCode);
     }
 
     [Fact]
@@ -276,13 +268,13 @@ public class AccountTests(Containers containers)
 
         await (await ResetAsync(t, NewEmail(), "123456", NewPassword)).ExpectErrorAsync(400, "CODE_INVALID");
         await (await ResetAsync(t, account.EmailNormalized, wrong, NewPassword)).ExpectErrorAsync(400, "CODE_INVALID");
-        Assert.Equal(account.PasswordHash, (await StoredAsync(t, account.Id)).PasswordHash);
+        Assert.Equal(account.PasswordHash, (await t.AccountAsync(account.Id)).PasswordHash);
 
         // Deactivated after the code went out: the code no longer works.
         await using (var db = t.NewDb())
             await db.Accounts.Where(a => a.Id == account.Id).ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, AccountStatuses.Deactivated), Ct);
         await (await ResetAsync(t, account.EmailNormalized, code, NewPassword)).ExpectErrorAsync(400, "CODE_INVALID");
-        Assert.Equal(account.PasswordHash, (await StoredAsync(t, account.Id)).PasswordHash);
+        Assert.Equal(account.PasswordHash, (await t.AccountAsync(account.Id)).PasswordHash);
     }
 
     [Fact]

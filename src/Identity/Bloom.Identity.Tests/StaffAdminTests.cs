@@ -25,16 +25,7 @@ public class StaffAdminTests(Containers containers)
     private static Task<HttpResponseMessage> ChangeRoleAsync(TestIdentity t, Account admin, string id, string role) =>
         ActAsync(t, admin, id, "role", new { role });
 
-    private static string CodeAt(TestIdentity t, byte[] secret, long stepOffset = 0) =>
-        Totp.Compute(secret, t.Clock.GetUtcNow().ToUnixTimeSeconds() / 30 + stepOffset);
-
     private static string InviteToken(Envelope envelope) => envelope.GetPayload<StaffInvitedV1>().InviteUrl.Split("?token=")[1];
-
-    private static async Task<Account> ReloadAsync(TestIdentity t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Accounts.AsNoTracking().SingleAsync(a => a.Id == id, Ct);
-    }
 
     private static (string Before, string After) Details(AuditEntry entry)
     {
@@ -48,7 +39,7 @@ public class StaffAdminTests(Containers containers)
         await using var t = await TestIdentity.StartAsync(containers);
         var (only, _) = await Seed.StaffAsync(t, StaffRoles.Admin);
         await Seed.SessionAsync(t, only);
-        var version = (await ReloadAsync(t, only.Id)).Version;
+        var version = (await t.AccountAsync(only.Id)).Version;
 
         await (await ActAsync(t, only, only.Id.ToString(), "deactivate")).ExpectErrorAsync(400, "LAST_ADMIN");
         await (await ChangeRoleAsync(t, only, only.Id.ToString(), StaffRoles.Support)).ExpectErrorAsync(400, "LAST_ADMIN");
@@ -68,7 +59,7 @@ public class StaffAdminTests(Containers containers)
         // With a second admin the same change goes through.
         var (second, _) = await Seed.StaffAsync(t, StaffRoles.Admin);
         Assert.Equal(HttpStatusCode.OK, (await ChangeRoleAsync(t, second, only.Id.ToString(), StaffRoles.Support)).StatusCode);
-        Assert.Equal(StaffRoles.Support, (await ReloadAsync(t, only.Id)).Role);
+        Assert.Equal(StaffRoles.Support, (await t.AccountAsync(only.Id)).Role);
     }
 
     [Fact]
@@ -96,7 +87,7 @@ public class StaffAdminTests(Containers containers)
         var (staff, _) = await Seed.StaffAsync(t, StaffRoles.Warehouse);
         var session = await Seed.SessionAsync(t, staff);
         await Seed.SessionAsync(t, staff);
-        var version = (await ReloadAsync(t, staff.Id)).Version;
+        var version = (await t.AccountAsync(staff.Id)).Version;
 
         Assert.Equal(HttpStatusCode.OK, (await ActAsync(t, admin, staff.Id.ToString(), "deactivate")).StatusCode);
 
@@ -153,7 +144,7 @@ public class StaffAdminTests(Containers containers)
 
         Assert.Equal(HttpStatusCode.OK, (await ActAsync(t, admin, staff.Id.ToString(), "reactivate")).StatusCode);
 
-        Assert.Equal(AccountStatuses.Active, (await ReloadAsync(t, staff.Id)).Status);
+        Assert.Equal(AccountStatuses.Active, (await t.AccountAsync(staff.Id)).Status);
         await using var db = t.NewDb();
         var audit = await db.AuditEntries.SingleAsync(Ct);
         Assert.Equal("identity.staff-reactivated", audit.Action);
@@ -178,7 +169,7 @@ public class StaffAdminTests(Containers containers)
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.TokensRevoked));
         Assert.Equal(HttpStatusCode.OK, (await ChangeRoleAsync(t, admin, staff.Id.ToString(), StaffRoles.CatalogManager)).StatusCode);
 
-        Assert.Equal(StaffRoles.CatalogManager, (await ReloadAsync(t, staff.Id)).Role);
+        Assert.Equal(StaffRoles.CatalogManager, (await t.AccountAsync(staff.Id)).Role);
         await using var db = t.NewDb();
         Assert.All(await db.RefreshTokens.Where(r => r.AccountId == staff.Id).ToListAsync(Ct), r => Assert.Equal(RefreshStatuses.Revoked, r.Status));
         var audit = await db.AuditEntries.SingleAsync(Ct);
@@ -254,16 +245,16 @@ public class StaffAdminTests(Containers containers)
         var (staff, _) = await Seed.StaffAsync(t, StaffRoles.Warehouse);
         await ActAsync(t, admin, staff.Id.ToString(), "reset-mfa");
         var token = InviteToken((await Outbox.EnvelopesAsync(t, IdentityMessages.StaffInvited)).Single());
-        var secret = RandomNumberGenerator.GetBytes(20);
-        Task<HttpResponseMessage> Accept(string currentPassword, string code, byte[]? totpSecret = null) =>
+        var (text, secret) = TestTotp.NewSecret();
+        Task<HttpResponseMessage> Accept(string currentPassword, string code, string? totpText = null) =>
             t.SendAsync(HttpMethod.Post, "/api/auth/staff/invitations/accept",
-                new { inviteToken = token, currentPassword, totpSecret = InvitationTests.ToBase32(totpSecret ?? secret), totpCode = code });
+                new { inviteToken = token, currentPassword, totpSecret = totpText ?? text, totpCode = code });
 
-        await (await Accept("Wrong-password-99", CodeAt(t, secret))).ExpectErrorAsync(401, "INVALID_CREDENTIALS");
+        await (await Accept("Wrong-password-99", TestTotp.CodeAt(t, secret))).ExpectErrorAsync(401, "INVALID_CREDENTIALS");
         Assert.Equal(1, (long)await Redis.StringGetAsync($"signin:fail:{staff.Id}"));
-        await (await Accept(Seed.Password, CodeAt(t, secret, 10))).ExpectErrorAsync(401, "MFA_INVALID");
-        var weak = RandomNumberGenerator.GetBytes(16);
-        var field = await (await Accept(Seed.Password, CodeAt(t, weak), weak)).ExpectErrorAsync(400, "VALIDATION_FAILED");
+        await (await Accept(Seed.Password, TestTotp.CodeAt(t, secret, 10))).ExpectErrorAsync(401, "MFA_INVALID");
+        var (weakText, weak) = TestTotp.NewSecret(26);
+        var field = await (await Accept(Seed.Password, TestTotp.CodeAt(t, weak), weakText)).ExpectErrorAsync(400, "VALIDATION_FAILED");
         Assert.Equal("totp_secret", field.GetProperty("metadata").GetProperty("field").GetString());
         await using (var db = t.NewDb())
         {
@@ -271,7 +262,7 @@ public class StaffAdminTests(Containers containers)
             Assert.Null((await db.Accounts.SingleAsync(a => a.Id == staff.Id, Ct)).TotpSecretEnc);
         }
 
-        var response = await Accept(Seed.Password, CodeAt(t, secret));
+        var response = await Accept(Seed.Password, TestTotp.CodeAt(t, secret));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
@@ -286,7 +277,7 @@ public class StaffAdminTests(Containers containers)
             Assert.Equal(staff.PasswordHash, account.PasswordHash);
             Assert.Equal(t.Clock.GetUtcNow(), (await db.StaffInvitations.SingleAsync(Ct)).AcceptedAt!.Value, TimeSpan.FromMilliseconds(1));
         }
-        await (await Accept(Seed.Password, CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
+        await (await Accept(Seed.Password, TestTotp.CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
     }
 
     [Fact]
@@ -303,15 +294,15 @@ public class StaffAdminTests(Containers containers)
             account.TotpSecretEnc = t.Services.GetRequiredKeyedService<SecretBox>("totp").Seal(current);
             await db.SaveChangesAsync(Ct);
         }
-        var sealedSecret = (await ReloadAsync(t, staff.Id)).TotpSecretEnc;
-        var secret = RandomNumberGenerator.GetBytes(20);
+        var sealedSecret = (await t.AccountAsync(staff.Id)).TotpSecretEnc;
+        var (text, secret) = TestTotp.NewSecret();
 
         foreach (var password in new[] { Seed.Password, "Wrong-password-99" })
             await (await t.SendAsync(HttpMethod.Post, "/api/auth/staff/invitations/accept",
-                new { inviteToken = token, currentPassword = password, totpSecret = InvitationTests.ToBase32(secret), totpCode = CodeAt(t, secret) }))
+                new { inviteToken = token, currentPassword = password, totpSecret = text, totpCode = TestTotp.CodeAt(t, secret) }))
                 .ExpectErrorAsync(400, "INVITATION_INVALID");
 
-        Assert.Equal(sealedSecret, (await ReloadAsync(t, staff.Id)).TotpSecretEnc);
+        Assert.Equal(sealedSecret, (await t.AccountAsync(staff.Id)).TotpSecretEnc);
         Assert.False(await Redis.KeyExistsAsync($"signin:fail:{staff.Id}"));
         await using var check = t.NewDb();
         Assert.Null((await check.StaffInvitations.SingleAsync(Ct)).AcceptedAt);
@@ -326,10 +317,10 @@ public class StaffAdminTests(Containers containers)
         await ActAsync(t, admin, staff.Id.ToString(), "reset-mfa");
         var token = InviteToken((await Outbox.EnvelopesAsync(t, IdentityMessages.StaffInvited)).Single());
         await ActAsync(t, admin, staff.Id.ToString(), "deactivate");
-        var secret = RandomNumberGenerator.GetBytes(20);
+        var (text, secret) = TestTotp.NewSecret();
 
         await (await t.SendAsync(HttpMethod.Post, "/api/auth/staff/invitations/accept",
-            new { inviteToken = token, currentPassword = Seed.Password, totpSecret = InvitationTests.ToBase32(secret), totpCode = CodeAt(t, secret) }))
+            new { inviteToken = token, currentPassword = Seed.Password, totpSecret = text, totpCode = TestTotp.CodeAt(t, secret) }))
             .ExpectErrorAsync(401, "INVALID_CREDENTIALS");
 
         await using var db = t.NewDb();

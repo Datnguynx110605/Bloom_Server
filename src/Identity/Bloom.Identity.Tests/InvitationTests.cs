@@ -15,27 +15,6 @@ public class InvitationTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private const string Base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-    internal static string ToBase32(byte[] bytes)
-    {
-        var chars = new List<char>();
-        int buffer = 0, bits = 0;
-        foreach (var b in bytes)
-        {
-            buffer = (buffer << 8) | b;
-            bits += 8;
-            while (bits >= 5)
-            {
-                bits -= 5;
-                chars.Add(Base32Alphabet[(buffer >> bits) & 31]);
-            }
-            buffer &= (1 << bits) - 1;
-        }
-        if (bits > 0) chars.Add(Base32Alphabet[(buffer << (5 - bits)) & 31]);
-        return new string([.. chars]);
-    }
-
     private static TestCaller AdminCaller(TestIdentity t, Account admin) => TestCaller.Staff(admin.Id, StaffRoles.Admin, t.Clock.GetUtcNow());
 
     private static Task<HttpResponseMessage> InviteAsync(TestIdentity t, TestCaller? caller, string email, string role) =>
@@ -43,9 +22,6 @@ public class InvitationTests(Containers containers)
 
     private static Task<HttpResponseMessage> AcceptAsync(TestIdentity t, string token, string totpSecret, string totpCode, string name = "New Staff", string password = Seed.Password) =>
         t.SendAsync(HttpMethod.Post, "/api/auth/staff/invitations/accept", new { inviteToken = token, name, password, totpSecret, totpCode });
-
-    private static string CodeAt(TestIdentity t, byte[] secret, long stepOffset = 0) =>
-        Totp.Compute(secret, t.Clock.GetUtcNow().ToUnixTimeSeconds() / 30 + stepOffset);
 
     /// <summary>Invites as a fresh admin and returns the raw token from the published invite URL.</summary>
     private static async Task<(string Email, string Token)> InvitedAsync(TestIdentity t, string role = StaffRoles.Warehouse, string? email = null)
@@ -140,9 +116,9 @@ public class InvitationTests(Containers containers)
     {
         await using var t = await TestIdentity.StartAsync(containers);
         var (email, token) = await InvitedAsync(t, StaffRoles.Warehouse);
-        var secret = RandomNumberGenerator.GetBytes(20);
+        var (text, secret) = TestTotp.NewSecret();
 
-        var response = await AcceptAsync(t, token, ToBase32(secret), CodeAt(t, secret));
+        var response = await AcceptAsync(t, token, text, TestTotp.CodeAt(t, secret));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
@@ -165,7 +141,7 @@ public class InvitationTests(Containers containers)
         // The enrolment code is spent; the next step's code signs in through the normal routes.
         var signIn = await t.SendAsync(HttpMethod.Post, "/api/auth/sign-in", new { email, password = Seed.Password });
         var challenge = (await signIn.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("mfaChallengeId").GetString();
-        var mfa = await t.SendAsync(HttpMethod.Post, "/api/auth/staff/mfa", new { mfaChallengeId = challenge, code = CodeAt(t, secret, 1) });
+        var mfa = await t.SendAsync(HttpMethod.Post, "/api/auth/staff/mfa", new { mfaChallengeId = challenge, code = TestTotp.CodeAt(t, secret, 1) });
         Assert.Equal(HttpStatusCode.OK, mfa.StatusCode);
     }
 
@@ -173,15 +149,15 @@ public class InvitationTests(Containers containers)
     public async Task Expired_used_or_unknown_invitation_is_INVITATION_INVALID()
     {
         await using var t = await TestIdentity.StartAsync(containers);
-        var secret = RandomNumberGenerator.GetBytes(20);
+        var (text, secret) = TestTotp.NewSecret();
         var (_, expired) = await InvitedAsync(t);
         var (_, used) = await InvitedAsync(t);
 
-        Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(t, used, ToBase32(secret), CodeAt(t, secret))).StatusCode);
-        await (await AcceptAsync(t, used, ToBase32(secret), CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
-        await (await AcceptAsync(t, Opaque.NewToken(), ToBase32(secret), CodeAt(t, secret))).ExpectErrorAsync(400, "INVITATION_INVALID");
+        Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(t, used, text, TestTotp.CodeAt(t, secret))).StatusCode);
+        await (await AcceptAsync(t, used, text, TestTotp.CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
+        await (await AcceptAsync(t, Opaque.NewToken(), text, TestTotp.CodeAt(t, secret))).ExpectErrorAsync(400, "INVITATION_INVALID");
         t.Clock.Advance(TimeSpan.FromHours(72) + TimeSpan.FromSeconds(1));
-        await (await AcceptAsync(t, expired, ToBase32(secret), CodeAt(t, secret))).ExpectErrorAsync(400, "INVITATION_INVALID");
+        await (await AcceptAsync(t, expired, text, TestTotp.CodeAt(t, secret))).ExpectErrorAsync(400, "INVITATION_INVALID");
     }
 
     [Fact]
@@ -189,16 +165,16 @@ public class InvitationTests(Containers containers)
     {
         await using var t = await TestIdentity.StartAsync(containers);
         var (email, token) = await InvitedAsync(t);
-        var secret = RandomNumberGenerator.GetBytes(20);
+        var (text, secret) = TestTotp.NewSecret();
 
-        await (await AcceptAsync(t, token, ToBase32(secret), CodeAt(t, secret, 10))).ExpectErrorAsync(401, "MFA_INVALID");
+        await (await AcceptAsync(t, token, text, TestTotp.CodeAt(t, secret, 10))).ExpectErrorAsync(401, "MFA_INVALID");
         await using (var db = t.NewDb())
         {
             Assert.Null((await db.StaffInvitations.SingleAsync(Ct)).AcceptedAt);
             Assert.False(await db.Accounts.AnyAsync(a => a.EmailNormalized == email, Ct));
         }
 
-        Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(t, token, ToBase32(secret), CodeAt(t, secret))).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(t, token, text, TestTotp.CodeAt(t, secret))).StatusCode);
     }
 
     [Fact]
@@ -206,9 +182,9 @@ public class InvitationTests(Containers containers)
     {
         await using var t = await TestIdentity.StartAsync(containers);
         var (_, token) = await InvitedAsync(t);
-        var short16 = RandomNumberGenerator.GetBytes(16);
+        var (shortText, short16) = TestTotp.NewSecret(26); // 130 bits: 16 bytes, below the 20-byte minimum
 
-        var tooShort = await (await AcceptAsync(t, token, ToBase32(short16), CodeAt(t, short16))).ExpectErrorAsync(400, "VALIDATION_FAILED");
+        var tooShort = await (await AcceptAsync(t, token, shortText, TestTotp.CodeAt(t, short16))).ExpectErrorAsync(400, "VALIDATION_FAILED");
         var malformed = await (await AcceptAsync(t, token, "!!!", "123456")).ExpectErrorAsync(400, "VALIDATION_FAILED");
 
         Assert.Equal("totp_secret", tooShort.GetProperty("metadata").GetProperty("field").GetString());
@@ -223,9 +199,9 @@ public class InvitationTests(Containers containers)
         await using var t = await TestIdentity.StartAsync(containers);
         var (email, token) = await InvitedAsync(t, email: "late@bloom.example");
         await Seed.CustomerAsync(t, email);
-        var secret = RandomNumberGenerator.GetBytes(20);
+        var (text, secret) = TestTotp.NewSecret();
 
-        await (await AcceptAsync(t, token, ToBase32(secret), CodeAt(t, secret))).ExpectErrorAsync(409, "EMAIL_TAKEN");
+        await (await AcceptAsync(t, token, text, TestTotp.CodeAt(t, secret))).ExpectErrorAsync(409, "EMAIL_TAKEN");
 
         await using var db = t.NewDb();
         Assert.Null((await db.StaffInvitations.SingleAsync(Ct)).AcceptedAt);

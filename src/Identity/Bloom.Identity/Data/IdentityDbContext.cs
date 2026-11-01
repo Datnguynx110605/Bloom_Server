@@ -3,6 +3,7 @@ using Bloom.Shared.Persistence;
 using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Npgsql;
 
 namespace Bloom.Identity.Data;
 
@@ -94,6 +95,19 @@ public sealed partial class IdentityDbContext(DbContextOptions<IdentityDbContext
             entry.Entity.UpdatedAt = now;
         }
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    /// <summary>Saves; a unique-index violation becomes <paramref name="onUniqueViolation"/>.</summary>
+    public async Task SaveOrThrowAsync(Grpc.Core.RpcException onUniqueViolation, CancellationToken ct)
+    {
+        try
+        {
+            await SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        {
+            throw onUniqueViolation;
+        }
     }
 
     [GeneratedRegex("(?<=[a-z0-9])(?=[A-Z])")]

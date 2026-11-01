@@ -10,8 +10,6 @@ public class AddressTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private static TestCaller CallerOf(TestIdentity t, Account a) => TestCaller.Customer(a.Id, t.Clock.GetUtcNow());
-
     private static Dictionary<string, object?> Body(string recipient = "Ann Lee", bool isDefault = false) => new()
     {
         ["label"] = "Home", ["recipient"] = recipient, ["line1"] = "1 Main St", ["line2"] = "", ["city"] = "Austin",
@@ -21,22 +19,16 @@ public class AddressTests(Containers containers)
     private static Task<HttpResponseMessage> UpsertAsync(TestIdentity t, TestCaller caller, Dictionary<string, object?> body) =>
         t.SendAsync(HttpMethod.Put, "/api/me/addresses", body, caller);
 
-    private static async Task<JsonElement> JsonAsync(HttpResponseMessage response)
-    {
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        return await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
-    }
-
     private static async Task<JsonElement> ListAsync(TestIdentity t, TestCaller caller) =>
-        (await JsonAsync(await t.SendAsync(HttpMethod.Get, "/api/me/addresses", caller: caller))).GetProperty("addresses");
+        (await (await t.SendAsync(HttpMethod.Get, "/api/me/addresses", caller: caller)).OkJsonAsync()).GetProperty("addresses");
 
     [Fact]
     public async Task Create_list_update_delete()
     {
         await using var t = await TestIdentity.StartAsync(containers);
-        var caller = CallerOf(t, await Seed.CustomerAsync(t));
+        var caller = TestCaller.Customer(t, await Seed.CustomerAsync(t));
 
-        var created = await JsonAsync(await UpsertAsync(t, caller, Body()));
+        var created = await (await UpsertAsync(t, caller, Body())).OkJsonAsync();
         var id = created.GetProperty("id").GetString()!;
         Assert.Equal(1, created.GetProperty("version").GetInt64());
         Assert.Equal("+15125550100", created.GetProperty("phone").GetString());
@@ -45,7 +37,7 @@ public class AddressTests(Containers containers)
         var update = Body("  Bea Lee  ");
         update["id"] = id;
         update["version"] = 1;
-        var updated = await JsonAsync(await UpsertAsync(t, caller, update));
+        var updated = await (await UpsertAsync(t, caller, update)).OkJsonAsync();
         Assert.Equal(id, updated.GetProperty("id").GetString());
         Assert.Equal(2, updated.GetProperty("version").GetInt64());
         Assert.Equal("Bea Lee", updated.GetProperty("recipient").GetString());
@@ -59,13 +51,13 @@ public class AddressTests(Containers containers)
     public async Task Stale_version_is_CONCURRENCY_CONFLICT()
     {
         await using var t = await TestIdentity.StartAsync(containers);
-        var caller = CallerOf(t, await Seed.CustomerAsync(t));
-        var id = (await JsonAsync(await UpsertAsync(t, caller, Body()))).GetProperty("id").GetString();
+        var caller = TestCaller.Customer(t, await Seed.CustomerAsync(t));
+        var id = (await (await UpsertAsync(t, caller, Body())).OkJsonAsync()).GetProperty("id").GetString();
 
         var update = Body("Bea Lee");
         update["id"] = id;
         update["version"] = 1;
-        await JsonAsync(await UpsertAsync(t, caller, update));
+        await (await UpsertAsync(t, caller, update)).OkJsonAsync();
         await (await UpsertAsync(t, caller, update)).ExpectErrorAsync(409, "CONCURRENCY_CONFLICT");
     }
 
@@ -73,9 +65,9 @@ public class AddressTests(Containers containers)
     public async Task Other_accounts_address_is_NOT_FOUND()
     {
         await using var t = await TestIdentity.StartAsync(containers);
-        var owner = CallerOf(t, await Seed.CustomerAsync(t));
-        var other = CallerOf(t, await Seed.CustomerAsync(t));
-        var id = (await JsonAsync(await UpsertAsync(t, owner, Body()))).GetProperty("id").GetString();
+        var owner = TestCaller.Customer(t, await Seed.CustomerAsync(t));
+        var other = TestCaller.Customer(t, await Seed.CustomerAsync(t));
+        var id = (await (await UpsertAsync(t, owner, Body())).OkJsonAsync()).GetProperty("id").GetString();
 
         var update = Body();
         update["id"] = id;
@@ -93,8 +85,8 @@ public class AddressTests(Containers containers)
     public async Task Eleventh_address_is_refused()
     {
         await using var t = await TestIdentity.StartAsync(containers);
-        var caller = CallerOf(t, await Seed.CustomerAsync(t));
-        for (var i = 0; i < 10; i++) await JsonAsync(await UpsertAsync(t, caller, Body()));
+        var caller = TestCaller.Customer(t, await Seed.CustomerAsync(t));
+        for (var i = 0; i < 10; i++) await (await UpsertAsync(t, caller, Body())).OkJsonAsync();
 
         await (await UpsertAsync(t, caller, Body())).ExpectErrorAsync(400, "ADDRESS_LIMIT_REACHED");
         Assert.Equal(10, (await ListAsync(t, caller)).GetArrayLength());
@@ -104,9 +96,9 @@ public class AddressTests(Containers containers)
     public async Task Default_moves_to_the_new_default()
     {
         await using var t = await TestIdentity.StartAsync(containers);
-        var caller = CallerOf(t, await Seed.CustomerAsync(t));
-        var first = (await JsonAsync(await UpsertAsync(t, caller, Body(isDefault: true)))).GetProperty("id").GetString();
-        var second = (await JsonAsync(await UpsertAsync(t, caller, Body(isDefault: true)))).GetProperty("id").GetString();
+        var caller = TestCaller.Customer(t, await Seed.CustomerAsync(t));
+        var first = (await (await UpsertAsync(t, caller, Body(isDefault: true))).OkJsonAsync()).GetProperty("id").GetString();
+        var second = (await (await UpsertAsync(t, caller, Body(isDefault: true))).OkJsonAsync()).GetProperty("id").GetString();
 
         async Task<List<string?>> DefaultsAsync() =>
             (await ListAsync(t, caller)).EnumerateArray().Where(a => a.TryGetProperty("isDefault", out var d) && d.GetBoolean())
@@ -131,7 +123,7 @@ public class AddressTests(Containers containers)
     public async Task Invalid_field_is_VALIDATION_FAILED(string field, string value)
     {
         await using var t = await TestIdentity.StartAsync(containers);
-        var caller = CallerOf(t, await Seed.CustomerAsync(t));
+        var caller = TestCaller.Customer(t, await Seed.CustomerAsync(t));
         var body = Body();
         body[field] = value == "LONG" ? new string('a', 101) : value;
 

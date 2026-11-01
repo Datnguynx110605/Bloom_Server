@@ -11,7 +11,4 @@ public static class Poll
             await Task.Delay(50, TestContext.Current.CancellationToken);
         }
     }
-
-    public static Task UntilAsync(Func<bool> condition, int seconds, string what) =>
-        UntilAsync(() => Task.FromResult(condition()), seconds, what);
 }

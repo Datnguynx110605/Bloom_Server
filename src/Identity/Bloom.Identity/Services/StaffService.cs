@@ -8,7 +8,6 @@ using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 using Account = Bloom.Identity.Data.Account;
 
 namespace Bloom.Identity.Services;
@@ -84,14 +83,7 @@ public sealed class StaffService(
         await ClaimInvitationAsync(invitation, now, ct);
         db.Accounts.Add(account);
         var session = await sessions.StartAsync(account);
-        try
-        {
-            await db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        {
-            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
-        }
+        await db.SaveOrThrowAsync(IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account."), ct);
         await tx.CommitAsync(ct);
         return RefreshCookie.Respond(context, session);
     }

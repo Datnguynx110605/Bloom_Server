@@ -23,12 +23,9 @@ public sealed class SigningKeys
             });
             if (configured.Kid == options.ActiveKeyId) active = new ECDsaSecurityKey(ecdsa) { KeyId = configured.Kid };
         }
-        ActiveKid = options.ActiveKeyId;
         ActiveKey = active ?? throw new InvalidOperationException("Identity:ActiveKeyId is not one of Identity:SigningKeys."); // options.Validate() rules this out
         JwksJson = JsonSerializer.Serialize(new { keys = jwks });
     }
-
-    public string ActiveKid { get; }
 
     public ECDsaSecurityKey ActiveKey { get; }
 

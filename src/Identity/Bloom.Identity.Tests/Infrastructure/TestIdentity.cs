@@ -85,6 +85,13 @@ public sealed class TestIdentity : IAsyncDisposable
     /// <summary>A test-side context on the same database.</summary>
     public IdentityDbContext NewDb() => NewDb(ConnectionString, Clock);
 
+    /// <summary>The stored account, read on a fresh context.</summary>
+    public async Task<Account> AccountAsync(Guid id)
+    {
+        await using var db = NewDb();
+        return await db.Accounts.AsNoTracking().SingleAsync(a => a.Id == id, TestContext.Current.CancellationToken);
+    }
+
     private static IdentityDbContext NewDb(string connectionString, TimeProvider clock) =>
         new(new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql(connectionString).Options, clock);
 

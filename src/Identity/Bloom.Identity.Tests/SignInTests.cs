@@ -22,8 +22,6 @@ public class SignInTests(Containers containers)
     private static Task<HttpResponseMessage> MfaAsync(TestIdentity t, string challengeId, string code) =>
         t.SendAsync(HttpMethod.Post, "/api/auth/staff/mfa", new { mfaChallengeId = challengeId, code });
 
-    private static async Task<JsonElement> JsonAsync(HttpResponseMessage response) => await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
-
     /// <summary>The whole error body, so two answers can be compared byte for byte.</summary>
     private static async Task<string> InvalidBodyAsync(HttpResponseMessage response)
     {
@@ -34,14 +32,11 @@ public class SignInTests(Containers containers)
 
     private static string WrongPassword => "Wrong-horse-4242";
 
-    private static string CodeAt(TestIdentity t, byte[] secret, long stepOffset = 0) =>
-        Totp.Compute(secret, t.Clock.GetUtcNow().ToUnixTimeSeconds() / 30 + stepOffset);
-
     private static async Task<string> ChallengeAsync(TestIdentity t, Account staff)
     {
         var response = await SignInAsync(t, staff.EmailNormalized, Seed.Password);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        return (await JsonAsync(response)).GetProperty("mfaChallengeId").GetString()!;
+        return (await response.OkJsonAsync()).GetProperty("mfaChallengeId").GetString()!;
     }
 
     private static long Verifications(TestIdentity t) => t.Services.GetRequiredService<PasswordHasher>().Verifications;
@@ -56,7 +51,7 @@ public class SignInTests(Containers containers)
         var response = await SignInAsync(t, account.EmailNormalized, Seed.Password);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.False(string.IsNullOrEmpty((await JsonAsync(response)).GetProperty("accessToken").GetString()));
+        Assert.False(string.IsNullOrEmpty((await response.OkJsonAsync()).GetProperty("accessToken").GetString()));
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
         await using var db = t.NewDb();
         var stored = await db.Accounts.SingleAsync(a => a.Id == account.Id, Ct);
@@ -133,7 +128,7 @@ public class SignInTests(Containers containers)
         var response = await SignInAsync(t, staff.EmailNormalized, Seed.Password);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await JsonAsync(response);
+        var body = await response.OkJsonAsync();
         Assert.False(string.IsNullOrEmpty(body.GetProperty("mfaChallengeId").GetString()));
         Assert.False(body.TryGetProperty("accessToken", out _));
         Assert.False(response.Headers.Contains("Set-Cookie"));
@@ -150,11 +145,11 @@ public class SignInTests(Containers containers)
         var (staff, secret) = await Seed.StaffAsync(t, StaffRoles.Warehouse);
         var challenge = await ChallengeAsync(t, staff);
 
-        var response = await MfaAsync(t, challenge, CodeAt(t, secret));
+        var response = await MfaAsync(t, challenge, TestTotp.CodeAt(t, secret));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
-        var jwt = new JsonWebToken((await JsonAsync(response)).GetProperty("accessToken").GetString()!);
+        var jwt = new JsonWebToken((await response.OkJsonAsync()).GetProperty("accessToken").GetString()!);
         Assert.Equal("staff", jwt.GetClaim("typ").Value);
         Assert.Equal(StaffRoles.Warehouse, jwt.GetClaim("role").Value);
         Assert.Equal(staff.Id.ToString(), jwt.Subject);
@@ -171,7 +166,7 @@ public class SignInTests(Containers containers)
     {
         await using var t = await TestIdentity.StartAsync(containers);
         var (staff, secret) = await Seed.StaffAsync(t);
-        var code = CodeAt(t, secret);
+        var code = TestTotp.CodeAt(t, secret);
 
         Assert.Equal(HttpStatusCode.OK, (await MfaAsync(t, await ChallengeAsync(t, staff), code)).StatusCode);
 
@@ -185,13 +180,13 @@ public class SignInTests(Containers containers)
         var (staff, secret) = await Seed.StaffAsync(t);
         var challenge = await ChallengeAsync(t, staff);
 
-        for (var i = 0; i < 5; i++) await (await MfaAsync(t, challenge, CodeAt(t, secret, 100))).ExpectErrorAsync(401, "MFA_INVALID");
+        for (var i = 0; i < 5; i++) await (await MfaAsync(t, challenge, TestTotp.CodeAt(t, secret, 100))).ExpectErrorAsync(401, "MFA_INVALID");
 
         Assert.True(await Redis.KeyExistsAsync($"mfa:block:{staff.Id}"));
         Assert.False(await Redis.KeyExistsAsync($"mfa:challenge:{challenge}")); // exhausted
-        await (await MfaAsync(t, challenge, CodeAt(t, secret))).ExpectErrorAsync(401, "MFA_INVALID");
-        await (await MfaAsync(t, await ChallengeAsync(t, staff), CodeAt(t, secret))).ExpectErrorAsync(401, "MFA_INVALID"); // blocked account
-        await (await MfaAsync(t, "no-such-challenge", CodeAt(t, secret))).ExpectErrorAsync(401, "MFA_INVALID");
+        await (await MfaAsync(t, challenge, TestTotp.CodeAt(t, secret))).ExpectErrorAsync(401, "MFA_INVALID");
+        await (await MfaAsync(t, await ChallengeAsync(t, staff), TestTotp.CodeAt(t, secret))).ExpectErrorAsync(401, "MFA_INVALID"); // blocked account
+        await (await MfaAsync(t, "no-such-challenge", TestTotp.CodeAt(t, secret))).ExpectErrorAsync(401, "MFA_INVALID");
     }
 
     [Fact]

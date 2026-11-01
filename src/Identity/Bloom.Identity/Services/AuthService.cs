@@ -14,7 +14,6 @@ using Bloom.Shared.Messaging;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 using Account = Bloom.Identity.Data.Account;
 
 namespace Bloom.Identity.Services;
@@ -65,14 +64,7 @@ public sealed class AuthService(
         db.Accounts.Add(account);
         outbox.PublishEvent(IdentityMessages.CustomerRegistered, new CustomerRegisteredV1(account.Id, display, name));
         var session = await sessions.StartAsync(account);
-        try
-        {
-            await db.SaveChangesAsync(context.CancellationToken);
-        }
-        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        {
-            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
-        }
+        await db.SaveOrThrowAsync(IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account."), context.CancellationToken);
         return RefreshCookie.Respond(context, session);
     }
 
@@ -156,14 +148,7 @@ public sealed class AuthService(
         else account.GoogleSub = identity.Sub;
 
         var session = await sessions.StartAsync(account);
-        try
-        {
-            await db.SaveChangesAsync(context.CancellationToken);
-        }
-        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        {
-            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account."); // a concurrent first sign-in won
-        }
+        await db.SaveOrThrowAsync(IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account."), context.CancellationToken); // a concurrent first sign-in won
         metrics.SignIn(AccountTypes.Customer, "google", "success");
         return RefreshCookie.Respond(context, session);
     }

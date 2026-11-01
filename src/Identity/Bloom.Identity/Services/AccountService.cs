@@ -15,7 +15,6 @@ using Bloom.Shared.Messaging;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 using Account = Bloom.Identity.Data.Account;
 using AddressRow = Bloom.Identity.Data.Address;
 
@@ -79,14 +78,7 @@ public sealed class AccountService(
         account.EmailNormalized = code.TargetEmail;
         account.EmailDisplay = code.TargetEmail; // codes store only the normalized address (plan I33)
         outbox.PublishEvent(IdentityMessages.ContactChanged, new ContactChangedV1(account.Id, code.TargetEmail, account.Name ?? ""));
-        try
-        {
-            await db.SaveChangesAsync(context.CancellationToken);
-        }
-        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        {
-            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
-        }
+        await db.SaveOrThrowAsync(IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account."), context.CancellationToken);
         return new Empty();
     }
 
@@ -98,14 +90,7 @@ public sealed class AccountService(
 
         // Replaces the caller's own sub (plan I19); a sub on another account is refused.
         account.GoogleSub = identity.Sub;
-        try
-        {
-            await db.SaveChangesAsync(context.CancellationToken);
-        }
-        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-        {
-            throw IdentityErrors.Error(IdentityErrors.GoogleAlreadyLinked, "This Google account is linked to another account.");
-        }
+        await db.SaveOrThrowAsync(IdentityErrors.Error(IdentityErrors.GoogleAlreadyLinked, "This Google account is linked to another account."), context.CancellationToken);
         return new Empty();
     }
 

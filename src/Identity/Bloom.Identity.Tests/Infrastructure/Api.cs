@@ -1,3 +1,5 @@
+using System.Net;
+using Bloom.Identity.Data;
 using System.Net.Http.Json;
 using System.Text.Json;
 
@@ -7,6 +9,9 @@ namespace Bloom.Identity.Tests;
 public sealed record TestCaller(Guid Id, string Type, string? Role, DateTimeOffset AuthTime)
 {
     public static TestCaller Customer(Guid id, DateTimeOffset authTime) => new(id, "customer", null, authTime);
+
+    /// <summary>The account, authenticated just now.</summary>
+    public static TestCaller Customer(TestIdentity t, Account a) => Customer(a.Id, t.Clock.GetUtcNow());
 
     public static TestCaller Staff(Guid id, string role, DateTimeOffset authTime) => new(id, "staff", role, authTime);
 
@@ -30,6 +35,13 @@ public static class Api
         caller?.Apply(request);
         if (cookie is not null) request.Headers.Add("Cookie", cookie);
         return await identity.Http.SendAsync(request, TestContext.Current.CancellationToken); // awaited, so the request outlives the send
+    }
+
+    /// <summary>Asserts HTTP 200 and returns the JSON body.</summary>
+    public static async Task<JsonElement> OkJsonAsync(this HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
     }
 
     /// <summary>Asserts the HTTP status and the <c>bloom</c> <c>ErrorInfo</c> reason, and returns the <c>ErrorInfo</c> element.</summary>

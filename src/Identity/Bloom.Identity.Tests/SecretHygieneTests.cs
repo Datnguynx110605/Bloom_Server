@@ -16,12 +16,6 @@ public class SecretHygieneTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private static async Task<JsonElement> JsonAsync(HttpResponseMessage response)
-    {
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        return await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
-    }
-
     [Fact]
     public async Task ID_T01d_no_secret_reaches_logs_or_outbox()
     {
@@ -34,18 +28,18 @@ public class SecretHygieneTests(Containers containers)
         // Customer: sign-up, sign-in, refresh, password reset.
         Assert.Equal(HttpStatusCode.OK, (await t.SendAsync(HttpMethod.Post, "/api/auth/sign-up/start", new { email })).StatusCode);
         var signUpCode = await Outbox.LatestCodeAsync(t, email, "signup");
-        var verify = await JsonAsync(await t.SendAsync(HttpMethod.Post, "/api/auth/sign-up/verify", new { email, code = signUpCode }));
+        var verify = await (await t.SendAsync(HttpMethod.Post, "/api/auth/sign-up/verify", new { email, code = signUpCode })).OkJsonAsync();
         var registrationToken = verify.GetProperty("registrationToken").GetString()!;
         var complete = await t.SendAsync(HttpMethod.Post, "/api/auth/sign-up/complete", new { registrationToken, password = signUpPassword, name = "Ann Lee" });
-        var signUpAccess = (await JsonAsync(complete)).GetProperty("accessToken").GetString()!;
+        var signUpAccess = (await complete.OkJsonAsync()).GetProperty("accessToken").GetString()!;
         var signUpRefresh = complete.RefreshCookie()!;
 
         var signIn = await t.SendAsync(HttpMethod.Post, "/api/auth/sign-in", new { email, password = signUpPassword });
-        var signInAccess = (await JsonAsync(signIn)).GetProperty("accessToken").GetString()!;
+        var signInAccess = (await signIn.OkJsonAsync()).GetProperty("accessToken").GetString()!;
         var signInRefresh = signIn.RefreshCookie()!;
 
         var refresh = await t.SendAsync(HttpMethod.Post, "/auth/refresh", cookie: $"bloom_rt={signInRefresh}");
-        var refreshAccess = (await JsonAsync(refresh)).GetProperty("accessToken").GetString()!;
+        var refreshAccess = (await refresh.OkJsonAsync()).GetProperty("accessToken").GetString()!;
         var refreshRefresh = refresh.RefreshCookie()!;
 
         Assert.Equal(HttpStatusCode.OK, (await t.SendAsync(HttpMethod.Post, "/api/auth/password-reset/request", new { email })).StatusCode);
@@ -60,22 +54,22 @@ public class SecretHygieneTests(Containers containers)
             TestCaller.Staff(admin.Id, StaffRoles.Admin, t.Clock.GetUtcNow()));
         Assert.Equal(HttpStatusCode.OK, invite.StatusCode);
         var inviteToken = (await Outbox.EnvelopesAsync(t, IdentityMessages.StaffInvited)).Single().GetPayload<StaffInvitedV1>().InviteUrl.Split("?token=")[1];
-        var totp = RandomNumberGenerator.GetBytes(20);
+        var (totpText, totp) = TestTotp.NewSecret();
         long Step() => t.Clock.GetUtcNow().ToUnixTimeSeconds() / 30;
         var acceptCode = Totp.Compute(totp, Step());
         var accept = await t.SendAsync(HttpMethod.Post, "/api/auth/staff/invitations/accept",
-            new { inviteToken, name = "New Staff", password = Seed.Password, totpSecret = InvitationTests.ToBase32(totp), totpCode = acceptCode });
-        var acceptAccess = (await JsonAsync(accept)).GetProperty("accessToken").GetString()!;
+            new { inviteToken, name = "New Staff", password = Seed.Password, totpSecret = totpText, totpCode = acceptCode });
+        var acceptAccess = (await accept.OkJsonAsync()).GetProperty("accessToken").GetString()!;
         var acceptRefresh = accept.RefreshCookie()!;
 
-        var staffSignIn = await JsonAsync(await t.SendAsync(HttpMethod.Post, "/api/auth/sign-in", new { email = staffEmail, password = Seed.Password }));
+        var staffSignIn = await (await t.SendAsync(HttpMethod.Post, "/api/auth/sign-in", new { email = staffEmail, password = Seed.Password })).OkJsonAsync();
         var challenge = staffSignIn.GetProperty("mfaChallengeId").GetString()!;
         var mfaCode = Totp.Compute(totp, Step() + 1);
         var mfa = await t.SendAsync(HttpMethod.Post, "/api/auth/staff/mfa", new { mfaChallengeId = challenge, code = mfaCode });
-        var mfaAccess = (await JsonAsync(mfa)).GetProperty("accessToken").GetString()!;
+        var mfaAccess = (await mfa.OkJsonAsync()).GetProperty("accessToken").GetString()!;
         var mfaRefresh = mfa.RefreshCookie()!;
 
-        secrets.AddRange([signUpPassword, resetPassword, Seed.Password, registrationToken, inviteToken, InvitationTests.ToBase32(totp),
+        secrets.AddRange([signUpPassword, resetPassword, Seed.Password, registrationToken, inviteToken, totpText,
             Convert.ToBase64String(totp), Convert.ToHexString(totp), Convert.ToHexStringLower(totp),
             signUpAccess, signUpRefresh, signInAccess, signInRefresh, refreshAccess, refreshRefresh, acceptAccess, acceptRefresh, mfaAccess, mfaRefresh]);
         codes.AddRange([signUpCode, resetCode, acceptCode, mfaCode]);

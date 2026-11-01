@@ -32,14 +32,6 @@ public class GoogleTests(Containers containers)
     private static Task<HttpResponseMessage> UnlinkAsync(TestIdentity t, TestCaller caller) =>
         t.SendAsync(HttpMethod.Delete, "/api/me/google", caller: caller);
 
-    private static TestCaller Recent(TestIdentity t, Account a) => TestCaller.Customer(a.Id, t.Clock.GetUtcNow());
-
-    private static async Task<Account> StoredAsync(TestIdentity t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Accounts.SingleAsync(a => a.Id == id, Ct);
-    }
-
     private static async Task ExpectTokensAsync(HttpResponseMessage response)
     {
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -95,7 +87,7 @@ public class GoogleTests(Containers containers)
         // The Google email is not the account's email: the sub decides.
         await ExpectTokensAsync(await SignInAsync(t, google.Mint(sub, NewEmail())));
 
-        Assert.Equal(t.Clock.GetUtcNow(), (await StoredAsync(t, account.Id)).LastSignInAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.Equal(t.Clock.GetUtcNow(), (await t.AccountAsync(account.Id)).LastSignInAt!.Value, TimeSpan.FromMilliseconds(1));
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.CustomerRegistered));
     }
 
@@ -109,7 +101,7 @@ public class GoogleTests(Containers containers)
 
         await ExpectTokensAsync(await SignInAsync(t, google.Mint(sub, $" {account.EmailNormalized.ToUpperInvariant()} ")));
 
-        var stored = await StoredAsync(t, account.Id);
+        var stored = await t.AccountAsync(account.Id);
         Assert.Equal(sub, stored.GoogleSub);
         Assert.NotNull(stored.PasswordHash);
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.CustomerRegistered));
@@ -130,7 +122,7 @@ public class GoogleTests(Containers containers)
         Assert.Null(response.RefreshCookie());
         await using var db = t.NewDb();
         Assert.Empty(await db.RefreshTokens.Where(r => r.AccountId == staff.Id).ToListAsync(Ct));
-        Assert.Null((await StoredAsync(t, staff.Id)).GoogleSub);
+        Assert.Null((await t.AccountAsync(staff.Id)).GoogleSub);
         Assert.Equal(1, metrics.Sum("signins_total", ("type", "staff"), ("method", "google"), ("result", "not_allowed")));
     }
 
@@ -229,19 +221,19 @@ public class GoogleTests(Containers containers)
         var account = await Seed.CustomerAsync(t);
         var (sub, other) = (NewSub(), NewSub());
 
-        Assert.Equal(HttpStatusCode.OK, (await LinkAsync(t, Recent(t, account), google.Mint(sub, NewEmail()))).StatusCode);
-        Assert.Equal(sub, (await StoredAsync(t, account.Id)).GoogleSub);
+        Assert.Equal(HttpStatusCode.OK, (await LinkAsync(t, TestCaller.Customer(t, account), google.Mint(sub, NewEmail()))).StatusCode);
+        Assert.Equal(sub, (await t.AccountAsync(account.Id)).GoogleSub);
 
         // A sub on another account.
         var second = await Seed.CustomerAsync(t);
-        await (await LinkAsync(t, Recent(t, second), google.Mint(sub, NewEmail()))).ExpectErrorAsync(409, "GOOGLE_ALREADY_LINKED");
-        Assert.Null((await StoredAsync(t, second.Id)).GoogleSub);
+        await (await LinkAsync(t, TestCaller.Customer(t, second), google.Mint(sub, NewEmail()))).ExpectErrorAsync(409, "GOOGLE_ALREADY_LINKED");
+        Assert.Null((await t.AccountAsync(second.Id)).GoogleSub);
 
         // Linking again replaces the caller's own sub (plan I19).
-        Assert.Equal(HttpStatusCode.OK, (await LinkAsync(t, Recent(t, account), google.Mint(other, NewEmail()))).StatusCode);
-        Assert.Equal(other, (await StoredAsync(t, account.Id)).GoogleSub);
+        Assert.Equal(HttpStatusCode.OK, (await LinkAsync(t, TestCaller.Customer(t, account), google.Mint(other, NewEmail()))).StatusCode);
+        Assert.Equal(other, (await t.AccountAsync(account.Id)).GoogleSub);
 
-        await (await LinkAsync(t, Recent(t, account), google.Mint(NewSub(), NewEmail(), emailVerified: false))).ExpectErrorAsync(401, "INVALID_CREDENTIALS");
+        await (await LinkAsync(t, TestCaller.Customer(t, account), google.Mint(NewSub(), NewEmail(), emailVerified: false))).ExpectErrorAsync(401, "INVALID_CREDENTIALS");
 
         var (staff, _) = await Seed.StaffAsync(t);
         await (await LinkAsync(t, TestCaller.Staff(staff.Id, "support", t.Clock.GetUtcNow()), google.Mint(NewSub(), NewEmail())))
@@ -257,13 +249,13 @@ public class GoogleTests(Containers containers)
         var withPassword = await Seed.CustomerAsync(t, googleSub: NewSub());
 
         await (await UnlinkAsync(t, TestCaller.Customer(withPassword.Id, t.Clock.GetUtcNow().AddMinutes(-10)))).ExpectErrorAsync(400, "REAUTH_REQUIRED");
-        Assert.NotNull((await StoredAsync(t, withPassword.Id)).GoogleSub);
+        Assert.NotNull((await t.AccountAsync(withPassword.Id)).GoogleSub);
 
-        await (await UnlinkAsync(t, Recent(t, googleOnly))).ExpectErrorAsync(400, "PASSWORD_REQUIRED");
-        Assert.NotNull((await StoredAsync(t, googleOnly.Id)).GoogleSub);
+        await (await UnlinkAsync(t, TestCaller.Customer(t, googleOnly))).ExpectErrorAsync(400, "PASSWORD_REQUIRED");
+        Assert.NotNull((await t.AccountAsync(googleOnly.Id)).GoogleSub);
 
-        Assert.Equal(HttpStatusCode.OK, (await UnlinkAsync(t, Recent(t, withPassword))).StatusCode);
-        Assert.Null((await StoredAsync(t, withPassword.Id)).GoogleSub);
+        Assert.Equal(HttpStatusCode.OK, (await UnlinkAsync(t, TestCaller.Customer(t, withPassword))).StatusCode);
+        Assert.Null((await t.AccountAsync(withPassword.Id)).GoogleSub);
 
         var (staff, _) = await Seed.StaffAsync(t);
         await (await UnlinkAsync(t, TestCaller.Staff(staff.Id, "support", t.Clock.GetUtcNow()))).ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
