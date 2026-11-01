@@ -6,6 +6,8 @@
   </Folder>
   <Folder Name="/src/Identity/">
     <Project Path="src/Identity/Bloom.Identity.Contracts/Bloom.Identity.Contracts.csproj" />
+    <Project Path="src/Identity/Bloom.Identity.Tests/Bloom.Identity.Tests.csproj" />
+    <Project Path="src/Identity/Bloom.Identity/Bloom.Identity.csproj" />
   </Folder>
   <Folder Name="/src/Shared/">
     <Project Path="src/Shared/Bloom.Shared.Tests/Bloom.Shared.Tests.csproj" />
