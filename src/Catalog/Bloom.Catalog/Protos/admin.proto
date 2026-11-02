@@ -28,6 +28,24 @@ service CatalogAdmin {
   rpc UpdateProduct(UpdateProductRequest) returns (AdminProduct) {
     option (google.api.http) = { put: "/api/admin/catalog/products/{id}" body: "*" };
   }
+  rpc SetOptions(SetOptionsRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{product_id}/options" body: "*" };
+  }
+  rpc SetPlanEligibility(SetPlanEligibilityRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{plan_product_id}/eligibility" body: "*" };
+  }
+  rpc CreateSku(CreateSkuRequest) returns (AdminSku) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{product_id}/skus" body: "*" };
+  }
+  rpc UpdateSku(UpdateSkuRequest) returns (AdminSku) {
+    option (google.api.http) = { put: "/api/admin/catalog/skus/{id}" body: "*" };
+  }
+  rpc SetSkuPrice(SetSkuPriceRequest) returns (AdminSku) {
+    option (google.api.http) = { put: "/api/admin/catalog/skus/{id}/price" body: "*" };
+  }
+  rpc SetSkuActive(SetSkuActiveRequest) returns (AdminSku) {
+    option (google.api.http) = { put: "/api/admin/catalog/skus/{id}/active" body: "*" };
+  }
 }
 
 message CreateCategoryRequest {
@@ -69,6 +87,48 @@ message UpdateProductRequest {
   bool serialized = 7;
   int32 coverage_months = 8;
   int64 version = 9;
+}
+
+// The whole option list (R15): entries with an `id` keep it, entries without get new ids, missing ones are deleted; positions are list
+// order. `version` is the product version.
+message SetOptionsRequest {
+  string product_id = 1;
+  repeated OptionType option_types = 2;
+  int64 version = 3;
+}
+
+// The whole set of physical products a plan covers. `version` is the plan's product version.
+message SetPlanEligibilityRequest {
+  string plan_product_id = 1;
+  repeated string eligible_product_ids = 2;
+  int64 version = 3;
+}
+
+// One value id per option type of the product; none for a plan. New SKUs are active.
+message CreateSkuRequest {
+  string product_id = 1;
+  string code = 2;
+  repeated string option_value_ids = 3;
+  int64 price_cents = 4;
+}
+
+// Changes the code only; `version` is the SKU version.
+message UpdateSkuRequest {
+  string id = 1;
+  string code = 2;
+  int64 version = 3;
+}
+
+message SetSkuPriceRequest {
+  string id = 1;
+  int64 price_cents = 2;
+  int64 version = 3;
+}
+
+message SetSkuActiveRequest {
+  string id = 1;
+  bool active = 2;
+  int64 version = 3;
 }
 
 message AdminGetProductRequest {

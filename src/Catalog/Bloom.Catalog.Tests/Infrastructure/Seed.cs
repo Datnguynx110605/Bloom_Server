@@ -44,4 +44,62 @@ public static class Seed
         await new ProductDerived(db).RefreshAsync(id);
         return (product, skus);
     }
+
+    /// <summary>
+    /// A physical product with option types Storage {256 GB, 512 GB} and Color {Black, White} and the four SKUs (256/Black 99,900,
+    /// 256/White 99,900, 512/Black 119,900, 512/White 119,900), inserted directly; derived columns refreshed.
+    /// </summary>
+    public static async Task<SeededPhone> PhoneAsync(TestCatalog t, Guid categoryId, string name = "Bloom Phone Pro Max", string status = "active")
+    {
+        var id = Guid.CreateVersion7();
+        var now = t.Clock.GetUtcNow();
+        var product = new Product
+        {
+            Id = id, CategoryId = categoryId, Kind = ProductKinds.Physical, Name = name, Slug = $"p-{id:N}", Status = status,
+            PublishedAt = status == ProductStatuses.Draft ? null : now, UpdatedAt = now,
+        };
+        var storage = new OptionType { Id = Guid.CreateVersion7(), ProductId = id, Name = "Storage", Position = 0 };
+        var color = new OptionType { Id = Guid.CreateVersion7(), ProductId = id, Name = "Color", Position = 1 };
+        OptionValue Value(OptionType type, string text, int position) =>
+            new() { Id = Guid.CreateVersion7(), OptionTypeId = type.Id, Value = text, Position = position };
+        OptionValue s256 = Value(storage, "256 GB", 0), s512 = Value(storage, "512 GB", 1), black = Value(color, "Black", 0), white = Value(color, "White", 1);
+
+        var combos = new (OptionValue Storage, OptionValue Color, long Price)[]
+            { (s256, black, 99_900), (s256, white, 99_900), (s512, black, 119_900), (s512, white, 119_900) };
+        var skus = combos.Select(c => new Sku
+        {
+            Id = Guid.CreateVersion7(), ProductId = id, Code = $"PH-{Guid.NewGuid():N}".ToUpperInvariant(), PriceCents = c.Price,
+            OptionKey = string.Join(',', new[] { c.Storage.Id.ToString("D"), c.Color.Id.ToString("D") }.Order(StringComparer.Ordinal)),
+        }).ToArray();
+
+        await using var db = t.NewDb();
+        db.Products.Add(product);
+        db.OptionTypes.AddRange(storage, color);
+        db.OptionValues.AddRange(s256, s512, black, white);
+        db.Skus.AddRange(skus);
+        db.SkuOptionValues.AddRange(combos.Select((c, i) => new[]
+            { new SkuOptionValue { SkuId = skus[i].Id, OptionValueId = c.Storage.Id }, new SkuOptionValue { SkuId = skus[i].Id, OptionValueId = c.Color.Id } }).SelectMany(x => x));
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        await new ProductDerived(db).RefreshAsync(id);
+        return new SeededPhone(product, skus, s256.Id, s512.Id, black.Id, white.Id,
+            combos.Select((c, i) => (c.Storage.Id, c.Color.Id, skus[i])).ToArray());
+    }
+
+    /// <summary>A warranty plan with one option-less SKU, eligible for the given devices.</summary>
+    public static async Task<(Product Plan, Sku Sku)> PlanAsync(
+        TestCatalog t, Guid categoryId, Guid[] eligible, long price = 9_900, int coverageMonths = 24, string status = "active")
+    {
+        var (plan, skus) = await ProductAsync(t, categoryId, status, ProductKinds.WarrantyPlan, skuPrices: [price]);
+        plan.CoverageMonths = coverageMonths;
+        await using var db = t.NewDb();
+        db.Products.Attach(plan).Property(p => p.CoverageMonths).IsModified = true;
+        db.PlanEligibilities.AddRange(eligible.Select(e => new PlanEligibility { PlanProductId = plan.Id, EligibleProductId = e }));
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return (plan, skus[0]);
+    }
+}
+
+public sealed record SeededPhone(Product Product, Sku[] Skus, Guid Storage256, Guid Storage512, Guid Black, Guid White, (Guid Storage, Guid Color, Sku Sku)[] Combos)
+{
+    public Sku Sku(Guid storage, Guid color) => Combos.Single(c => c.Storage == storage && c.Color == color).Sku;
 }

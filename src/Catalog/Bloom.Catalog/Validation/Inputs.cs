@@ -8,6 +8,8 @@ public static partial class Inputs
 {
     [GeneratedRegex(@"^[a-z0-9]+(-[a-z0-9]+)*\z")] private static partial Regex SlugPattern();
 
+    [GeneratedRegex(@"^[A-Z0-9][A-Z0-9-]{0,63}\z")] private static partial Regex SkuCodePattern();
+
     /// <summary>Length in Unicode scalar values, not UTF-16 units.</summary>
     private static int Scalars(string s) => s.EnumerateRunes().Count();
 
@@ -23,6 +25,14 @@ public static partial class Inputs
         raw.Length <= 100 && SlugPattern().IsMatch(raw)
             ? raw
             : throw CatalogErrors.Validation("slug", "slug must be lowercase letters and digits separated by single hyphens, at most 100 characters.");
+
+    public static string SkuCode(string raw) =>
+        SkuCodePattern().IsMatch(raw)
+            ? raw
+            : throw CatalogErrors.Validation("code", "code must be 1 to 64 uppercase letters, digits or hyphens, not starting with a hyphen.");
+
+    public static long PriceCents(long cents) =>
+        cents > 0 ? cents : throw CatalogErrors.Validation("price_cents", "price_cents must be greater than 0.");
 
     /// <summary>Trimmed text of at most <paramref name="max"/> scalars; null or blank gives null.</summary>
     public static string? OptionalText(string? raw, string field, int max)

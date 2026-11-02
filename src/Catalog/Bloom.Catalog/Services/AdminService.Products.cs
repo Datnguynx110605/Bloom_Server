@@ -102,11 +102,7 @@ public sealed partial class AdminService
 
         if (before.ContainsKey("name") || before.ContainsKey("categoryId") || before.ContainsKey("descriptionMd")) await derived.RefreshAsync(id);
         audit.Record(caller, "catalog.product-updated", "product", id, new { before, after });
-        invalidation.Product(id);
-        invalidation.Listings();
-        if (row.Kind == ProductKinds.WarrantyPlan) // the plan shows in the page of every device it covers
-            foreach (var device in await db.PlanEligibilities.Where(e => e.PlanProductId == id).Select(e => e.EligibleProductId).ToListAsync(ct))
-                invalidation.Product(device);
+        await InvalidateProductAsync(id, row.Kind == ProductKinds.WarrantyPlan, ct);
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return await LoadProductAsync(id, ct);
@@ -224,11 +220,8 @@ public sealed partial class AdminService
             Id = t.Id.ToString(), Name = t.Name, Position = t.Position,
             Values = { values.Where(v => v.OptionTypeId == t.Id).Select(v => new OptionValue { Id = v.Id.ToString(), Value = v.Value, Position = v.Position }) },
         }));
-        result.Skus.AddRange(skus.Select(s => new AdminSku
-        {
-            Id = s.Id.ToString(), Code = s.Code, PriceCents = s.PriceCents, Active = s.Active, LaunchId = s.LaunchId?.ToString() ?? "", Version = s.Version,
-            OptionValueIds = { links.Where(l => l.SkuId == s.Id).OrderBy(l => valueType[l.OptionValueId]).Select(l => l.OptionValueId.ToString()) },
-        }));
+        result.Skus.AddRange(skus.Select(s =>
+            ToProto(s, links.Where(l => l.SkuId == s.Id).OrderBy(l => valueType[l.OptionValueId]).Select(l => l.OptionValueId))));
         result.Images.AddRange(images.Select(i => new Image
         {
             Id = i.Id.ToString(), Url = $"{options.Storage.PublicBaseUrl}/{i.StorageKey}", AltText = i.AltText ?? "", SkuId = i.SkuId?.ToString() ?? "",
