@@ -247,11 +247,7 @@ public sealed partial class AdminService
         }));
         result.Skus.AddRange(skus.Select(s =>
             ToProto(s, links.Where(l => l.SkuId == s.Id).OrderBy(l => valueType[l.OptionValueId]).Select(l => l.OptionValueId))));
-        result.Images.AddRange(images.Select(i => new Image
-        {
-            Id = i.Id.ToString(), Url = imageStore.PublicUrl(i.StorageKey), AltText = i.AltText ?? "", SkuId = i.SkuId?.ToString() ?? "",
-            Position = i.Position, Status = i.Status,
-        }));
+        result.Images.AddRange(images.Select(ImageToProto));
         result.EligibleProductIds.AddRange(eligible.Select(e => e.ToString()));
         return result;
     }

@@ -3,6 +3,7 @@ syntax = "proto3";
 package bloom.catalog.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "Protos/common.proto";
 
@@ -54,6 +55,18 @@ service CatalogAdmin {
   }
   rpc SetSkuActive(SetSkuActiveRequest) returns (AdminSku) {
     option (google.api.http) = { put: "/api/admin/catalog/skus/{id}/active" body: "*" };
+  }
+  rpc CreateImageUpload(CreateImageUploadRequest) returns (CreateImageUploadResponse) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{product_id}/images" body: "*" };
+  }
+  rpc ConfirmImage(ImageRequest) returns (Image) {
+    option (google.api.http) = { post: "/api/admin/catalog/images/{id}/confirm" };
+  }
+  rpc ReorderImages(ReorderImagesRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{product_id}/images/order" body: "*" };
+  }
+  rpc DeleteImage(ImageRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { delete: "/api/admin/catalog/images/{id}" };
   }
 }
 
@@ -144,6 +157,30 @@ message SetSkuActiveRequest {
   string id = 1;
   bool active = 2;
   int64 version = 3;
+}
+
+// A presigned PUT for one image (`image/jpeg`, `image/png`, `image/webp`); `sku_id` empty = the whole product.
+message CreateImageUploadRequest {
+  string product_id = 1;
+  string sku_id = 2;
+  string content_type = 3;
+  string alt_text = 4;
+}
+
+message CreateImageUploadResponse {
+  string image_id = 1;
+  string upload_url = 2;
+  string storage_key = 3;
+}
+
+message ImageRequest {
+  string id = 1;
+}
+
+// Must list every image of the product (both statuses); positions follow the list order.
+message ReorderImagesRequest {
+  string product_id = 1;
+  repeated string image_ids = 2;
 }
 
 message AdminGetProductRequest {
