@@ -5,7 +5,8 @@ namespace Bloom.Catalog.Caching;
 
 /// <summary>
 /// The cache entries a unit of work wants deleted (plan R9). Writes register them; <see cref="CacheInvalidationInterceptor"/>
-/// deletes them after the transaction commits, and drops them when it rolls back.
+/// deletes them after the transaction commits; they are discarded on an explicit rollback or when the scope ends without a commit
+/// (EF raises no rolled-back event when an uncommitted transaction is only disposed).
 /// </summary>
 public sealed class CacheInvalidation
 {

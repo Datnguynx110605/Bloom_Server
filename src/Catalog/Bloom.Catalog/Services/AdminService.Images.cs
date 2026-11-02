@@ -60,6 +60,7 @@ public sealed partial class AdminService
         }
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await LockProductAsync(image.ProductId, ct); // product → image, as everywhere
         var confirmed = await db.ProductImages.Where(i => i.Id == image.Id && i.Status == ImageStatuses.Pending)
             .ExecuteUpdateAsync(s => s.SetProperty(i => i.Status, ImageStatuses.Ready), ct);
         if (confirmed == 0) return ImageToProto(await FindImageAsync(request.Id, ct)); // a parallel confirm won: nothing to write
@@ -107,9 +108,10 @@ public sealed partial class AdminService
         var image = await FindImageAsync(request.Id, ct);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await LockProductAsync(image.ProductId, ct); // product → image, as everywhere
         if (await db.ProductImages.Where(i => i.Id == image.Id).ExecuteDeleteAsync(ct) == 0) throw CatalogErrors.NotFoundError("Image");
         audit.Record(caller, "catalog.image-deleted", "image", image.Id);
-        if (image.Status == ImageStatuses.Ready) await InvalidateProductAsync(image.ProductId, isPlan: false, ct);
+        await InvalidateProductAsync(image.ProductId, isPlan: false, ct); // unconditional: the pre-transaction status may be stale
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         await imageStore.DeleteAsync(image.StorageKey); // after the row: a failure leaves an unreferenced object, never a ready image without one
