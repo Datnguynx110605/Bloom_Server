@@ -23,6 +23,27 @@ public sealed partial class AdminService(
 {
     private const string SlugIndex = "ux_categories_slug";
 
+    /// <summary>The R13 <c>{before, after}</c> audit details of an update: only the fields the call changed.</summary>
+    private sealed class AuditDiff
+    {
+        private readonly Dictionary<string, object?> _before = [], _after = [];
+
+        public bool IsEmpty => _before.Count == 0;
+
+        public bool Has(string field) => _before.ContainsKey(field);
+
+        public object Details => new { before = _before, after = _after };
+
+        public void Add<T>(string field, T was, T now) => Add(field, was, now, !EqualityComparer<T>.Default.Equals(was, now));
+
+        public void Add<T>(string field, T was, T now, bool changed)
+        {
+            if (!changed) return;
+            _before[field] = was;
+            _after[field] = now;
+        }
+    }
+
     public override async Task<Category> CreateCategory(CreateCategoryRequest request, ServerCallContext context)
     {
         var caller = Caller.From(context).RequireStaff(Caller.CatalogRoles);
@@ -54,19 +75,12 @@ public sealed partial class AdminService(
         var row = await LockAsync(id, ct) ?? throw CatalogErrors.NotFoundError("Category");
         var parentId = await ParentAsync(request.ParentId, self: row, ct);
 
-        var before = new Dictionary<string, object?>();
-        var after = new Dictionary<string, object?>();
-        void Diff<T>(string field, T was, T now)
-        {
-            if (EqualityComparer<T>.Default.Equals(was, now)) return;
-            before[field] = was;
-            after[field] = now;
-        }
-        Diff("name", row.Name, name);
-        Diff("slug", row.Slug, slug);
-        Diff("sortOrder", row.SortOrder, request.SortOrder);
-        Diff("parentId", row.ParentId, parentId);
-        if (before.Count == 0) return PublicService.ToProto(row); // nothing to change: no write, no audit (R13)
+        var diff = new AuditDiff();
+        diff.Add("name", row.Name, name);
+        diff.Add("slug", row.Slug, slug);
+        diff.Add("sortOrder", row.SortOrder, request.SortOrder);
+        diff.Add("parentId", row.ParentId, parentId);
+        if (diff.IsEmpty) return PublicService.ToProto(row); // nothing to change: no write, no audit (R13)
 
         long version;
         try
@@ -78,11 +92,11 @@ public sealed partial class AdminService(
         }
         catch (PostgresException e) when (Db.IsUniqueViolation(e, SlugIndex)) { throw SlugTaken(); }
 
-        if (before.ContainsKey("name")) // the category name is part of its products' search vectors (R12)
+        if (diff.Has("name")) // the category name is part of its products' search vectors (R12)
             await derived.RefreshAsync(await db.Products.Where(p => p.CategoryId == id).Select(p => p.Id).ToArrayAsync(ct));
-        audit.Record(caller, "catalog.category-updated", "category", id, new { before, after });
+        audit.Record(caller, "catalog.category-updated", "category", id, diff.Details);
         invalidation.Categories();
-        if (before.ContainsKey("name") || before.ContainsKey("parentId")) invalidation.Listings(); // search vectors, category filter (R10)
+        if (diff.Has("name") || diff.Has("parentId")) invalidation.Listings(); // search vectors, category filter (R10)
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
 

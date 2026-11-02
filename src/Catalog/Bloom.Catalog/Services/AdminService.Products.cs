@@ -9,8 +9,6 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
-using OptionType = Bloom.Catalog.V1.OptionType;
-using OptionValue = Bloom.Catalog.V1.OptionValue;
 
 namespace Bloom.Catalog.Services;
 
@@ -61,23 +59,16 @@ public sealed partial class AdminService
         CheckKind(row.Kind, request.Serialized, request.CoverageMonths);
         var categoryId = await RequireCategoryAsync(request.CategoryId, ct);
 
-        var before = new Dictionary<string, object?>();
-        var after = new Dictionary<string, object?>();
-        void Diff<T>(string field, T was, T now, bool changed)
-        {
-            if (!changed) return;
-            before[field] = was;
-            after[field] = now;
-        }
-        Diff("categoryId", row.CategoryId, categoryId, row.CategoryId != categoryId);
-        Diff("name", row.Name, fields.Name, row.Name != fields.Name);
-        Diff("slug", row.Slug, fields.Slug, row.Slug != fields.Slug);
-        Diff("descriptionMd", row.DescriptionMd, fields.DescriptionMd, row.DescriptionMd != fields.DescriptionMd);
+        var diff = new AuditDiff();
+        diff.Add("categoryId", row.CategoryId, categoryId);
+        diff.Add("name", row.Name, fields.Name);
+        diff.Add("slug", row.Slug, fields.Slug);
+        diff.Add("descriptionMd", row.DescriptionMd, fields.DescriptionMd);
         var wasSpecs = ProductSpecs.Parse(row.Specs);
-        Diff("specs", wasSpecs, fields.Specs, JsonSerializer.Serialize(wasSpecs, JsonSerializerOptions.Web) != fields.SpecsJson);
-        Diff("serialized", row.Serialized, request.Serialized, row.Serialized != request.Serialized);
-        Diff("coverageMonths", row.CoverageMonths, request.CoverageMonths, row.CoverageMonths != request.CoverageMonths);
-        if (before.Count == 0) return await LoadProductAsync(id, ct); // nothing to change: no write, no audit (R13)
+        diff.Add("specs", wasSpecs, fields.Specs, JsonSerializer.Serialize(wasSpecs, JsonSerializerOptions.Web) != fields.SpecsJson);
+        diff.Add("serialized", row.Serialized, request.Serialized);
+        diff.Add("coverageMonths", row.CoverageMonths, request.CoverageMonths);
+        if (diff.IsEmpty) return await LoadProductAsync(id, ct); // nothing to change: no write, no audit (R13)
 
         // CR-03 / 08-catalog §7: the flag only changes while no stock unit has locked it.
         if (row.Serialized != request.Serialized && !await concurrent.TryConditionalUpdateAsync("serialized_locked",
@@ -96,8 +87,8 @@ public sealed partial class AdminService
         }
         catch (PostgresException e) when (Db.IsUniqueViolation(e, ProductSlugIndex)) { throw SlugTaken(); }
 
-        if (before.ContainsKey("name") || before.ContainsKey("categoryId") || before.ContainsKey("descriptionMd")) await derived.RefreshAsync(id);
-        audit.Record(caller, "catalog.product-updated", "product", id, new { before, after });
+        if (diff.Has("name") || diff.Has("categoryId") || diff.Has("descriptionMd")) await derived.RefreshAsync(id);
+        audit.Record(caller, "catalog.product-updated", "product", id, diff.Details);
         await InvalidateProductAsync(id, row.Kind == ProductKinds.WarrantyPlan, ct);
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
@@ -123,7 +114,7 @@ public sealed partial class AdminService
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var product = await LockProductAsync(id, ct);
         if (product.Status != from) throw CatalogErrors.Error(CatalogErrors.InvalidLifecycle, $"The product is {product.Status}; this action needs {from}.");
-        if (to == ProductStatuses.Active && from == ProductStatuses.Draft && !await db.Skus.AnyAsync(s => s.ProductId == id && s.Active, ct))
+        if (from == ProductStatuses.Draft && !await db.Skus.AnyAsync(s => s.ProductId == id && s.Active, ct))
             throw CatalogErrors.Error(CatalogErrors.PublishIncomplete, "Publishing needs at least one active SKU.");
 
         var now = clock.GetUtcNow();
@@ -148,7 +139,7 @@ public sealed partial class AdminService
     public override async Task<AdminListProductsResponse> AdminListProducts(AdminListProductsRequest request, ServerCallContext context)
     {
         Caller.From(context).RequireStaff(Caller.CatalogRoles);
-        var (page, size) = Inputs.Paging(request.Page, request.PageSize, 50, 100);
+        var (_, size, skip) = Inputs.Paging(request.Page, request.PageSize, 50, 100);
         if (request.Status != "" && !ProductStatuses.All.Contains(request.Status))
             throw CatalogErrors.Validation("status", "status must be draft, active or archived.");
         Guid? categoryId = null;
@@ -167,7 +158,7 @@ public sealed partial class AdminService
         }
 
         var rows = await query.OrderByDescending(p => p.UpdatedAt).ThenBy(p => p.Id)
-            .Skip((int)Math.Min((long)(page - 1) * size, int.MaxValue)).Take(size).ToListAsync(ct);
+            .Skip(skip).Take(size).ToListAsync(ct);
         var response = new AdminListProductsResponse { Total = await query.CountAsync(ct) };
         response.Items.AddRange(rows.Select(p =>
         {
@@ -218,17 +209,11 @@ public sealed partial class AdminService
     private async Task<AdminProduct> LoadProductAsync(Guid id, CancellationToken ct)
     {
         var p = await db.Products.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw CatalogErrors.NotFoundError("Product");
-        var types = await db.OptionTypes.AsNoTracking().Where(t => t.ProductId == id).OrderBy(t => t.Position).ToListAsync(ct);
-        var values = await db.OptionValues.AsNoTracking()
-            .Where(v => db.OptionTypes.Any(t => t.Id == v.OptionTypeId && t.ProductId == id)).OrderBy(v => v.Position).ToListAsync(ct);
+        var (options, valueIds) = await ProductOptions.LoadAsync(db, id, ct);
         var skus = await db.Skus.AsNoTracking().Where(s => s.ProductId == id).OrderBy(s => s.Id).ToListAsync(ct);
-        var links = await db.SkuOptionValues.AsNoTracking()
-            .Where(l => db.Skus.Any(s => s.Id == l.SkuId && s.ProductId == id)).ToListAsync(ct);
         var images = await db.ProductImages.AsNoTracking().Where(i => i.ProductId == id).OrderBy(i => i.Position).ThenBy(i => i.Id).ToListAsync(ct);
         var eligible = await db.PlanEligibilities.AsNoTracking().Where(e => e.PlanProductId == id).Select(e => e.EligibleProductId).ToListAsync(ct);
 
-        var typePosition = types.ToDictionary(t => t.Id, t => t.Position);
-        var valueType = values.ToDictionary(v => v.Id, v => typePosition[v.OptionTypeId]);
         var result = new AdminProduct
         {
             Id = p.Id.ToString(), CategoryId = p.CategoryId.ToString(), Kind = p.Kind, Name = p.Name, Slug = p.Slug,
@@ -240,13 +225,8 @@ public sealed partial class AdminService
         if (p.PublishedAt is { } publishedAt) result.PublishedAt = Timestamp.FromDateTimeOffset(publishedAt);
         if (p.MinPriceCents is { } min) result.MinPriceCents = min;
         result.Specs.AddRange(ProductSpecs.ToProto(p.Specs));
-        result.Options.AddRange(types.Select(t => new OptionType
-        {
-            Id = t.Id.ToString(), Name = t.Name, Position = t.Position,
-            Values = { values.Where(v => v.OptionTypeId == t.Id).Select(v => new OptionValue { Id = v.Id.ToString(), Value = v.Value, Position = v.Position }) },
-        }));
-        result.Skus.AddRange(skus.Select(s =>
-            ToProto(s, links.Where(l => l.SkuId == s.Id).OrderBy(l => valueType[l.OptionValueId]).Select(l => l.OptionValueId))));
+        result.Options.AddRange(options);
+        result.Skus.AddRange(skus.Select(s => ToProto(s, valueIds.GetValueOrDefault(s.Id, []))));
         result.Images.AddRange(images.Select(ImageToProto));
         result.EligibleProductIds.AddRange(eligible.Select(e => e.ToString()));
         return result;

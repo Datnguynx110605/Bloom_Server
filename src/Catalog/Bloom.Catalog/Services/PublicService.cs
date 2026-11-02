@@ -73,14 +73,14 @@ public sealed class PublicService(CatalogDbContext db, CatalogCache cache, Catal
     public override async Task<ListReviewsResponse> ListReviews(ListReviewsRequest request, ServerCallContext context)
     {
         var ct = context.CancellationToken;
-        var (page, size) = Inputs.Paging(request.Page, 0, ReviewPageSize, ReviewPageSize);
+        var (_, size, skip) = Inputs.Paging(request.Page, 0, ReviewPageSize, ReviewPageSize);
         if (!Guid.TryParse(request.ProductId, out var productId)) throw CatalogErrors.NotFoundError("Product");
         var product = await db.Products.AsNoTracking().SingleOrDefaultAsync(p => p.Id == productId, ct);
         if (product is null || !Visibility.IsPublic(product)) throw CatalogErrors.NotFoundError("Product");
 
         var visible = db.Reviews.AsNoTracking().Where(r => r.ProductId == productId && r.Status == ReviewStatuses.Visible);
         var rows = await visible.OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id)
-            .Skip((int)Math.Min((long)(page - 1) * size, int.MaxValue)).Take(size).ToListAsync(ct);
+            .Skip(skip).Take(size).ToListAsync(ct);
         var response = new ListReviewsResponse { Total = await visible.CountAsync(ct) };
         response.Reviews.AddRange(rows.Select(CustomerService.ToProto));
         // The caller's own review, whatever its status, so they can edit it (owner item 5); anonymous and staff callers get none.
@@ -96,7 +96,7 @@ public sealed class PublicService(CatalogDbContext db, CatalogCache cache, Catal
     {
         var started = Stopwatch.GetTimestamp();
         var ct = context.CancellationToken;
-        var (page, size) = Inputs.Paging(request.Page, request.PageSize, 24, 48);
+        var (page, size, _) = Inputs.Paging(request.Page, request.PageSize, 24, 48);
         var sort = request.Sort == "" ? "relevance" : request.Sort;
         if (!Sorts.Contains(sort)) throw CatalogErrors.Validation("sort", $"sort must be one of {string.Join(", ", Sorts)}.");
         var categoryId = request.CategoryId == "" ? (Guid?)null

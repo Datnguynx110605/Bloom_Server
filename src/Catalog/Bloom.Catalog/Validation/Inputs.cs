@@ -42,11 +42,12 @@ public static partial class Inputs
         return Scalars(text) <= max ? text : throw CatalogErrors.Validation(field, $"{field} must be at most {max} characters.");
     }
 
-    /// <summary><paramref name="page"/> 0 is page 1; <paramref name="size"/> 0 is <paramref name="default"/>.</summary>
-    public static (int Page, int Size) Paging(int page, int size, int @default, int max)
+    /// <summary><paramref name="page"/> 0 is page 1; <paramref name="size"/> 0 is <paramref name="default"/>. <c>Skip</c> is the row offset, clamped to <see cref="int.MaxValue"/>.</summary>
+    public static (int Page, int Size, int Skip) Paging(int page, int size, int @default, int max)
     {
         if (page < 0) throw CatalogErrors.Validation("page", "page must be 1 or more.");
         if (size < 0 || size > max) throw CatalogErrors.Validation("page_size", $"page_size must be 1 to {max}.");
-        return (page == 0 ? 1 : page, size == 0 ? @default : size);
+        var (p, s) = (page == 0 ? 1 : page, size == 0 ? @default : size);
+        return (p, s, (int)Math.Min((long)(p - 1) * s, int.MaxValue));
     }
 }

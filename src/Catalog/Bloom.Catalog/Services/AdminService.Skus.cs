@@ -23,8 +23,8 @@ public sealed partial class AdminService
 
     private sealed record OptionTypeInput(Guid? Id, string Name, List<OptionValueInput> Values);
 
-    /// <summary>What one SKU write changes: the column setters, the audit entry and the same change applied to the in-memory row.</summary>
-    private sealed record SkuChange(Action<UpdateSettersBuilder<Sku>> Set, string Action, object Details, Action<Sku> Apply);
+    /// <summary>What one SKU write changes: the column setters and the audit entry.</summary>
+    private sealed record SkuChange(Action<UpdateSettersBuilder<Sku>> Set, string Action, object Details);
 
     public override async Task<AdminProduct> SetOptions(SetOptionsRequest request, ServerCallContext context)
     {
@@ -133,7 +133,7 @@ public sealed partial class AdminService
         var code = Inputs.SkuCode(request.Code);
         return await ChangeSkuAsync(caller, request.Id, request.Version, context.CancellationToken, sku => sku.Code == code ? null
             : new SkuChange(s => s.SetProperty(x => x.Code, code), "catalog.sku-updated",
-                new { before = new { code = sku.Code }, after = new { code } }, x => x.Code = code));
+                new { before = new { code = sku.Code }, after = new { code } }));
     }
 
     public override async Task<AdminSku> SetSkuPrice(SetSkuPriceRequest request, ServerCallContext context)
@@ -142,7 +142,7 @@ public sealed partial class AdminService
         var price = Inputs.PriceCents(request.PriceCents);
         return await ChangeSkuAsync(caller, request.Id, request.Version, context.CancellationToken, sku => sku.PriceCents == price ? null
             : new SkuChange(s => s.SetProperty(x => x.PriceCents, price), "catalog.price-changed",
-                new { before = new { priceCents = sku.PriceCents }, after = new { priceCents = price } }, x => x.PriceCents = price));
+                new { before = new { priceCents = sku.PriceCents }, after = new { priceCents = price } }));
     }
 
     public override async Task<AdminSku> SetSkuActive(SetSkuActiveRequest request, ServerCallContext context)
@@ -150,7 +150,7 @@ public sealed partial class AdminService
         var caller = Caller.From(context).RequireStaff(Caller.CatalogRoles);
         return await ChangeSkuAsync(caller, request.Id, request.Version, context.CancellationToken, sku => sku.Active == request.Active ? null
             : new SkuChange(s => s.SetProperty(x => x.Active, request.Active), request.Active ? "catalog.sku-activated" : "catalog.sku-deactivated",
-                new { }, x => x.Active = request.Active));
+                new { }));
     }
 
     public override async Task<AdminProduct> SetPlanEligibility(SetPlanEligibilityRequest request, ServerCallContext context)
@@ -199,15 +199,14 @@ public sealed partial class AdminService
         var sku = await db.Skus.AsNoTracking().SingleAsync(s => s.Id == id, ct);
         if (change(sku) is not { } c) return await LoadSkuAsync(sku, ct);
 
-        try { sku.Version = await concurrent.UpdateVersionedAsync("sku", db.Skus.Where(s => s.Id == id), version, c.Set, CatalogErrors.NotFound, ct); }
+        try { await concurrent.UpdateVersionedAsync("sku", db.Skus.Where(s => s.Id == id), version, c.Set, CatalogErrors.NotFound, ct); }
         catch (PostgresException e) when (Db.IsUniqueViolation(e, SkuCodeIndex)) { throw SkuCodeTaken(); }
-        c.Apply(sku);
         audit.Record(caller, c.Action, "sku", id, c.Details);
         await db.SaveChangesAsync(ct);
         await derived.RefreshAsync(product.Id);
         await InvalidateProductAsync(product.Id, product.Kind == ProductKinds.WarrantyPlan, ct);
         await tx.CommitAsync(ct);
-        return await LoadSkuAsync(sku, ct);
+        return await LoadSkuAsync(await db.Skus.AsNoTracking().SingleAsync(s => s.Id == id, ct), ct);
     }
 
     /// <summary>Product page and listings; for a plan also the page of every device it covers (R10).</summary>

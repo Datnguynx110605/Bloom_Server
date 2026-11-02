@@ -234,8 +234,8 @@ public class CategoryTests(Containers containers)
         Assert.Equal("hi", Inputs.OptionalText(" hi ", "text", 5));
         Assert.Equal("text", Field(() => Inputs.OptionalText("abcdef", "text", 5)));
 
-        Assert.Equal((1, 24), Inputs.Paging(0, 0, 24, 48));
-        Assert.Equal((3, 48), Inputs.Paging(3, 48, 24, 48));
+        Assert.Equal((1, 24, 0), Inputs.Paging(0, 0, 24, 48));
+        Assert.Equal((3, 48, 96), Inputs.Paging(3, 48, 24, 48));
         Assert.Equal("page_size", Field(() => Inputs.Paging(1, 49, 24, 48)));
         Assert.Equal("page_size", Field(() => Inputs.Paging(1, -1, 24, 48)));
         Assert.Equal("page", Field(() => Inputs.Paging(-1, 0, 24, 48)));

@@ -156,12 +156,8 @@ public class SchemaTests(Containers containers)
     public async Task Lld_indexes_exist()
     {
         await using var t = await TestCatalog.StartAsync(containers);
-        await using var conn = new NpgsqlConnection(t.ConnectionString);
-        await conn.OpenAsync(Ct);
-        await using var cmd = new NpgsqlCommand("SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'", conn);
-        var defs = new List<string>();
-        await using (var reader = await cmd.ExecuteReaderAsync(Ct))
-            while (await reader.ReadAsync(Ct)) defs.Add(reader.GetString(0));
+        await using var db = t.NewDb();
+        var defs = await db.Database.SqlQuery<string>($"SELECT indexdef AS \"Value\" FROM pg_indexes WHERE schemaname = 'public'").ToListAsync(Ct);
 
         // (table, definition tail) of LLD 08-catalog §4.1.
         (string Table, string Tail)[] expected =

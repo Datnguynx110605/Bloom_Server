@@ -16,7 +16,7 @@ public sealed partial class AdminService
     public override async Task<AdminListReviewsResponse> AdminListReviews(AdminListReviewsRequest request, ServerCallContext context)
     {
         Caller.From(context).RequireStaff(Caller.ModerationRoles);
-        var (page, size) = Inputs.Paging(request.Page, request.PageSize, 50, 100);
+        var (_, size, skip) = Inputs.Paging(request.Page, request.PageSize, 50, 100);
         if (request.Status != "" && !ReviewStatuses.All.Contains(request.Status))
             throw CatalogErrors.Validation("status", "status must be visible or hidden.");
         Guid? productId = null;
@@ -28,7 +28,7 @@ public sealed partial class AdminService
         if (productId is not null) query = query.Where(r => r.ProductId == productId);
         if (request.Status != "") query = query.Where(r => r.Status == request.Status);
         var rows = await query.OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id)
-            .Skip((int)Math.Min((long)(page - 1) * size, int.MaxValue)).Take(size).ToListAsync(ct);
+            .Skip(skip).Take(size).ToListAsync(ct);
         var response = new AdminListReviewsResponse { Total = await query.CountAsync(ct) };
         response.Items.AddRange(rows.Select(ToAdminProto));
         return response;
