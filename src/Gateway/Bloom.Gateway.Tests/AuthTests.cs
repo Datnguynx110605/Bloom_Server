@@ -151,6 +151,19 @@ public class AuthTests(Containers containers)
     }
 
     [Fact]
+    public async Task Review_route_refuses_anonymous_and_staff()
+    {
+        await using var gateway = await TestGateway.StartAsync(containers);
+
+        using var anonymous = await gateway.Client.SendAsync(Request("PUT", "/api/reviews/1", null), Ct);
+        using var staff = await gateway.Client.SendAsync(Request("PUT", "/api/reviews/1", TestTokens.Issue(gateway.DefaultKey, "staff", "support")), Ct);
+
+        await AssertErrorAsync(anonymous, HttpStatusCode.Unauthorized, 16, "TOKEN_MISSING");
+        await AssertErrorAsync(staff, HttpStatusCode.Forbidden, 7, "ROLE_NOT_ALLOWED");
+        Assert.Equal(0, gateway.Upstream.RequestCount);
+    }
+
+    [Fact]
     public async Task Catalog_admin_allows_support()
     {
         await using var gateway = await TestGateway.StartAsync(containers);
