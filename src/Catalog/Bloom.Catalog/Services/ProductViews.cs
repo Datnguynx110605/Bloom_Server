@@ -43,7 +43,7 @@ public sealed class ProductViews(CatalogDbContext db, ImageStore imageStore)
         };
         if (p.PublishedAt is { } publishedAt) view.PublishedAt = Timestamp.FromDateTimeOffset(publishedAt);
         if (p.MinPriceCents is { } min) view.MinPriceCents = min;
-        if (p.LaunchStage is { } stage) view.Launch = new Launch { LaunchId = p.LaunchId?.ToString() ?? "", Stage = stage };
+        if (p.LaunchStage is { } stage) view.Launch = new V1.Launch { LaunchId = p.LaunchId?.ToString() ?? "", Stage = stage };
         view.Specs.AddRange(ProductSpecs.ToProto(p.Specs));
         view.Options.AddRange(types.Select(t => new OptionType
         {

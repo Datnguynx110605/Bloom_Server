@@ -11,6 +11,8 @@
     <ProjectReference Include="..\Bloom.Catalog.Contracts\Bloom.Catalog.Contracts.csproj" />
     <ProjectReference Include="..\..\Shared\Bloom.Shared\Bloom.Shared.csproj" />
     <ProjectReference Include="..\..\Identity\Bloom.Identity.Contracts\Bloom.Identity.Contracts.csproj" />
+    <ProjectReference Include="..\..\Launch\Bloom.Launch.Contracts\Bloom.Launch.Contracts.csproj" />
+    <ProjectReference Include="..\..\Order\Bloom.Order.Contracts\Bloom.Order.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

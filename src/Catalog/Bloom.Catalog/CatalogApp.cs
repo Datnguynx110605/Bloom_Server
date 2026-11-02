@@ -2,12 +2,14 @@ using Amazon;
 using Amazon.Runtime;
 using Amazon.S3;
 using Bloom.Catalog.Caching;
+using Bloom.Catalog.Consumers;
 using Bloom.Catalog.Data;
 using Bloom.Catalog.Domain;
 using Bloom.Catalog.Observability;
 using Bloom.Catalog.Services;
 using Bloom.Catalog.Storage;
 using Bloom.Shared;
+using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
 using Google.Rpc;
@@ -52,6 +54,12 @@ public static class CatalogApp
             o.ServiceName = "catalog";
             o.RabbitMqUri = options.RabbitMq;
         });
+        // Both modes: the DLQ admin of the API needs the consumer catalog as much as the worker does (plan R6, R25).
+        bloom.AddConsumer<LaunchStageChangedConsumer>("launch-stage-changed", LaunchStageChangedConsumer.Bindings)
+            .AddConsumer<OrderDeliveredConsumer>("order-delivered", OrderDeliveredConsumer.Bindings)
+            .AddConsumer<ReviewerNameConsumer>("customer-registered", ReviewerNameConsumer.Bindings[0])
+            .AddConsumer<ReviewerNameConsumer>("contact-changed", ReviewerNameConsumer.Bindings[1])
+            .AddConsumer<AccountDeletedConsumer>("account-deleted", AccountDeletedConsumer.Bindings);
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
         {
             var redis = ConfigurationOptions.Parse(options.Redis);
