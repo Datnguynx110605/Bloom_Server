@@ -16,8 +16,11 @@ public sealed class MarkdownRenderer
     public string ToHtml(string markdown)
     {
         var document = Markdown.Parse(markdown, _pipeline);
+        // The two inline types that carry a URL: links and images (LinkInline, also reference-style) and <autolinks> (AutolinkInline).
         foreach (var link in document.Descendants<LinkInline>().Where(l => l.Url is not null && !IsSafe(l.Url)))
             link.Url = "";
+        foreach (var autolink in document.Descendants<AutolinkInline>().Where(a => !a.IsEmail && !IsSafe(a.Url)))
+            autolink.Url = "";
         return Markdown.ToHtml(document, _pipeline);
     }
 

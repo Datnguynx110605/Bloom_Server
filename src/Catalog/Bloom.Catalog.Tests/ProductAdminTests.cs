@@ -69,7 +69,10 @@ public class ProductAdminTests(Containers containers)
         var category = await Seed.CategoryAsync(t);
 
         var md = "<script>alert(1)</script>\n\n<img src=x onerror=y>\n\n[a](javascript:alert(1))\n\n![i](data:text/html,x)\n\n" +
-                 "[b](JaVaScRiPt:alert(1))\n\n[c](<java&#9;script:alert(1)>)\n\n[ok](https://example.com/a:b) [rel](/x) [m](mailto:a@b.c)";
+                 "[b](JaVaScRiPt:alert(1))\n\n[c](<java&#9;script:alert(1)>)\n\n" +
+                 "<javascript:alert(1)>\n\n<JAVASCRIPT:x>\n\n<data:text/html,x>\n\n<vbscript:x>\n\n[x][r]\n\n![y][r]\n\n[r]: javascript:y\n\n" +
+                 "![z][d]\n\n[d]: data:text/html,x\n\n[x]( javascript:y)\n\n" +
+                 "[ok](https://example.com/a:b) [rel](/x) [m](mailto:a@b.c) <https://ok.com> <a@b.c>";
         var created = await (await CreateAsync(t, Body(category.Id, md: md))).OkJsonAsync();
 
         var html = created.GetProperty("descriptionHtml").GetString()!;
@@ -78,6 +81,9 @@ public class ProductAdminTests(Containers containers)
         Assert.DoesNotContain("javascript:", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("script:", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("data:", html);
+        Assert.DoesNotContain("vbscript:", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("<a href=\"https://ok.com\">https://ok.com</a>", html);
+        Assert.Contains("<a href=\"mailto:a@b.c\">a@b.c</a>", html);
         Assert.Contains("href=\"https://example.com/a:b\"", html);
         Assert.Contains("href=\"/x\"", html);
         Assert.Contains("href=\"mailto:a@b.c\"", html);
