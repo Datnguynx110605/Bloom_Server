@@ -90,6 +90,7 @@ public static class CatalogApp
         if (api)
         {
             app.MapGrpcService<PublicService>();
+            app.MapGrpcService<CustomerService>();
             app.MapGrpcService<AdminService>();
             app.MapGrpcService<InternalService>();
         }

@@ -1,5 +1,6 @@
 using Bloom.Catalog.Data;
 using Bloom.Catalog.Domain;
+using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Catalog.Tests;
 
@@ -96,6 +97,37 @@ public static class Seed
         db.PlanEligibilities.AddRange(eligible.Select(e => new PlanEligibility { PlanProductId = plan.Id, EligibleProductId = e }));
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         return (plan, skus[0]);
+    }
+
+    public static async Task EligibleAsync(TestCatalog t, Guid accountId, Guid productId)
+    {
+        await using var db = t.NewDb();
+        db.ReviewEligibilities.Add(new ReviewEligibility { AccountId = accountId, ProductId = productId, FirstDeliveredAt = t.Clock.GetUtcNow() });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    public static async Task ReviewerNameAsync(TestCatalog t, Guid accountId, string displayName)
+    {
+        await using var db = t.NewDb();
+        db.ReviewerNames.Add(new ReviewerName { AccountId = accountId, DisplayName = displayName });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>A review inserted directly (created now by the fake clock); a visible one is added to the product's rating aggregates.</summary>
+    public static async Task<Review> ReviewAsync(TestCatalog t, Guid productId, int rating, string status = ReviewStatuses.Visible, Guid? accountId = null)
+    {
+        var now = t.Clock.GetUtcNow();
+        var review = new Review
+        {
+            Id = Guid.CreateVersion7(), ProductId = productId, AccountId = accountId ?? Guid.NewGuid(), AuthorDisplay = "Seeded R.",
+            Rating = (short)rating, Text = $"text {rating}", Status = status, CreatedAt = now, UpdatedAt = now,
+        };
+        await using var db = t.NewDb();
+        db.Reviews.Add(review);
+        if (status == ReviewStatuses.Visible)
+            await db.Database.ExecuteSqlAsync($"UPDATE products SET rating_sum = rating_sum + {rating}, rating_count = rating_count + 1 WHERE id = {productId}", TestContext.Current.CancellationToken);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        return review;
     }
 }
 

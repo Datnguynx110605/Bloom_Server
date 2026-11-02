@@ -3,6 +3,7 @@ using Bloom.Catalog.Context;
 using Bloom.Catalog.Data;
 using Bloom.Catalog.Domain;
 using Bloom.Catalog.Errors;
+using Bloom.Catalog.Observability;
 using Bloom.Catalog.Storage;
 using Bloom.Catalog.Validation;
 using Bloom.Catalog.V1;
@@ -18,7 +19,7 @@ namespace Bloom.Catalog.Services;
 /// <summary>LLD 08-catalog §3 component <c>Admin API</c>, split by area into partial files.</summary>
 public sealed partial class AdminService(
     CatalogDbContext db, Audit audit, CacheInvalidation invalidation, ConcurrentUpdates concurrent,
-    ProductDerived derived, MarkdownRenderer markdown, TimeProvider clock, ImageStore imageStore) : CatalogAdmin.CatalogAdminBase
+    ProductDerived derived, MarkdownRenderer markdown, TimeProvider clock, ImageStore imageStore, CatalogMetrics metrics) : CatalogAdmin.CatalogAdminBase
 {
     private const string SlugIndex = "ux_categories_slug";
 

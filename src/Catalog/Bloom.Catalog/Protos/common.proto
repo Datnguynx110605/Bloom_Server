@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package bloom.catalog.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option csharp_namespace = "Bloom.Catalog.V1";
 
 // 08-catalog §4.1. Top level categories carry their sub-categories in `children` (CAT-R01).
@@ -46,4 +48,16 @@ message Image {
   string sku_id = 4; // empty = the whole product
   int32 position = 5;
   string status = 6; // pending | ready
+}
+
+// 08-catalog §4.1 `reviews`, as the storefront shows it: `author_display` always comes from `reviewer_names`.
+message Review {
+  string id = 1;
+  string product_id = 2;
+  int32 rating = 3; // 1 to 5
+  string text = 4; // empty = none
+  string author_display = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  int64 version = 8; // pass it back to edit (UpsertMyReview)
 }

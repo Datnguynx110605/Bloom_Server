@@ -68,6 +68,16 @@ service CatalogAdmin {
   rpc DeleteImage(ImageRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = { delete: "/api/admin/catalog/images/{id}" };
   }
+  // The review methods are for support and admin (plan R7).
+  rpc AdminListReviews(AdminListReviewsRequest) returns (AdminListReviewsResponse) {
+    option (google.api.http) = { get: "/api/admin/catalog/reviews" };
+  }
+  rpc HideReview(ModerateReviewRequest) returns (AdminReview) {
+    option (google.api.http) = { post: "/api/admin/catalog/reviews/{id}/hide" body: "*" };
+  }
+  rpc UnhideReview(ModerateReviewRequest) returns (AdminReview) {
+    option (google.api.http) = { post: "/api/admin/catalog/reviews/{id}/unhide" body: "*" };
+  }
 }
 
 message CreateCategoryRequest {
@@ -250,4 +260,39 @@ message AdminProduct {
   repeated AdminSku skus = 22;
   repeated Image images = 23;
   repeated string eligible_product_ids = 24; // plans only
+}
+
+// Newest first; `product_id` and `status` (visible | hidden) are optional filters. `page_size` 1 to 100 (0 = 50).
+message AdminListReviewsRequest {
+  string product_id = 1;
+  string status = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message AdminListReviewsResponse {
+  repeated AdminReview items = 1;
+  int32 total = 2;
+}
+
+// A review as staff see it: the storefront fields plus the author's account (empty once the account is deleted) and the moderation state.
+message AdminReview {
+  string id = 1;
+  string product_id = 2;
+  int32 rating = 3;
+  string text = 4;
+  string author_display = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  int64 version = 8;
+  string account_id = 9;
+  string status = 10; // visible | hidden
+  string hidden_by = 11; // staff id, empty while visible
+  string hidden_reason = 12;
+}
+
+// `reason` is 1 to 500 characters and goes to the audit log; hiding a hidden or unhiding a visible review changes nothing.
+message ModerateReviewRequest {
+  string id = 1;
+  string reason = 2;
 }
