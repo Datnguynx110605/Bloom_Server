@@ -14,6 +14,10 @@ service CatalogPublic {
   rpc ListCategories(google.protobuf.Empty) returns (ListCategoriesResponse) {
     option (google.api.http) = { get: "/api/catalog/categories" };
   }
+  // Full-text search over publicly visible physical products (08-catalog §6.2).
+  rpc SearchProducts(SearchProductsRequest) returns (SearchProductsResponse) {
+    option (google.api.http) = { get: "/api/catalog/products" };
+  }
   // By id or, with `slug`, by slug. Only a publicly visible physical product (NOT_FOUND otherwise).
   rpc GetProduct(GetProductRequest) returns (ProductView) {
     option (google.api.http) = {
@@ -26,6 +30,37 @@ service CatalogPublic {
 // The two-level tree, ordered by sort_order, then name.
 message ListCategoriesResponse {
   repeated Category categories = 1;
+}
+
+// `sort`: relevance (default) | price_asc | price_desc | newest | rating. `page` from 1 (0 = 1); `page_size` 1 to 48 (0 = 24).
+// `option_value_ids`: values of one option type (by name) are ORed, types are ANDed, all on one active SKU.
+message SearchProductsRequest {
+  string q = 1;
+  string category_id = 2; // includes sub-categories
+  optional int64 price_min = 3; // on min_price_cents
+  optional int64 price_max = 4;
+  repeated string option_value_ids = 5;
+  string sort = 6;
+  int32 page = 7;
+  int32 page_size = 8;
+}
+
+message SearchProductsResponse {
+  repeated ProductCard items = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ProductCard {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  optional int64 min_price_cents = 4;
+  double rating_average = 5;
+  int32 rating_count = 6;
+  string image_url = 7; // first ready image by position, empty if none
+  string launch_stage = 8; // empty without a launch
 }
 
 message GetProductRequest {

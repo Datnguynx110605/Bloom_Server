@@ -44,11 +44,11 @@ public sealed class CatalogCache(IConnectionMultiplexer redis, ILogger<CatalogCa
         catch (Exception e) when (IsRedisFailure(e)) { }
     }
 
-    /// <summary>0 when Redis fails, so searches go to Postgres under a key nobody reads or fills.</summary>
-    public async Task<long> CatalogVersionAsync()
+    /// <summary>Null when Redis fails: the caller reads Postgres and neither GETs nor SETs a search key (plan R10).</summary>
+    public async Task<long?> CatalogVersionAsync()
     {
         try { return (long)await redis.GetDatabase().StringGetAsync(VersionKey); }
-        catch (Exception e) when (IsRedisFailure(e)) { return 0; }
+        catch (Exception e) when (IsRedisFailure(e)) { return null; }
     }
 
     public async Task InvalidateAsync(IReadOnlyCollection<Guid> products, bool categories, bool listings)
