@@ -1,5 +1,9 @@
 <Solution>
   <Folder Name="/src/" />
+  <Folder Name="/src/Catalog/">
+    <Project Path="src/Catalog/Bloom.Catalog.Tests/Bloom.Catalog.Tests.csproj" />
+    <Project Path="src/Catalog/Bloom.Catalog/Bloom.Catalog.csproj" />
+  </Folder>
   <Folder Name="/src/Gateway/">
     <Project Path="src/Gateway/Bloom.Gateway.Tests/Bloom.Gateway.Tests.csproj" />
     <Project Path="src/Gateway/Bloom.Gateway/Bloom.Gateway.csproj" />
