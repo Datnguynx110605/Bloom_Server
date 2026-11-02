@@ -21,13 +21,13 @@ public class ProductPageTests(Containers containers)
         await db.Products.Where(p => p.Id == id).ExecuteUpdateAsync(set, TestContext.Current.CancellationToken);
     }
 
-    private static async Task AddImageAsync(TestCatalog t, Guid productId, string file, int position, string status)
+    private static async Task AddImageAsync(TestCatalog t, Guid productId, string file, int position, string status, Guid? skuId = null)
     {
         await using var db = t.NewDb();
         db.ProductImages.Add(new ProductImage
         {
             Id = Guid.CreateVersion7(), ProductId = productId, StorageKey = $"products/{productId}/{file}", AltText = file, Position = position,
-            Status = status, CreatedAt = t.Clock.GetUtcNow(),
+            Status = status, SkuId = skuId, CreatedAt = t.Clock.GetUtcNow(),
         });
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
     }
@@ -48,6 +48,7 @@ public class ProductPageTests(Containers containers)
         await AddImageAsync(t, id, "pending.jpg", 0, ImageStatuses.Pending);
         await AddImageAsync(t, id, "two.jpg", 2, ImageStatuses.Ready);
         await AddImageAsync(t, id, "one.jpg", 1, ImageStatuses.Ready);
+        await AddImageAsync(t, id, "inactive-sku.jpg", 3, ImageStatuses.Ready, phone.Skus[3].Id); // linked to the inactive SKU: not public
 
         var view = await (await GetAsync(t, id)).OkJsonAsync();
 
