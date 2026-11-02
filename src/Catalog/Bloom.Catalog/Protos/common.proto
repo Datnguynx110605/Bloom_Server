@@ -14,3 +14,36 @@ message Category {
   int64 version = 6;
   repeated Category children = 7;
 }
+
+// Product specs (08-catalog §4.1 `specs`): display-only groups of label/value pairs.
+message SpecItem {
+  string label = 1;
+  string value = 2;
+}
+
+message SpecGroup {
+  string group = 1;
+  repeated SpecItem items = 2;
+}
+
+message OptionValue {
+  string id = 1;
+  string value = 2;
+  int32 position = 3;
+}
+
+message OptionType {
+  string id = 1;
+  string name = 2;
+  int32 position = 3;
+  repeated OptionValue values = 4;
+}
+
+message Image {
+  string id = 1;
+  string url = 2;
+  string alt_text = 3;
+  string sku_id = 4; // empty = the whole product
+  int32 position = 5;
+  string status = 6; // pending | ready
+}

@@ -42,6 +42,8 @@ public static class CatalogApp
         builder.Services.AddScoped<CacheInvalidation>();
         builder.Services.AddScoped<CacheInvalidationInterceptor>();
         builder.Services.AddScoped<Audit>();
+        builder.Services.AddScoped<ProductDerived>();
+        builder.Services.AddSingleton<MarkdownRenderer>();
         var bloom = builder.Services.AddBloom<CatalogDbContext>(o =>
         {
             o.ServiceName = "catalog";

@@ -16,7 +16,8 @@ namespace Bloom.Catalog.Services;
 
 /// <summary>LLD 08-catalog §3 component <c>Admin API</c>, split by area into partial files.</summary>
 public sealed partial class AdminService(
-    CatalogDbContext db, Audit audit, CacheInvalidation invalidation, ConcurrentUpdates concurrent) : CatalogAdmin.CatalogAdminBase
+    CatalogDbContext db, Audit audit, CacheInvalidation invalidation, ConcurrentUpdates concurrent,
+    ProductDerived derived, MarkdownRenderer markdown, TimeProvider clock, CatalogOptions options) : CatalogAdmin.CatalogAdminBase
 {
     private const string SlugIndex = "ux_categories_slug";
 
@@ -75,6 +76,8 @@ public sealed partial class AdminService(
         }
         catch (PostgresException e) when (Db.IsUniqueViolation(e, SlugIndex)) { throw SlugTaken(); }
 
+        if (before.ContainsKey("name")) // the category name is part of its products' search vectors (R12)
+            await derived.RefreshAsync(await db.Products.Where(p => p.CategoryId == id).Select(p => p.Id).ToArrayAsync(ct));
         audit.Record(caller, "catalog.category-updated", "category", id, new { before, after });
         invalidation.Categories();
         if (before.ContainsKey("name") || before.ContainsKey("parentId")) invalidation.Listings(); // search vectors, category filter (R10)

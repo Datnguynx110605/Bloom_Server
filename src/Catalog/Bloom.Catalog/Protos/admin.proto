@@ -3,6 +3,7 @@ syntax = "proto3";
 package bloom.catalog.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "Protos/common.proto";
 
 option csharp_namespace = "Bloom.Catalog.V1";
@@ -14,6 +15,18 @@ service CatalogAdmin {
   }
   rpc UpdateCategory(UpdateCategoryRequest) returns (Category) {
     option (google.api.http) = { put: "/api/admin/catalog/categories/{id}" body: "*" };
+  }
+  rpc AdminListProducts(AdminListProductsRequest) returns (AdminListProductsResponse) {
+    option (google.api.http) = { get: "/api/admin/catalog/products" };
+  }
+  rpc AdminGetProduct(AdminGetProductRequest) returns (AdminProduct) {
+    option (google.api.http) = { get: "/api/admin/catalog/products/{id}" };
+  }
+  rpc CreateProduct(CreateProductRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products" body: "*" };
+  }
+  rpc UpdateProduct(UpdateProductRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{id}" body: "*" };
   }
 }
 
@@ -32,4 +45,97 @@ message UpdateCategoryRequest {
   string slug = 4;
   int32 sort_order = 5;
   int64 version = 6;
+}
+
+message CreateProductRequest {
+  string category_id = 1;
+  string kind = 2; // physical | warranty_plan, immutable
+  string name = 3;
+  string slug = 4;
+  string description_md = 5;
+  repeated SpecGroup specs = 6;
+  bool serialized = 7; // physical only
+  int32 coverage_months = 8; // warranty plans only
+}
+
+// Replaces every field except `kind`; `version` is the one the caller read. Status changes go through the lifecycle methods.
+message UpdateProductRequest {
+  string id = 1;
+  string category_id = 2;
+  string name = 3;
+  string slug = 4;
+  string description_md = 5;
+  repeated SpecGroup specs = 6;
+  bool serialized = 7;
+  int32 coverage_months = 8;
+  int64 version = 9;
+}
+
+message AdminGetProductRequest {
+  string id = 1;
+}
+
+// `q` is a case-insensitive "contains" on name, slug or any SKU code.
+message AdminListProductsRequest {
+  string status = 1;
+  string category_id = 2;
+  string q = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message AdminListProductsResponse {
+  repeated AdminProductSummary items = 1;
+  int32 total = 2;
+}
+
+message AdminProductSummary {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string kind = 4;
+  string status = 5;
+  string category_id = 6;
+  optional int64 min_price_cents = 7;
+  string launch_stage = 8;
+  int64 version = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message AdminSku {
+  string id = 1;
+  string code = 2;
+  repeated string option_value_ids = 3;
+  int64 price_cents = 4;
+  bool active = 5;
+  string launch_id = 6;
+  int64 version = 7;
+}
+
+// Everything staff see: Markdown source, inactive SKUs, images of both statuses, plan eligibility.
+message AdminProduct {
+  string id = 1;
+  string category_id = 2;
+  string kind = 3;
+  string name = 4;
+  string slug = 5;
+  string description_md = 6;
+  string description_html = 7;
+  repeated SpecGroup specs = 8;
+  bool serialized = 9;
+  bool serialized_locked = 10;
+  int32 coverage_months = 11;
+  string status = 12;
+  string launch_id = 13;
+  string launch_stage = 14;
+  google.protobuf.Timestamp published_at = 15;
+  optional int64 min_price_cents = 16;
+  int32 rating_sum = 17;
+  int32 rating_count = 18;
+  int64 version = 19;
+  google.protobuf.Timestamp updated_at = 20;
+  repeated OptionType options = 21;
+  repeated AdminSku skus = 22;
+  repeated Image images = 23;
+  repeated string eligible_product_ids = 24; // plans only
 }
