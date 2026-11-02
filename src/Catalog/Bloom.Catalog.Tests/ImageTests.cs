@@ -61,7 +61,10 @@ public class ImageTests(Containers containers)
         var created = await (await CreateAsync(t, product.Id, "image/png", skus[0].Id)).OkJsonAsync();
         var url = created.GetProperty("uploadUrl").GetString()!;
         var key = created.GetProperty("storageKey").GetString()!;
-        Assert.Contains("X-Amz-Expires=300", url);
+        // 300 s = 5 min. The SDK rounds (Expires - its per-endpoint corrected clock) to whole seconds and MinIO's Date header has second
+        // resolution, so the value is 299 to 301 from run to run; there is no deterministic way to pin it short of disabling skew correction.
+        var expires = int.Parse(System.Text.RegularExpressions.Regex.Match(url, @"X-Amz-Expires=(\d+)").Groups[1].Value);
+        Assert.InRange(expires, 299, 301);
         Assert.Matches($"^products/{product.Id}/[0-9a-f-]{{36}}\\.png$", key);
         Assert.Equal(HttpStatusCode.OK, (await PutObjectAsync(url, 10_240, "image/png")).StatusCode);
 
