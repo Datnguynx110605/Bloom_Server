@@ -34,6 +34,15 @@ service CatalogAdmin {
   rpc SetPlanEligibility(SetPlanEligibilityRequest) returns (AdminProduct) {
     option (google.api.http) = { put: "/api/admin/catalog/products/{plan_product_id}/eligibility" body: "*" };
   }
+  rpc PublishProduct(LifecycleRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{id}/publish" body: "*" };
+  }
+  rpc ArchiveProduct(LifecycleRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{id}/archive" body: "*" };
+  }
+  rpc ReactivateProduct(LifecycleRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{id}/reactivate" body: "*" };
+  }
   rpc CreateSku(CreateSkuRequest) returns (AdminSku) {
     option (google.api.http) = { post: "/api/admin/catalog/products/{product_id}/skus" body: "*" };
   }
@@ -102,6 +111,12 @@ message SetPlanEligibilityRequest {
   string plan_product_id = 1;
   repeated string eligible_product_ids = 2;
   int64 version = 3;
+}
+
+// `version` is the product version the caller read.
+message LifecycleRequest {
+  string id = 1;
+  int64 version = 2;
 }
 
 // One value id per option type of the product; none for a plan. New SKUs are active.

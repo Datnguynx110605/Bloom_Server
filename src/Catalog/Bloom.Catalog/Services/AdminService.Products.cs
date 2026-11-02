@@ -108,6 +108,39 @@ public sealed partial class AdminService
         return await LoadProductAsync(id, ct);
     }
 
+    public override Task<AdminProduct> PublishProduct(LifecycleRequest request, ServerCallContext context) =>
+        ChangeStatusAsync(request, context, ProductStatuses.Draft, ProductStatuses.Active, "catalog.product-published");
+
+    public override Task<AdminProduct> ArchiveProduct(LifecycleRequest request, ServerCallContext context) =>
+        ChangeStatusAsync(request, context, ProductStatuses.Active, ProductStatuses.Archived, "catalog.product-archived");
+
+    public override Task<AdminProduct> ReactivateProduct(LifecycleRequest request, ServerCallContext context) =>
+        ChangeStatusAsync(request, context, ProductStatuses.Archived, ProductStatuses.Active, "catalog.product-reactivated");
+
+    /// <summary>R17: the one allowed transition <paramref name="from"/> → <paramref name="to"/>; publishing also needs an active SKU and sets <c>published_at</c> once.</summary>
+    private async Task<AdminProduct> ChangeStatusAsync(LifecycleRequest request, ServerCallContext context, string from, string to, string action)
+    {
+        var caller = Caller.From(context).RequireStaff(Caller.CatalogRoles);
+        var ct = context.CancellationToken;
+        if (!Guid.TryParse(request.Id, out var id)) throw CatalogErrors.NotFoundError("Product");
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var product = await LockProductAsync(id, ct);
+        if (product.Status != from) throw CatalogErrors.Error(CatalogErrors.InvalidLifecycle, $"The product is {product.Status}; this action needs {from}.");
+        if (to == ProductStatuses.Active && from == ProductStatuses.Draft && !await db.Skus.AnyAsync(s => s.ProductId == id && s.Active, ct))
+            throw CatalogErrors.Error(CatalogErrors.PublishIncomplete, "Publishing needs at least one active SKU.");
+
+        var now = clock.GetUtcNow();
+        await concurrent.UpdateVersionedAsync("product", db.Products.Where(p => p.Id == id), request.Version,
+            s => s.SetProperty(p => p.Status, to).SetProperty(p => p.PublishedAt, product.PublishedAt ?? now).SetProperty(p => p.UpdatedAt, now),
+            CatalogErrors.NotFound, ct);
+        audit.Record(caller, action, "product", id, new { before = new { status = from }, after = new { status = to } });
+        await InvalidateProductAsync(id, product.Kind == ProductKinds.WarrantyPlan, ct);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        return await LoadProductAsync(id, ct);
+    }
+
     public override async Task<AdminProduct> AdminGetProduct(AdminGetProductRequest request, ServerCallContext context)
     {
         Caller.From(context).RequireStaff(Caller.CatalogRoles);
