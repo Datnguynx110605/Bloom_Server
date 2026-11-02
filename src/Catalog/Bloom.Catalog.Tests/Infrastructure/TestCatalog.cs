@@ -1,4 +1,6 @@
+using Bloom.Catalog.Contracts;
 using Bloom.Catalog.Data;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -26,7 +28,17 @@ public sealed class TestCatalog : IAsyncDisposable
 {
     private readonly WebApplication _app;
 
-    private TestCatalog(WebApplication app) => _app = app;
+    private readonly GrpcChannel _channel;
+
+    private TestCatalog(WebApplication app, GrpcChannel channel)
+    {
+        _app = app;
+        _channel = channel;
+        Internal = new CatalogInternal.CatalogInternalClient(channel);
+    }
+
+    /// <summary>The internal gRPC API, called in-process (plan R1).</summary>
+    public CatalogInternal.CatalogInternalClient Internal { get; }
 
     public required HttpClient Http { get; init; }
 
@@ -82,7 +94,8 @@ public sealed class TestCatalog : IAsyncDisposable
             await db.Database.MigrateAsync();
         }
         await app.StartAsync();
-        return new TestCatalog(app)
+        var server = app.GetTestServer();
+        return new TestCatalog(app, GrpcChannel.ForAddress(server.BaseAddress, new() { HttpHandler = server.CreateHandler() }))
         {
             Http = app.GetTestClient(),
             Clock = clock,
@@ -102,6 +115,7 @@ public sealed class TestCatalog : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Http.Dispose();
+        _channel.Dispose();
         await _app.DisposeAsync();
     }
 }

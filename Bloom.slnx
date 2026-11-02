@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/" />
   <Folder Name="/src/Catalog/">
+    <Project Path="src/Catalog/Bloom.Catalog.Contracts/Bloom.Catalog.Contracts.csproj" />
     <Project Path="src/Catalog/Bloom.Catalog.Tests/Bloom.Catalog.Tests.csproj" />
     <Project Path="src/Catalog/Bloom.Catalog/Bloom.Catalog.csproj" />
   </Folder>

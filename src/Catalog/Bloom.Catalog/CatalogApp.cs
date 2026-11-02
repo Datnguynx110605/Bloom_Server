@@ -91,6 +91,7 @@ public static class CatalogApp
         {
             app.MapGrpcService<PublicService>();
             app.MapGrpcService<AdminService>();
+            app.MapGrpcService<InternalService>();
         }
         return app;
     }
