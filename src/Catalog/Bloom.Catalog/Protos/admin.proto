@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package bloom.catalog.v1;
+
+import "google/api/annotations.proto";
+import "Protos/common.proto";
+
+option csharp_namespace = "Bloom.Catalog.V1";
+
+// 08-catalog §5, staff only (catalog_manager, admin unless a method says otherwise).
+service CatalogAdmin {
+  rpc CreateCategory(CreateCategoryRequest) returns (Category) {
+    option (google.api.http) = { post: "/api/admin/catalog/categories" body: "*" };
+  }
+  rpc UpdateCategory(UpdateCategoryRequest) returns (Category) {
+    option (google.api.http) = { put: "/api/admin/catalog/categories/{id}" body: "*" };
+  }
+}
+
+message CreateCategoryRequest {
+  string parent_id = 1; // empty = top level
+  string name = 2;
+  string slug = 3;
+  int32 sort_order = 4;
+}
+
+// Replaces every field; `version` is the one the caller read.
+message UpdateCategoryRequest {
+  string id = 1;
+  string parent_id = 2; // empty = top level
+  string name = 3;
+  string slug = 4;
+  int32 sort_order = 5;
+  int64 version = 6;
+}

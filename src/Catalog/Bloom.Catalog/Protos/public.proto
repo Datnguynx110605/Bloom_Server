@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package bloom.catalog.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "Protos/common.proto";
+
+option csharp_namespace = "Bloom.Catalog.V1";
+
+// 08-catalog §5, anonymous callers allowed.
+service CatalogPublic {
+  rpc ListCategories(google.protobuf.Empty) returns (ListCategoriesResponse) {
+    option (google.api.http) = { get: "/api/catalog/categories" };
+  }
+}
+
+// The two-level tree, ordered by sort_order, then name.
+message ListCategoriesResponse {
+  repeated Category categories = 1;
+}

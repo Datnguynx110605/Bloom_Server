@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package bloom.catalog.v1;
+
+option csharp_namespace = "Bloom.Catalog.V1";
+
+// 08-catalog §4.1. Top level categories carry their sub-categories in `children` (CAT-R01).
+message Category {
+  string id = 1;
+  string parent_id = 2; // empty = top level
+  string name = 3;
+  string slug = 4;
+  int32 sort_order = 5;
+  int64 version = 6;
+  repeated Category children = 7;
+}

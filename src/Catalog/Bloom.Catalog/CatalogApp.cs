@@ -1,8 +1,11 @@
 using Amazon;
 using Amazon.Runtime;
 using Amazon.S3;
+using Bloom.Catalog.Caching;
 using Bloom.Catalog.Data;
+using Bloom.Catalog.Domain;
 using Bloom.Catalog.Observability;
+using Bloom.Catalog.Services;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -34,7 +37,11 @@ public static class CatalogApp
         builder.Services.AddSingleton(options);
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)
         builder.Services.AddSingleton<CatalogMetrics>();
-        builder.Services.AddDbContext<CatalogDbContext>(o => o.UseNpgsql(options.Database));
+        builder.Services.AddDbContext<CatalogDbContext>((sp, o) =>
+            o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<CacheInvalidationInterceptor>()));
+        builder.Services.AddScoped<CacheInvalidation>();
+        builder.Services.AddScoped<CacheInvalidationInterceptor>();
+        builder.Services.AddScoped<Audit>();
         var bloom = builder.Services.AddBloom<CatalogDbContext>(o =>
         {
             o.ServiceName = "catalog";
@@ -46,8 +53,10 @@ public static class CatalogApp
             redis.AbortOnConnectFail = false; // start and serve while Redis is down (plan R10)
             redis.ConnectTimeout = 1000;
             redis.AsyncTimeout = 1000;
+            redis.SyncTimeout = 1000; // commands queued while disconnected time out by this one, not AsyncTimeout
             return ConnectionMultiplexer.Connect(redis);
         });
+        builder.Services.AddSingleton<CatalogCache>();
         builder.Services.AddSingleton<IAmazonS3>(_ => new AmazonS3Client(
             new BasicAWSCredentials(options.Storage.AccessKey, options.Storage.SecretKey),
             new AmazonS3Config
@@ -62,13 +71,22 @@ public static class CatalogApp
         if (api)
         {
             builder.Services.AddGrpc().AddJsonTranscoding(o =>
-                o.TypeRegistry = TypeRegistry.FromMessages(ErrorInfo.Descriptor)); // error details are Any(ErrorInfo)
+            {
+                o.TypeRegistry = TypeRegistry.FromMessages(ErrorInfo.Descriptor); // error details are Any(ErrorInfo)
+                o.JsonSettings.WriteInt64sAsStrings = true; // proto3 JSON: int64 is a string (version)
+            });
         }
         else
         {
             bloom.AddWorker();
         }
 
-        return builder.Build();
+        var app = builder.Build();
+        if (api)
+        {
+            app.MapGrpcService<PublicService>();
+            app.MapGrpcService<AdminService>();
+        }
+        return app;
     }
 }
