@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft — pending owner review |
+| **Status** | Approved (2026-11-02) |
 | **Date** | 2026-11-02 |
 | **Branch / PR base** | `feat/catalog` → `feat/identity` |
 | **Implements** | [08-catalog](../../../doc/low-level-design/08-catalog.md) (all sections), CAT-R01 … R15, REV-R01 … R08, WAR-R01, LCH-R13, HLD §5, §6, §7.1, HLD-ADR-014 (API/worker split), HLD-ADR-017 |
