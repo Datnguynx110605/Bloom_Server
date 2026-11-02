@@ -8,6 +8,7 @@ using Bloom.Catalog.Domain;
 using Bloom.Catalog.Observability;
 using Bloom.Catalog.Services;
 using Bloom.Catalog.Storage;
+using Bloom.Catalog.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
@@ -92,6 +93,7 @@ public static class CatalogApp
         else
         {
             bloom.AddWorker();
+            builder.Services.AddHostedService<ImageCleanupJob>(); // worker only (plan R6)
         }
 
         var app = builder.Build();
@@ -101,6 +103,7 @@ public static class CatalogApp
             app.MapGrpcService<CustomerService>();
             app.MapGrpcService<AdminService>();
             app.MapGrpcService<InternalService>();
+            app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;
     }
