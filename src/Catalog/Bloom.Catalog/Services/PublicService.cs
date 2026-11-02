@@ -17,7 +17,7 @@ public sealed class PublicService(CatalogDbContext db, CatalogCache cache, Catal
     public override async Task<ListCategoriesResponse> ListCategories(Empty request, ServerCallContext context)
     {
         var started = Stopwatch.GetTimestamp();
-        var tree = await cache.GetAsync(CatalogCache.CategoriesKey, ListCategoriesResponse.Parser);
+        var (tree, failed) = await cache.GetAsync(CatalogCache.CategoriesKey, ListCategoriesResponse.Parser);
         var hit = tree is not null;
         if (tree is null)
         {
@@ -35,7 +35,7 @@ public sealed class PublicService(CatalogDbContext db, CatalogCache cache, Catal
                     }),
                 },
             };
-            await cache.SetAsync(CatalogCache.CategoriesKey, tree);
+            if (!failed) await cache.SetAsync(CatalogCache.CategoriesKey, tree);
         }
         metrics.Read("list_categories", hit, Stopwatch.GetElapsedTime(started).TotalSeconds);
         return tree;

@@ -9,6 +9,9 @@ public class CategoryTests(Containers containers)
     private const string Public = "/api/catalog/categories";
     private static readonly TestCaller Manager = TestCaller.Staff("catalog_manager");
 
+    /// <summary>A SET or SETEX command in the RESP bytes a client sent (the handshake's CLIENT SETNAME has another length).</summary>
+    private static readonly System.Text.RegularExpressions.Regex Set = new(@"\$(3\r\nSET|5\r\nSETEX)\r\n");
+
     private static Task<HttpResponseMessage> CreateAsync(TestCatalog t, string name, string slug, string? parentId = null, TestCaller? caller = null) =>
         t.SendAsync(HttpMethod.Post, Admin, new { parentId, name, slug, sortOrder = 0 }, caller ?? Manager);
 
@@ -170,6 +173,32 @@ public class CategoryTests(Containers containers)
         await (await CreateAsync(t, "Created", "created")).OkJsonAsync();
 
         Assert.Contains(t.Logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("Cache invalidation failed"));
+        await using var db = t.NewDb();
+        Assert.Equal(2, db.Categories.Count());
+    }
+
+    [Fact]
+    public async Task Redis_connected_but_not_answering_reads_and_writes_still_work_and_a_failed_read_does_no_SET()
+    {
+        var redis = StackExchange.Redis.ConfigurationOptions.Parse(containers.RedisConnectionString(0));
+        var upstream = System.Net.IPEndPoint.Parse(redis.EndPoints[0].ToString()!);
+        using var proxy = new StallableProxy(upstream.Address.ToString(), upstream.Port);
+        await using var t = await TestCatalog.StartAsync(containers,
+            o => o.Config["Catalog:Redis"] = $"127.0.0.1:{proxy.Port},defaultDatabase={containers.NextRedisDatabase()}");
+        await (await CreateAsync(t, "Before", "before")).OkJsonAsync(); // connects through the proxy
+        await (await t.SendAsync(HttpMethod.Get, Public)).OkJsonAsync(); // healthy: GET miss, then SET
+        Assert.Matches(Set, proxy.Received); // StackExchange.Redis writes a value with expiry as SETEX
+
+        proxy.Stalled = true;
+        proxy.Reset();
+        var tree = (await (await t.SendAsync(HttpMethod.Get, Public)).OkJsonAsync()).GetProperty("categories");
+        Assert.Equal("Before", Assert.Single(tree.EnumerateArray()).GetProperty("name").GetString());
+        Assert.Contains("GET\r\n", proxy.Received);
+        Assert.DoesNotMatch(Set, proxy.Received); // R10: a failed read is a miss without SET
+
+        await (await CreateAsync(t, "During", "during")).OkJsonAsync(); // commit succeeds; the failed DEL is only logged
+        Assert.Contains(t.Logs.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("Cache invalidation failed")
+            && e.Message.Contains("RedisTimeoutException"));
         await using var db = t.NewDb();
         Assert.Equal(2, db.Categories.Count());
     }
