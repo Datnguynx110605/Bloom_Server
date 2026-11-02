@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Bloom.Catalog.Context;
 using Bloom.Catalog.Data;
+using Bloom.Catalog.Domain;
 using Bloom.Catalog.Errors;
 using Bloom.Catalog.Validation;
 using Bloom.Catalog.V1;
@@ -16,11 +17,6 @@ namespace Bloom.Catalog.Services;
 public sealed partial class AdminService
 {
     private const string ProductSlugIndex = "ux_products_slug";
-
-    /// <summary>The <c>specs</c> jsonb shape of 08-catalog §4.1: <c>[{group, items: [{label, value}]}]</c>.</summary>
-    private sealed record SpecItemJson(string Label, string Value);
-
-    private sealed record SpecGroupJson(string Group, List<SpecItemJson> Items);
 
     /// <summary>The kind-independent product fields after validation; <see cref="SpecsJson"/> is what goes into the jsonb column.</summary>
     private sealed record ProductFields(string Name, string Slug, string DescriptionMd, string DescriptionHtml, List<SpecGroupJson> Specs)
@@ -77,7 +73,7 @@ public sealed partial class AdminService
         Diff("name", row.Name, fields.Name, row.Name != fields.Name);
         Diff("slug", row.Slug, fields.Slug, row.Slug != fields.Slug);
         Diff("descriptionMd", row.DescriptionMd, fields.DescriptionMd, row.DescriptionMd != fields.DescriptionMd);
-        var wasSpecs = ParseSpecs(row.Specs);
+        var wasSpecs = ProductSpecs.Parse(row.Specs);
         Diff("specs", wasSpecs, fields.Specs, JsonSerializer.Serialize(wasSpecs, JsonSerializerOptions.Web) != fields.SpecsJson);
         Diff("serialized", row.Serialized, request.Serialized, row.Serialized != request.Serialized);
         Diff("coverageMonths", row.CoverageMonths, request.CoverageMonths, row.CoverageMonths != request.CoverageMonths);
@@ -218,9 +214,6 @@ public sealed partial class AdminService
     private async Task<Guid> RequireCategoryAsync(string rawId, CancellationToken ct) =>
         Guid.TryParse(rawId, out var id) && await db.Categories.AnyAsync(c => c.Id == id, ct) ? id : throw CatalogErrors.NotFoundError("Category");
 
-    private static List<SpecGroupJson> ParseSpecs(string json) =>
-        JsonSerializer.Deserialize<List<SpecGroupJson>>(json, JsonSerializerOptions.Web) ?? [];
-
     /// <summary>The whole product as staff see it: every SKU and image, Markdown and HTML, plan eligibility.</summary>
     private async Task<AdminProduct> LoadProductAsync(Guid id, CancellationToken ct)
     {
@@ -246,8 +239,7 @@ public sealed partial class AdminService
         };
         if (p.PublishedAt is { } publishedAt) result.PublishedAt = Timestamp.FromDateTimeOffset(publishedAt);
         if (p.MinPriceCents is { } min) result.MinPriceCents = min;
-        result.Specs.AddRange(ParseSpecs(p.Specs).Select(g =>
-            new SpecGroup { Group = g.Group, Items = { g.Items.Select(i => new SpecItem { Label = i.Label, Value = i.Value }) } }));
+        result.Specs.AddRange(ProductSpecs.ToProto(p.Specs));
         result.Options.AddRange(types.Select(t => new OptionType
         {
             Id = t.Id.ToString(), Name = t.Name, Position = t.Position,
@@ -257,7 +249,7 @@ public sealed partial class AdminService
             ToProto(s, links.Where(l => l.SkuId == s.Id).OrderBy(l => valueType[l.OptionValueId]).Select(l => l.OptionValueId))));
         result.Images.AddRange(images.Select(i => new Image
         {
-            Id = i.Id.ToString(), Url = $"{options.Storage.PublicBaseUrl}/{i.StorageKey}", AltText = i.AltText ?? "", SkuId = i.SkuId?.ToString() ?? "",
+            Id = i.Id.ToString(), Url = imageStore.PublicUrl(i.StorageKey), AltText = i.AltText ?? "", SkuId = i.SkuId?.ToString() ?? "",
             Position = i.Position, Status = i.Status,
         }));
         result.EligibleProductIds.AddRange(eligible.Select(e => e.ToString()));

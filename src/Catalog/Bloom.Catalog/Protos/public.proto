@@ -4,6 +4,7 @@ package bloom.catalog.v1;
 
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 import "Protos/common.proto";
 
 option csharp_namespace = "Bloom.Catalog.V1";
@@ -13,9 +14,60 @@ service CatalogPublic {
   rpc ListCategories(google.protobuf.Empty) returns (ListCategoriesResponse) {
     option (google.api.http) = { get: "/api/catalog/categories" };
   }
+  // By id or, with `slug`, by slug. Only a publicly visible physical product (NOT_FOUND otherwise).
+  rpc GetProduct(GetProductRequest) returns (ProductView) {
+    option (google.api.http) = {
+      get: "/api/catalog/products/{id}"
+      additional_bindings { get: "/api/catalog/products/by-slug/{slug}" }
+    };
+  }
 }
 
 // The two-level tree, ordered by sort_order, then name.
 message ListCategoriesResponse {
   repeated Category categories = 1;
+}
+
+message GetProductRequest {
+  string id = 1;
+  string slug = 2;
+}
+
+// 08-catalog §4: what the storefront shows. No Markdown source, no serialized flags, no inactive SKUs, no pending images.
+message ProductView {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string category_id = 4;
+  string description_html = 5;
+  repeated SpecGroup specs = 6;
+  repeated OptionType options = 7;
+  repeated PublicSku skus = 8; // active only
+  repeated Image images = 9; // ready only, by position; `status` left empty
+  optional int64 min_price_cents = 10; // absent when no SKU is active
+  double rating_average = 11;
+  int32 rating_count = 12;
+  optional Launch launch = 13;
+  repeated WarrantyPlan warranty_plans = 14;
+  google.protobuf.Timestamp published_at = 15;
+}
+
+message PublicSku {
+  string id = 1;
+  string code = 2;
+  repeated string option_value_ids = 3; // in option type order
+  int64 price_cents = 4;
+}
+
+message Launch {
+  string launch_id = 1;
+  string stage = 2;
+}
+
+message WarrantyPlan {
+  string product_id = 1;
+  string name = 2;
+  int32 coverage_months = 3;
+  string sku_id = 4;
+  int64 price_cents = 5;
 }

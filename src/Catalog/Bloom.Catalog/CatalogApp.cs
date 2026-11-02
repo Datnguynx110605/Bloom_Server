@@ -6,6 +6,7 @@ using Bloom.Catalog.Data;
 using Bloom.Catalog.Domain;
 using Bloom.Catalog.Observability;
 using Bloom.Catalog.Services;
+using Bloom.Catalog.Storage;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -44,6 +45,8 @@ public static class CatalogApp
         builder.Services.AddScoped<Audit>();
         builder.Services.AddScoped<ProductDerived>();
         builder.Services.AddSingleton<MarkdownRenderer>();
+        builder.Services.AddSingleton<ImageStore>();
+        builder.Services.AddScoped<ProductViews>();
         var bloom = builder.Services.AddBloom<CatalogDbContext>(o =>
         {
             o.ServiceName = "catalog";

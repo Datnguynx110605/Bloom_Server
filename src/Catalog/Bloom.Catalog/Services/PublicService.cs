@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Bloom.Catalog.Caching;
 using Bloom.Catalog.Data;
+using Bloom.Catalog.Errors;
 using Bloom.Catalog.Observability;
 using Bloom.Catalog.V1;
 using Google.Protobuf.WellKnownTypes;
@@ -12,7 +13,7 @@ using CategoryRow = Bloom.Catalog.Data.Category;
 namespace Bloom.Catalog.Services;
 
 /// <summary>LLD 08-catalog §3 component <c>Public API</c>; anonymous callers allowed.</summary>
-public sealed class PublicService(CatalogDbContext db, CatalogCache cache, CatalogMetrics metrics) : CatalogPublic.CatalogPublicBase
+public sealed class PublicService(CatalogDbContext db, CatalogCache cache, CatalogMetrics metrics, ProductViews views) : CatalogPublic.CatalogPublicBase
 {
     public override async Task<ListCategoriesResponse> ListCategories(Empty request, ServerCallContext context)
     {
@@ -39,6 +40,28 @@ public sealed class PublicService(CatalogDbContext db, CatalogCache cache, Catal
         }
         metrics.Read("list_categories", hit, Stopwatch.GetElapsedTime(started).TotalSeconds);
         return tree;
+    }
+
+    public override async Task<ProductView> GetProduct(GetProductRequest request, ServerCallContext context)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var ct = context.CancellationToken;
+        Guid? id = request.Id != ""
+            ? Guid.TryParse(request.Id, out var parsed) ? parsed : null
+            : await db.Products.AsNoTracking().Where(p => p.Slug == request.Slug).Select(p => (Guid?)p.Id).SingleOrDefaultAsync(ct);
+
+        ProductView? view = null;
+        var hit = false;
+        if (id is { } productId)
+        {
+            var key = CatalogCache.ProductKey(productId);
+            var (cached, failed) = await cache.GetAsync(key, ProductView.Parser);
+            hit = cached is not null;
+            view = cached ?? await views.LoadPublicAsync(productId, ct);
+            if (view is not null && !hit && !failed) await cache.SetAsync(key, view);
+        }
+        metrics.Read("get_product", hit, Stopwatch.GetElapsedTime(started).TotalSeconds);
+        return view ?? throw CatalogErrors.NotFoundError("Product");
     }
 
     internal static Category ToProto(CategoryRow c) => new()

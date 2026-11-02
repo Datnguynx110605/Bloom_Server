@@ -36,6 +36,13 @@ public sealed class MetricCapture : IDisposable
         lock (_all) return Matching(name, tags).Count();
     }
 
+    /// <summary>The newest value of an observable gauge carrying all <paramref name="tags"/>; polls the gauges first.</summary>
+    public double Latest(string name, params (string Tag, string Value)[] tags)
+    {
+        _listener.RecordObservableInstruments();
+        lock (_all) return Matching(name, tags).Last().Value;
+    }
+
     public void Dispose() => _listener.Dispose();
 
     private IEnumerable<(string Name, Dictionary<string, object?> Tags, double Value)> Matching(string name, (string Tag, string Value)[] tags) =>
