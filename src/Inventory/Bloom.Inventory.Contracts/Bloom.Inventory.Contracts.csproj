@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Protobuf Include="Protos\inventory_internal.proto" GrpcServices="Both" />
   </ItemGroup>
 
   <ItemGroup>

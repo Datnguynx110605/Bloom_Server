@@ -1,5 +1,7 @@
+using Bloom.Inventory.Contracts;
 using Bloom.Inventory.Data;
 using Microsoft.AspNetCore.Builder;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -25,7 +27,20 @@ public sealed class TestInventory : IAsyncDisposable
 {
     private readonly WebApplication _app;
 
-    private TestInventory(WebApplication app) => _app = app;
+    private readonly GrpcChannel _channel;
+
+    private TestInventory(WebApplication app, GrpcChannel channel)
+    {
+        _app = app;
+        _channel = channel;
+        Stock = new InventoryStock.InventoryStockClient(channel);
+        Packing = new InventoryPacking.InventoryPackingClient(channel);
+    }
+
+    /// <summary>The internal gRPC APIs, called in-process (plan R1).</summary>
+    public InventoryStock.InventoryStockClient Stock { get; }
+
+    public InventoryPacking.InventoryPackingClient Packing { get; }
 
     public required HttpClient Http { get; init; }
 
@@ -73,7 +88,8 @@ public sealed class TestInventory : IAsyncDisposable
             await db.Database.MigrateAsync(); // as the database owner (plan R2)
         }
         await app.StartAsync();
-        return new TestInventory(app)
+        var server = app.GetTestServer();
+        return new TestInventory(app, GrpcChannel.ForAddress(server.BaseAddress, new() { HttpHandler = server.CreateHandler() }))
         {
             Http = app.GetTestClient(),
             Catalog = catalog,
@@ -92,6 +108,7 @@ public sealed class TestInventory : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Http.Dispose();
+        _channel.Dispose();
         await _app.DisposeAsync();
         await Catalog.DisposeAsync();
     }

@@ -63,6 +63,7 @@ public static class InventoryApp
         if (api)
         {
             app.MapGrpcService<WarehouseService>();
+            app.MapGrpcService<StockService>(); // internal, no HTTP route (spec §6)
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;
