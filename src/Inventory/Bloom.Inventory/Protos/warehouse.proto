@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package bloom.inventory.v1;
+
+import "google/api/annotations.proto";
+
+option csharp_namespace = "Bloom.Inventory.V1";
+
+// 02-inventory §5.1, Warehouse API: staff only, transcoded to JSON under /api/admin/inventory.
+service InventoryWarehouse {
+  // warehouse, admin. Requires an Idempotency-Key header.
+  rpc RecordGoodsReceipt(RecordGoodsReceiptRequest) returns (RecordGoodsReceiptResponse) {
+    option (google.api.http) = { post: "/api/admin/inventory/receipts" body: "*" };
+  }
+}
+
+message RecordGoodsReceiptRequest {
+  string note = 1;
+  repeated ReceiptLine lines = 2;
+}
+
+// `imeis[i]` belongs to `serials[i]`; `imeis` is empty or as long as `serials`.
+message ReceiptLine {
+  string sku_id = 1;
+  int32 quantity = 2;
+  repeated string serials = 3;
+  repeated string imeis = 4;
+}
+
+message RecordGoodsReceiptResponse {
+  string receipt_id = 1;
+}

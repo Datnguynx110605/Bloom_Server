@@ -1,6 +1,8 @@
 using Bloom.Catalog.Contracts;
 using Bloom.Inventory.Data;
+using Bloom.Inventory.Domain;
 using Bloom.Inventory.Observability;
+using Bloom.Inventory.Services;
 using Bloom.Shared;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
@@ -38,6 +40,10 @@ public static class InventoryApp
             o.ServiceName = "inventory";
             o.RabbitMqUri = options.RabbitMq;
         });
+        builder.Services.AddScoped<Ledger>();
+        builder.Services.AddScoped<StockLocks>();
+        builder.Services.AddScoped<Allocator>();
+        builder.Services.AddScoped<Audit>();
         builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
 
         if (api)
@@ -54,7 +60,11 @@ public static class InventoryApp
         }
 
         var app = builder.Build();
-        if (api) app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
+        if (api)
+        {
+            app.MapGrpcService<WarehouseService>();
+            app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
+        }
         return app;
     }
 }
