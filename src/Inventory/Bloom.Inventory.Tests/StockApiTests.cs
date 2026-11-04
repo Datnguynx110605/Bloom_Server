@@ -123,6 +123,42 @@ public class StockApiTests(Containers containers)
     }
 
     [Fact]
+    public async Task Concurrent_duplicates_taking_the_last_units_are_all_ok()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (a, b) = (Seed.Sku(t), Seed.Sku(t));
+        await Seed.ReceiveAsync(t, a, 2);
+        await Seed.ReceiveAsync(t, b, 3); // exactly one request's worth: a duplicate that loses the race finds nothing left
+        var order = Guid.CreateVersion7();
+
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(async _ =>
+            await t.Stock.ReserveStockAsync(Reserve(order, Line(a, 2), Line(b, 3)), cancellationToken: Ct)));
+
+        Assert.Equal((2, 3), ((await Seed.ItemAsync(t, a))!.Reserved, (await Seed.ItemAsync(t, b))!.Reserved));
+        Assert.Single(await Seed.LedgerAsync(t, a), e => e.EntryType == "reserved");
+        Assert.Single(await Seed.LedgerAsync(t, b), e => e.EntryType == "reserved");
+        Assert.Equal(20, metrics.Sum("reserve_total", ("result", "ok")));
+        Assert.Equal(0, metrics.Sum("reserve_total", ("result", "sold_out")));
+    }
+
+    [Fact]
+    public async Task Concurrent_reship_duplicates_taking_the_last_units_are_all_ok()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 2);
+        var (reship, order) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(async _ =>
+            await t.Stock.CommitForReshipAsync(Reship(reship, order, Line(sku, 2)), cancellationToken: Ct)));
+
+        var item = (await Seed.ItemAsync(t, sku))!;
+        Assert.Equal((0, 2), (item.OnHand, item.Committed));
+        Assert.Single(await Seed.LedgerAsync(t, sku), e => e.EntryType == "committed");
+    }
+
+    [Fact]
     public async Task Same_order_with_other_lines_is_RESERVATION_CONFLICT()
     {
         await using var t = await TestInventory.StartAsync(containers);

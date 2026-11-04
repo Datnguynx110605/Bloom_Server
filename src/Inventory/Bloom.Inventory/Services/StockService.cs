@@ -73,7 +73,7 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
     /// <summary>
     /// Plan R9, R21. Compares with the allocations already held under <paramref name="refId"/>, then runs the guarded updates one SKU at a time in
     /// ascending <c>sku_id</c> (the update takes the row lock, so every writer locks in the same order), then inserts the allocations and ledger rows.
-    /// A concurrent duplicate loses on the allocation key; it rolls back and compares once more.
+    /// A concurrent duplicate loses on the allocation key, or on a shortage the winner caused; it rolls back and compares once more.
     /// </summary>
     private async Task CommitAsync(Guid refId, Guid orderId, List<(Guid SkuId, int Quantity)> lines, string kind, string status, CancellationToken ct)
     {
@@ -89,6 +89,7 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
             }
 
             var now = clock.GetUtcNow();
+            RpcException? shortage = null;
             foreach (var (skuId, q) in sorted)
             {
                 var changed = kind == AllocationKinds.Reship
@@ -101,9 +102,16 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
                         WHERE sku_id = {skuId} AND on_hand - reserved >= {q}
                         """, ct);
                 if (changed > 0) continue;
-                throw await db.StockItems.AnyAsync(i => i.SkuId == skuId, ct)
+                shortage = await db.StockItems.AnyAsync(i => i.SkuId == skuId, ct)
                     ? InventoryErrors.SoldOut(skuId)
                     : InventoryErrors.Error(InventoryErrors.SkuNotStocked, "The SKU has never been received.");
+                break;
+            }
+            if (shortage is not null)
+            {
+                // A concurrent duplicate that took the last units makes this update match nothing: roll back and compare once more, so a replay is ok, not sold out.
+                if (attempt == 0) continue;
+                throw shortage;
             }
 
             foreach (var (skuId, q) in sorted)
