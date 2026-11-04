@@ -10,7 +10,7 @@ namespace Bloom.Inventory.Tests;
 public class AdjustmentTests(Containers containers)
 {
     private const string Path = "/api/admin/inventory/adjustments";
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static Task<HttpResponseMessage> AdjustAsync(TestInventory t, Guid sku, int delta, string reason, string note = "counted",
         string? serial = null, string[]? newSerials = null, string[]? newImeis = null, TestCaller? caller = null, Guid? key = null) =>
@@ -189,6 +189,7 @@ public class AdjustmentTests(Containers containers)
         using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.LostInWarehouse)) await ExpectValidationAsync(r, "reason_code");
         using (var r = await AdjustAsync(t, sku, 1, "miscounted")) await ExpectValidationAsync(r, "reason_code");
         using (var r = await AdjustAsync(t, sku, 0, ReasonCodes.Other)) await ExpectValidationAsync(r, "delta");
+        using (var r = await AdjustAsync(t, sku, int.MinValue, ReasonCodes.Other)) await ExpectValidationAsync(r, "delta");
         using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: "")) await ExpectValidationAsync(r, "note");
         using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: "   ")) await ExpectValidationAsync(r, "note");
         using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: new string('x', 501))) await ExpectValidationAsync(r, "note");

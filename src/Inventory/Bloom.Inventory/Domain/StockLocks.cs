@@ -14,8 +14,8 @@ public sealed class StockLocks(InventoryDbContext db)
     {
         var ids = skuIds.Distinct().ToArray();
         // Both halves of the uuid, so UUIDv7 ids created in the same millisecond still get distinct keys. A collision only over-serializes; ascending key order keeps it deadlock-free.
-        var keys = ids.Select(id => { var b = id.ToByteArray(bigEndian: true); return BitConverter.ToInt64(b, 0) ^ BitConverter.ToInt64(b, 8); }).Distinct().ToArray();
-        await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock(s.k) FROM (SELECT k FROM unnest({keys}) AS k ORDER BY k OFFSET 0) AS s", ct);
+        var keys = ids.Select(id => { var b = id.ToByteArray(bigEndian: true); return BitConverter.ToInt64(b, 0) ^ BitConverter.ToInt64(b, 8); }).Distinct().Order();
+        foreach (var key in keys) await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({key})", ct); // one statement per key: the order is ours, not the planner's
         return (await db.StockItems.FromSql($"SELECT * FROM stock_items WHERE sku_id = ANY({ids}) ORDER BY sku_id FOR UPDATE").AsNoTracking().ToListAsync(ct))
             .ToDictionary(i => i.SkuId);
     }

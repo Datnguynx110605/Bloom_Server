@@ -9,7 +9,7 @@ namespace Bloom.Inventory.Tests;
 
 public class OrderPaidTests(Containers containers)
 {
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static OrderPaidV1 Paid(Guid orderId, Guid? launchId, DateTimeOffset paidAt, params (Guid Sku, int Quantity)[] lines) =>
         new(orderId, "BL-1", Guid.CreateVersion7(), launchId, paidAt, 1000, lines.Select(l => new OrderPaidLineV1(l.Sku, l.Quantity)).ToList());
@@ -126,6 +126,19 @@ public class OrderPaidTests(Containers containers)
         Assert.Equal(AllocationStatuses.Committed, Assert.Single(await AllocationsAsync(t, orderId)).Status);
         Assert.Equal(EntryTypes.BackorderAllocated, (await Seed.LedgerAsync(t, sku)).Last().EntryType);
         Assert.Equal(orderId, Assert.Single(await Outbox.PayloadsAsync<StockAllocatedV1>(t, InventoryMessages.StockAllocated)).OrderId);
+    }
+
+    [Fact]
+    public async Task Preorder_paid_with_a_non_utc_offset_is_stored_in_utc()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        var orderId = Guid.CreateVersion7();
+        var paidAt = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.FromHours(7));
+
+        await PaidAsync(t, Paid(orderId, Guid.CreateVersion7(), paidAt, (sku, 1)));
+
+        Assert.Equal(paidAt, Assert.Single(await AllocationsAsync(t, orderId)).PaidAt);
     }
 
     [Fact]

@@ -106,7 +106,7 @@ public sealed partial class WarehouseService
     private static Adjustment ValidateAdjustment(AdjustStockRequest r)
     {
         if (!Guid.TryParseExact(r.SkuId, "D", out var skuId)) throw InventoryErrors.Validation("sku_id", "The SKU id must be a UUID.");
-        if (r.Delta == 0) throw InventoryErrors.Validation("delta", "The delta must not be zero.");
+        if (r.Delta is 0 or int.MinValue) throw InventoryErrors.Validation("delta", "The delta must not be zero or int.MinValue."); // |int.MinValue| overflows
         if (!(r.Delta < 0 ? DecreaseReasons : IncreaseReasons).Contains(r.ReasonCode))
             throw InventoryErrors.Validation("reason_code", $"The reason code is not allowed for {(r.Delta < 0 ? "a decrease" : "an increase")}.");
         var note = r.Note.Trim();

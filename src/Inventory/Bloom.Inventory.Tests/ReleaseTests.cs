@@ -8,7 +8,7 @@ namespace Bloom.Inventory.Tests;
 
 public class ReleaseTests(Containers containers)
 {
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static Task ReleaseAsync(TestInventory t, Guid orderId) =>
         Consume.Async<ReleaseReservationConsumer>(t, InventoryMessages.ReleaseReservation, new ReleaseReservationV1(orderId));

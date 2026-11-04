@@ -20,9 +20,16 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
         var orderId = envelope.GetPayload<ReleaseReservationV1>().OrderId;
 
         // Lock first, then read the statuses: a payment or shipment racing this release has finished by the time the lock is ours.
-        var skus = await db.StockAllocations.AsNoTracking().Where(a => a.OrderId == orderId).Select(a => a.SkuId).Distinct().ToListAsync(ct);
-        await locks.LockAsync(skus, ct);
-        var allocations = await db.StockAllocations.AsNoTracking().Where(a => a.OrderId == orderId).OrderBy(a => a.SkuId).ToListAsync(ct);
+        // A reship may add a SKU between the read and the lock; lock the union and read again until the set is stable (advisory locks are re-entrant).
+        var locked = new HashSet<Guid>();
+        List<StockAllocation> allocations;
+        while (true)
+        {
+            allocations = await db.StockAllocations.AsNoTracking().Where(a => a.OrderId == orderId).OrderBy(a => a.SkuId).ToListAsync(ct);
+            if (allocations.All(a => locked.Contains(a.SkuId))) break;
+            locked.UnionWith(allocations.Select(a => a.SkuId));
+            await locks.LockAsync(locked, ct);
+        }
 
         var now = clock.GetUtcNow();
         var freed = new SortedSet<Guid>();

@@ -8,7 +8,7 @@ namespace Bloom.Inventory.Tests;
 public class WarehouseReadTests(Containers containers)
 {
     private const string Base = "/api/admin/inventory";
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     public static TheoryData<string, string, bool> RoleMatrix()
     {

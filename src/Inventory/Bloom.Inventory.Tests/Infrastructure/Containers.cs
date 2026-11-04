@@ -55,5 +55,5 @@ public sealed class Containers : IAsyncLifetime
 
     /// <summary>The same database as <paramref name="ownerConnectionString"/>, as the app role.</summary>
     public static string AsAppRole(string ownerConnectionString) =>
-        new NpgsqlConnectionStringBuilder(ownerConnectionString) { Username = AppRole, Password = AppPassword }.ConnectionString;
+        new NpgsqlConnectionStringBuilder(ownerConnectionString) { Username = AppRole, Password = AppPassword, MaxPoolSize = 200 }.ConnectionString; // I06 holds 101 concurrent callers; the default pool of 100 would starve one
 }

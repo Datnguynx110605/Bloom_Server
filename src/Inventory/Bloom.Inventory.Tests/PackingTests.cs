@@ -10,7 +10,7 @@ namespace Bloom.Inventory.Tests;
 
 public class PackingTests(Containers containers)
 {
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static readonly string[] Serials = ["ABC123", "ABC124", "ABC125"];
 

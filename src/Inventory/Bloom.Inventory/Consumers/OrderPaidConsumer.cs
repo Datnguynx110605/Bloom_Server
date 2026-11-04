@@ -57,7 +57,7 @@ public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, A
         foreach (var (skuId, q) in lines)
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO stock_allocations (ref_id, sku_id, order_id, kind, quantity, status, paid_at, version, created_at, updated_at)
-                VALUES ({paid.OrderId}, {skuId}, {paid.OrderId}, {AllocationKinds.Preorder}, {q}, {AllocationStatuses.Backordered}, {paid.PaidAt}, 0, {now}, {now})
+                VALUES ({paid.OrderId}, {skuId}, {paid.OrderId}, {AllocationKinds.Preorder}, {q}, {AllocationStatuses.Backordered}, {paid.PaidAt.ToUniversalTime()}, 0, {now}, {now})
                 ON CONFLICT (ref_id, sku_id) DO NOTHING
                 """, ct);
         foreach (var (skuId, _) in lines) await allocator.RunAsync(skuId, ct);

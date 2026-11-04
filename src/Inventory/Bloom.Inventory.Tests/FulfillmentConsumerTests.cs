@@ -10,7 +10,7 @@ namespace Bloom.Inventory.Tests;
 
 public class FulfillmentConsumerTests(Containers containers)
 {
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static StockLine Line(Guid sku, int quantity) => new() { SkuId = sku.ToString(), Quantity = quantity };
 

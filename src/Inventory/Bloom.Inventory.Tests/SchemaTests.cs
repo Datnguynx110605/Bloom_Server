@@ -6,7 +6,7 @@ namespace Bloom.Inventory.Tests;
 
 public class SchemaTests(Containers containers)
 {
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static StockItem NewStockItem(int onHand = 5) => new() { SkuId = Guid.CreateVersion7(), ProductId = Guid.CreateVersion7(), OnHand = onHand, UpdatedAt = DateTimeOffset.UtcNow };
 
