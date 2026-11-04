@@ -14,6 +14,7 @@ public sealed class MetricCapture : IDisposable
         var factory = services.GetRequiredService<IMeterFactory>();
         _listener.InstrumentPublished = (i, l) => { if (ReferenceEquals(i.Meter.Scope, factory)) l.EnableMeasurementEvents(i); };
         _listener.SetMeasurementEventCallback<long>((i, v, tags, _) => Add(i, v, tags));
+        _listener.SetMeasurementEventCallback<int>((i, v, tags, _) => Add(i, v, tags)); // the per-SKU gauges
         _listener.SetMeasurementEventCallback<double>((i, v, tags, _) => Add(i, v, tags));
         _listener.Start();
 

@@ -4,6 +4,7 @@ using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Inventory.Observability;
 using Bloom.Inventory.Services;
+using Bloom.Inventory.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
@@ -65,6 +66,7 @@ public static class InventoryApp
         else
         {
             bloom.AddWorker(); // worker only (plan R6)
+            builder.Services.AddHostedService<StockMonitor>();
         }
 
         var app = builder.Build();
