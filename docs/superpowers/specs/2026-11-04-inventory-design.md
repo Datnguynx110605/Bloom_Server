@@ -126,7 +126,7 @@ No edit under `doc/` is made in this project (AGENTS.md §9). For the owner to a
 4. 02-inventory §5.4: add `NOT_FOUND`, `VALIDATION_FAILED`, `ROLE_NOT_ALLOWED`; note the extra cases for `NOT_COMMITTED`, `SERIAL_NOT_AVAILABLE`, `SKU_NOT_STOCKED`.
 5. 02-inventory §6.3: the (a) → lock → (c) validation order of §4, and that a rejected first receipt may leave the SKU locked in catalog.
 6. 02-inventory §5.1 `GetLedger`: `from` / `to`, paging, newest first (§6).
-7. 02-inventory §5.1: `RecordGoodsReceipt` and `AdjustStock` require an `Idempotency-Key` (00-reliability §7.4); §5.4 lists the shared `IDEMPOTENCY_KEY_*` reasons.
+7. 02-inventory §5.1: `RecordGoodsReceipt` and `AdjustStock` require an `Idempotency-Key` (00-reliability §7.4, single-transaction form); §5.4 lists the shared `IDEMPOTENCY_KEY_*` reasons. 00-reliability §7.4 "Applies to": add stock-changing staff operations (goods receipt, stock adjustment) next to the money-moving ones.
 
 ## 10. Left to the builder
 
