@@ -1,4 +1,5 @@
 using Bloom.Catalog.Contracts;
+using Bloom.Inventory.Consumers;
 using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Inventory.Observability;
@@ -40,6 +41,8 @@ public static class InventoryApp
             o.ServiceName = "inventory";
             o.RabbitMqUri = options.RabbitMq;
         });
+        // Both modes: the DLQ admin of the API needs the consumer catalog as much as the worker does (plan R6).
+        bloom.AddConsumer<OrderPaidConsumer>("order-paid", OrderPaidConsumer.Bindings);
         builder.Services.AddScoped<Ledger>();
         builder.Services.AddScoped<StockLocks>();
         builder.Services.AddScoped<Allocator>();
