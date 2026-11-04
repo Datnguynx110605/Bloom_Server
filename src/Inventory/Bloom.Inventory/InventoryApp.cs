@@ -44,6 +44,10 @@ public static class InventoryApp
         // Both modes: the DLQ admin of the API needs the consumer catalog as much as the worker does (plan R6).
         bloom.AddConsumer<OrderPaidConsumer>("order-paid", OrderPaidConsumer.Bindings);
         bloom.AddConsumer<ReleaseReservationConsumer>("release-reservation", ReleaseReservationConsumer.Bindings);
+        bloom.AddConsumer<ShipmentShippedConsumer>("shipment-shipped", ShipmentShippedConsumer.Bindings);
+        bloom.AddConsumer<CustomerReturnConsumer>("receive-customer-return", CustomerReturnConsumer.Bindings);
+        bloom.AddConsumer<ReturnedToSenderConsumer>("receive-returned-to-sender", ReturnedToSenderConsumer.Bindings);
+        bloom.AddConsumer<LostInTransitConsumer>("mark-lost-in-transit", LostInTransitConsumer.Bindings);
         builder.Services.AddScoped<Ledger>();
         builder.Services.AddScoped<StockLocks>();
         builder.Services.AddScoped<Allocator>();
