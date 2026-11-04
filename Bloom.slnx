@@ -14,6 +14,10 @@
     <Project Path="src/Identity/Bloom.Identity.Tests/Bloom.Identity.Tests.csproj" />
     <Project Path="src/Identity/Bloom.Identity/Bloom.Identity.csproj" />
   </Folder>
+  <Folder Name="/src/Inventory/">
+    <Project Path="src/Inventory/Bloom.Inventory.Tests/Bloom.Inventory.Tests.csproj" />
+    <Project Path="src/Inventory/Bloom.Inventory/Bloom.Inventory.csproj" />
+  </Folder>
   <Folder Name="/src/Launch/">
     <Project Path="src/Launch/Bloom.Launch.Contracts/Bloom.Launch.Contracts.csproj" />
   </Folder>
