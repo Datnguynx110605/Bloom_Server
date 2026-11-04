@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
+| **Status** | Approved (2026-11-05) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R18), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
 | **HLD** | [high-level-design.md §5, §8.1 – §8.3, §8.5](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-013 |
@@ -174,7 +174,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 
 | Message | When | Key payload |
 |---|---|---|
-| `order.paid.v1` | Payment confirmed (any order) | `orderId`, `orderNumber`, `accountId`, `launchId?`, `paidAt`, `totalCents`, `lines[{skuId, quantity}]` |
+| `order.paid.v1` | Payment confirmed (any order) | `orderId`, `orderNumber`, `accountId`, `launchId?`, `paidAt`, `totalCents`, `lines[{skuId, quantity}]` (product lines only, no warranty plans) |
 | `order.ready-to-fulfill.v1` | Order reaches `paid` | `orderId`, `accountId`, `number`, `shipTo`, `shippingOption`, `shippingCents`, `totalCents`, `lines[{lineNo, kind, skuId, productId, serialized, quantity, parentLineNo, coverageMonths, paidCents, taxCents}]` |
 | `order.cancelled.v1` | Any cancellation | `orderId`, `orderNumber`, `accountId`, `reason` (`customer` \| `support` \| `checkout_expired` \| `checkout_failed` \| `late_payment`) |
 | `order.preorder-delayed.v1` | Launch released while a pre-order still has no stock allocated (once per order, INV-R11) | `orderId`, `orderNumber`, `accountId` |

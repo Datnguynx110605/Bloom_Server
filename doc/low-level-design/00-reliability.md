@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
+| **Status** | Approved (2026-11-05) |
 | **Last updated** | 2026-10-31 |
 | **Component** | Shared reliability library used by every domain service (plumbing only, no domain code) |
 | **HLD** | [high-level-design.md §9.2](../high-level-design/high-level-design.md#92-reliability-patterns), HLD-ADR-005 … 009 |
@@ -246,7 +246,7 @@ Retry and DLQ publishes use publisher confirms. If the host crashes before ACK, 
 
 ### 7.4 Idempotency guard ([LLD-ADR-001](adr/LLD-ADR-001-two-phase-idempotency.md))
 
-**Applies to** money-moving client operations: start checkout, staff refund operations (return decisions, lost-package refunds). Provider callbacks use the provider event ID instead (payment LLD).
+**Applies to** money-moving client operations: start checkout, staff refund operations (return decisions, lost-package refunds), and stock-changing staff operations (goods receipt, stock adjustment). Provider callbacks use the provider event ID instead (payment LLD).
 
 **Input:** `Idempotency-Key` header (UUID string), `user_id` from the trusted identity context, `operation` (fully qualified gRPC method), `request_hash` = SHA-256 of the request message in deterministic protobuf serialization.
 
