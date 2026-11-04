@@ -21,8 +21,8 @@ public sealed partial class WarehouseService
         Caller.From(context).RequireStaff(Caller.StockViewers);
         var ct = context.CancellationToken;
         var (skip, take) = Paging(request.Page, request.PageSize);
-        Guid? productId = request.HasProductId ? ParseId(request.ProductId, "product_id") : null;
-        var skuIds = request.SkuIds.Select(id => ParseId(id, "sku_ids")).ToList();
+        Guid? productId = request.HasProductId ? Inputs.Id(request.ProductId, "product_id") : null;
+        var skuIds = request.SkuIds.Select(id => Inputs.Id(id, "sku_ids")).ToList();
         if (request.HasAvailableAtMost && request.AvailableAtMost < 0) throw InventoryErrors.Validation("available_at_most", "The value must not be negative.");
 
         var items = db.StockItems.AsNoTracking();
@@ -36,7 +36,7 @@ public sealed partial class WarehouseService
         });
         if (request.HasHasBackorders) rows = rows.Where(r => (r.Backordered > 0) == request.HasBackorders);
 
-        var page = skip > int.MaxValue ? [] : await rows.OrderBy(r => r.Item.SkuId).Skip((int)skip).Take(take).ToListAsync(ct);
+        var page = await rows.OrderBy(r => r.Item.SkuId).Skip(skip).Take(take).ToListAsync(ct);
         var response = new ListStockLevelsResponse();
         response.Items.AddRange(page.Select(r => new StockLevel
         {
@@ -53,13 +53,13 @@ public sealed partial class WarehouseService
         Caller.From(context).RequireStaff(Caller.LedgerReaders);
         var ct = context.CancellationToken;
         var (skip, take) = Paging(request.Page, request.PageSize);
-        var skuId = ParseId(request.SkuId, "sku_id");
+        var skuId = Inputs.Id(request.SkuId, "sku_id");
 
         var entries = db.StockLedger.AsNoTracking().Where(e => e.SkuId == skuId);
         if (request.From is { } from) entries = entries.Where(e => e.CreatedAt >= from.ToDateTimeOffset());
         if (request.To is { } to) entries = entries.Where(e => e.CreatedAt < to.ToDateTimeOffset());
 
-        var page = skip > int.MaxValue ? [] : await entries.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.Id).Skip((int)skip).Take(take).ToListAsync(ct);
+        var page = await entries.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.Id).Skip(skip).Take(take).ToListAsync(ct);
         var response = new GetLedgerResponse();
         response.Entries.AddRange(page.Select(ToView));
         return response;
@@ -68,7 +68,7 @@ public sealed partial class WarehouseService
     public override async Task<SerialUnitView> GetSerial(GetSerialRequest request, ServerCallContext context)
     {
         Caller.From(context).RequireStaff(Caller.SerialReaders);
-        var serial = Identifiers.NormalizeSerial(request.Serial) ?? throw InventoryErrors.Validation("serial", "A serial is 1-32 letters or digits.");
+        var serial = Inputs.Serial(request.Serial, "serial");
         var unit = await db.SerialUnits.AsNoTracking().SingleOrDefaultAsync(u => u.Serial == serial, context.CancellationToken)
             ?? throw InventoryErrors.Error(InventoryErrors.NotFound, "No such serial.");
         return new SerialUnitView
@@ -78,17 +78,14 @@ public sealed partial class WarehouseService
         };
     }
 
-    /// <summary>R19: <c>page</c> 0 is 1, <c>page_size</c> 0 is 50 and at most 100. Returns the row offset and the page size.</summary>
-    private static (long Skip, int Take) Paging(int page, int pageSize)
+    /// <summary>R19: <c>page</c> 0 is 1, <c>page_size</c> 0 is 50 and at most 100. Returns the row offset (capped at <c>int.MaxValue</c>, past any real table) and the page size.</summary>
+    private static (int Skip, int Take) Paging(int page, int pageSize)
     {
         if (page < 0) throw InventoryErrors.Validation("page", "The page must not be negative.");
         if (pageSize is < 0 or > MaxPageSize) throw InventoryErrors.Validation("page_size", $"The page size is 1 to {MaxPageSize}.");
         var size = pageSize == 0 ? DefaultPageSize : pageSize;
-        return ((Math.Max(page, 1) - 1L) * size, size);
+        return ((int)Math.Min((Math.Max(page, 1) - 1L) * size, int.MaxValue), size);
     }
-
-    private static Guid ParseId(string value, string field) =>
-        Guid.TryParseExact(value, "D", out var id) ? id : throw InventoryErrors.Validation(field, "The value must be a UUID.");
 
     private static V1.LedgerEntry ToView(LedgerRow e) => new()
     {

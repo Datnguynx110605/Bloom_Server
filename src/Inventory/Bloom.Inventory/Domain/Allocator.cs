@@ -33,7 +33,7 @@ public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter
                 WHERE ref_id = {a.RefId} AND sku_id = {skuId} AND status = {AllocationStatuses.Backordered}
                 """, ct) == 0)
                 throw new InvalidOperationException($"Allocation {a.RefId}/{skuId} left 'backordered' while the SKU row was locked.");
-            ledger.Add(skuId, EntryTypes.BackorderAllocated, new(OnHand: -q, Committed: q), a.Kind == AllocationKinds.Reship ? RefTypes.Reship : RefTypes.Order, a.RefId);
+            ledger.Add(skuId, EntryTypes.BackorderAllocated, new(OnHand: -q, Committed: q), RefTypes.Of(a.Kind), a.RefId);
             metrics.BackorderAllocated((now - a.PaidAt!.Value).TotalSeconds);
             served.Add(a.OrderId);
         }

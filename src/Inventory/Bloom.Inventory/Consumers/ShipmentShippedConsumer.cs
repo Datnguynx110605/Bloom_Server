@@ -48,7 +48,7 @@ public sealed class ShipmentShippedConsumer(InventoryDbContext db, StockLocks lo
                 UPDATE serial_units SET status = {SerialStatuses.Shipped}, version = version + 1, updated_at = {now}
                 WHERE ref_id = {a.RefId} AND sku_id = {a.SkuId} AND status = {SerialStatuses.Assigned}
                 """, ct);
-            ledger.Add(a.SkuId, EntryTypes.Shipped, new(Committed: -q), a.Kind == AllocationKinds.Reship ? RefTypes.Reship : RefTypes.Order, a.RefId);
+            ledger.Add(a.SkuId, EntryTypes.Shipped, new(Committed: -q), RefTypes.Of(a.Kind), a.RefId);
         }
     }
 }

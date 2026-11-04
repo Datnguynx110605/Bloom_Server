@@ -41,19 +41,15 @@ public sealed partial class WarehouseService(
         {
             var ids = lines.Select(l => l.SkuId).ToList();
             known = await db.StockItems.AsNoTracking().Where(s => ids.Contains(s.SkuId)).ToDictionaryAsync(s => s.SkuId, ct);
-            var unknown = new HashSet<int>();
-            for (var i = 0; i < lines.Count; i++)
-            {
-                if (known.ContainsKey(lines[i].SkuId)) continue;
-                if (await LockInCatalogAsync(lines[i].SkuId, ct) is { } response) fromCatalog[lines[i].SkuId] = response;
-                else unknown.Add(i);
-            }
-
             for (var i = 0; i < lines.Count; i++)
             {
                 var line = lines[i];
-                if (unknown.Contains(i)) { violations.Add(($"lines[{i}].sku_id", "The SKU doesn't exist in the catalog.")); continue; }
-                var serialized = known.TryGetValue(line.SkuId, out var item) ? item.Serialized : fromCatalog[line.SkuId].Serialized;
+                if (!known.TryGetValue(line.SkuId, out var item))
+                {
+                    if (await LockInCatalogAsync(line.SkuId, ct) is not { } response) { violations.Add(($"lines[{i}].sku_id", "The SKU doesn't exist in the catalog.")); continue; }
+                    fromCatalog[line.SkuId] = response;
+                }
+                var serialized = item?.Serialized ?? fromCatalog[line.SkuId].Serialized;
                 if (serialized && line.Serials.Count != line.Quantity)
                     violations.Add(($"lines[{i}].serials", $"A serialized SKU needs exactly {line.Quantity} serials."));
                 if (!serialized && line.Serials.Count > 0) violations.Add(($"lines[{i}].serials", "The SKU is not serialized."));
@@ -122,9 +118,8 @@ public sealed partial class WarehouseService(
     /// <summary>Step (a): every check that doesn't need <c>serialized</c>, in request order. Returns the parsed lines, usable only while <paramref name="violations"/> stays empty.</summary>
     private async Task<List<Line>> CheckFormatAsync(RecordGoodsReceiptRequest request, List<(string Field, string Description)> violations, CancellationToken ct)
     {
-        var serials = request.Lines.Select(l => l.Serials.Select(Identifiers.NormalizeSerial).OfType<string>().ToList()).ToList();
         var imeis = request.Lines.SelectMany(l => l.Imeis).Where(Identifiers.IsValidImei).Distinct().ToList();
-        var allSerials = serials.SelectMany(s => s).Distinct().ToList();
+        var allSerials = request.Lines.SelectMany(l => l.Serials).Select(Identifiers.NormalizeSerial).OfType<string>().Distinct().ToList();
         var held = await db.SerialUnits.AsNoTracking().Where(u => allSerials.Contains(u.Serial) || (u.Imei != null && imeis.Contains(u.Imei)))
             .Select(u => new { u.Serial, u.Imei }).ToListAsync(ct);
         var heldSerials = held.Select(h => h.Serial).ToHashSet();

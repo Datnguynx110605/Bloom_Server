@@ -20,27 +20,9 @@ public sealed class CustomerReturnConsumer(InventoryDbContext db, StockLocks loc
         var message = envelope.GetPayload<ReceiveCustomerReturnV1>();
         var items = await locks.LockAsync(message.Units.Select(u => u.SkuId), ct);
 
-        var units = new List<(Guid SkuId, string? Serial, int Quantity)>();
-        foreach (var u in message.Units)
-        {
-            if (!items.TryGetValue(u.SkuId, out var item))
-                throw new PermanentFailureException($"Customer return of order {message.OrderId} names SKU {u.SkuId}, which has no stock record.");
-            if (item.Serialized)
-            {
-                var serial = u.Serial is null ? null : Identifiers.NormalizeSerial(u.Serial);
-                units.Add((u.SkuId, serial ?? throw new PermanentFailureException($"Customer return of order {message.OrderId}: serialized SKU {u.SkuId} needs a valid serial."), 1));
-            }
-            else if (u.Quantity > 0) units.Add((u.SkuId, null, u.Quantity));
-            else throw new PermanentFailureException($"Customer return of order {message.OrderId}: SKU {u.SkuId} has a non-positive quantity.");
-        }
-
+        var units = await ReturnUnits.ResolveAsync(db, $"Customer return of order {message.OrderId}", items,
+            message.Units.Select(u => (u.SkuId, u.Serial, u.Quantity)), null, ct);
         var wanted = units.Where(u => u.Serial is not null).Select(u => u.Serial!).ToList();
-        var found = await db.SerialUnits.AsNoTracking().Where(s => wanted.Contains(s.Serial)).ToDictionaryAsync(s => s.Serial, ct);
-        foreach (var u in units.Where(u => u.Serial is not null))
-            if (!found.TryGetValue(u.Serial!, out var s) || s.SkuId != u.SkuId || s.Status != SerialStatuses.Shipped)
-                throw new PermanentFailureException($"Customer return of order {message.OrderId}: serial {u.Serial} is not a shipped unit of SKU {u.SkuId}.");
-        if (wanted.Distinct().Count() != wanted.Count)
-            throw new PermanentFailureException($"Customer return of order {message.OrderId} repeats a serial.");
 
         var now = clock.GetUtcNow();
         foreach (var serial in wanted)

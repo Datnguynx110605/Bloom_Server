@@ -42,7 +42,7 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
                 WHERE ref_id = {a.RefId} AND sku_id = {a.SkuId} AND status = {a.Status}
                 """, ct) == 0) continue;
 
-            var (q, refType) = (a.Quantity, a.Kind == AllocationKinds.Reship ? RefTypes.Reship : RefTypes.Order);
+            var (q, refType) = (a.Quantity, RefTypes.Of(a.Kind));
             switch (a.Status)
             {
                 case AllocationStatuses.Reserved:

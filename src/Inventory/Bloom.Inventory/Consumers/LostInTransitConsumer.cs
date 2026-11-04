@@ -44,7 +44,7 @@ public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks lock
                 WHERE ref_id = {refId} AND sku_id = {a.SkuId} AND status = {SerialStatuses.Shipped}
                 """, ct);
             await db.Database.ExecuteSqlAsync($"UPDATE stock_items SET lost = lost + {lost}, updated_at = {now} WHERE sku_id = {a.SkuId}", ct);
-            ledger.Add(a.SkuId, EntryTypes.LostInTransit, new(Lost: lost), a.Kind == AllocationKinds.Reship ? RefTypes.Reship : RefTypes.Order, refId);
+            ledger.Add(a.SkuId, EntryTypes.LostInTransit, new(Lost: lost), RefTypes.Of(a.Kind), refId);
         }
     }
 }

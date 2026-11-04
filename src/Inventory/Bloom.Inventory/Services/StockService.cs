@@ -16,14 +16,14 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
     /// <summary>§6.1 plus plan R21: <c>regular</c> / <c>reserved</c> allocations, ledger <c>reserved</c>. Records <c>reserve_total</c> / <c>reserve_seconds</c> for the two outcomes the metric knows.</summary>
     public override async Task<Empty> ReserveStock(ReserveStockRequest request, ServerCallContext context)
     {
-        var orderId = ParseId(request.OrderId, "order_id");
+        var orderId = Inputs.Id(request.OrderId, "order_id");
         var lines = ParseLines(request.Lines);
         var started = Stopwatch.GetTimestamp();
         try
         {
             await CommitAsync(orderId, orderId, lines, AllocationKinds.Regular, AllocationStatuses.Reserved, context.CancellationToken);
         }
-        catch (RpcException e) when (IsStockShortage(e))
+        catch (RpcException e) when (e.StatusCode == StatusCode.FailedPrecondition) // SOLD_OUT or SKU_NOT_STOCKED; the other errors in here have other statuses
         {
             metrics.Reserve("sold_out", Stopwatch.GetElapsedTime(started).TotalSeconds);
             throw;
@@ -35,7 +35,7 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
     /// <summary>Plan R20: one item per distinct id in request order; a SKU never received has none to sell.</summary>
     public override async Task<GetAvailabilityResponse> GetAvailability(GetAvailabilityRequest request, ServerCallContext context)
     {
-        var ids = request.SkuIds.Select(s => (Text: s, Id: ParseId(s, "sku_ids"))).DistinctBy(x => x.Id).ToList();
+        var ids = request.SkuIds.Select(s => (Text: s, Id: Inputs.Id(s, "sku_ids"))).DistinctBy(x => x.Id).ToList();
         var guids = ids.Select(x => x.Id).ToList();
         var available = await db.StockItems.AsNoTracking().Where(i => guids.Contains(i.SkuId))
             .ToDictionaryAsync(i => i.SkuId, i => i.OnHand - i.Reserved, context.CancellationToken);
@@ -47,23 +47,16 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
     /// <summary>§6.9 plus plan R21: <c>reship</c> / <c>committed</c> allocations, ledger <c>committed</c>.</summary>
     public override async Task<Empty> CommitForReship(CommitForReshipRequest request, ServerCallContext context)
     {
-        var reshipId = ParseId(request.ReshipId, "reship_id");
-        var orderId = ParseId(request.OrderId, "order_id");
+        var reshipId = Inputs.Id(request.ReshipId, "reship_id");
+        var orderId = Inputs.Id(request.OrderId, "order_id");
         await CommitAsync(reshipId, orderId, ParseLines(request.Lines), AllocationKinds.Reship, AllocationStatuses.Committed, context.CancellationToken);
         return new Empty();
     }
 
-    private static bool IsStockShortage(RpcException e) =>
-        e.GetRpcStatus()?.Details.Select(d => d.Is(Google.Rpc.ErrorInfo.Descriptor) ? d.Unpack<Google.Rpc.ErrorInfo>().Reason : null)
-            .Any(r => r is InventoryErrors.SoldOutReason or InventoryErrors.SkuNotStocked) == true;
-
-    private static Guid ParseId(string value, string field) =>
-        Guid.TryParseExact(value, "D", out var id) ? id : throw InventoryErrors.Validation(field, $"{field} must be a UUID.");
-
     /// <summary>Plan R15: non-empty, every SKU a UUID, quantity above 0, no SKU twice.</summary>
     private static List<(Guid SkuId, int Quantity)> ParseLines(IEnumerable<StockLine> lines)
     {
-        var parsed = lines.Select(l => (SkuId: ParseId(l.SkuId, "sku_id"), l.Quantity)).ToList();
+        var parsed = lines.Select(l => (SkuId: Inputs.Id(l.SkuId, "sku_id"), l.Quantity)).ToList();
         if (parsed.Count == 0) throw InventoryErrors.Validation("lines", "At least one line is required.");
         if (parsed.Any(l => l.Quantity <= 0)) throw InventoryErrors.Validation("quantity", "The quantity must be positive.");
         if (parsed.DistinctBy(l => l.SkuId).Count() != parsed.Count) throw InventoryErrors.Validation("lines", "A SKU appears on more than one line.");

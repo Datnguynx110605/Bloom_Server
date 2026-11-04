@@ -88,19 +88,8 @@ public sealed partial class InventoryDbContext(DbContextOptions<InventoryDbConte
                 property.SetColumnName(SnakeCase().Replace(property.Name, "_").ToLowerInvariant());
             if (entity.FindProperty("Id") is { } id) id.ValueGenerated = ValueGenerated.Never;
         }
-
-        // "DOnHand" would snake-case to "don_hand".
-        mb.Entity<LedgerEntry>(e =>
-        {
-            e.Property(x => x.DOnHand).HasColumnName("d_on_hand");
-            e.Property(x => x.DReserved).HasColumnName("d_reserved");
-            e.Property(x => x.DCommitted).HasColumnName("d_committed");
-            e.Property(x => x.DReturned).HasColumnName("d_returned");
-            e.Property(x => x.DDamaged).HasColumnName("d_damaged");
-            e.Property(x => x.DLost).HasColumnName("d_lost");
-        });
     }
 
-    [GeneratedRegex("(?<=[a-z0-9])(?=[A-Z])")]
+    [GeneratedRegex("(?<!^)(?=[A-Z])")]
     private static partial Regex SnakeCase();
 }

@@ -64,6 +64,9 @@ public static class RefTypes
     public const string Adjustment = "adjustment";
 
     public static readonly string[] All = [Order, Reship, Receipt, Adjustment];
+
+    /// <summary>Plan R11: the ledger <c>ref_type</c> of an allocation change follows the allocation's kind.</summary>
+    public static string Of(string? allocationKind) => allocationKind == AllocationKinds.Reship ? Reship : Order;
 }
 
 public static class ReasonCodes

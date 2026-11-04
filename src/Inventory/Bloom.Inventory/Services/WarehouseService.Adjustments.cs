@@ -105,7 +105,7 @@ public sealed partial class WarehouseService
     /// <summary>R15 checks that need no database state: ids, delta, reason for the direction, note, and the shapes of the serial fields.</summary>
     private static Adjustment ValidateAdjustment(AdjustStockRequest r)
     {
-        if (!Guid.TryParseExact(r.SkuId, "D", out var skuId)) throw InventoryErrors.Validation("sku_id", "The SKU id must be a UUID.");
+        var skuId = Inputs.Id(r.SkuId, "sku_id");
         if (r.Delta is 0 or int.MinValue) throw InventoryErrors.Validation("delta", "The delta must not be zero or int.MinValue."); // |int.MinValue| overflows
         if (!(r.Delta < 0 ? DecreaseReasons : IncreaseReasons).Contains(r.ReasonCode))
             throw InventoryErrors.Validation("reason_code", $"The reason code is not allowed for {(r.Delta < 0 ? "a decrease" : "an increase")}.");
@@ -114,10 +114,10 @@ public sealed partial class WarehouseService
 
         string? serial = null, newSerial = null;
         if (r.Serial.Length > 0)
-            serial = Identifiers.NormalizeSerial(r.Serial) ?? throw InventoryErrors.Validation("serial", "A serial is 1-32 letters or digits.");
+            serial = Inputs.Serial(r.Serial, "serial");
         if (r.NewSerials.Count > 1) throw InventoryErrors.Validation("new_serials", "A serialized adjustment adds one unit per call.");
         if (r.NewSerials.Count == 1)
-            newSerial = Identifiers.NormalizeSerial(r.NewSerials[0]) ?? throw InventoryErrors.Validation("new_serials", "A serial is 1-32 letters or digits.");
+            newSerial = Inputs.Serial(r.NewSerials[0], "new_serials");
         if (r.NewImeis.Count > 0 && r.NewImeis.Count != r.NewSerials.Count) throw InventoryErrors.Validation("new_imeis", "There must be one IMEI per new serial, or none.");
         if (r.NewImeis.Count == 1 && !Identifiers.IsValidImei(r.NewImeis[0])) throw InventoryErrors.Validation("new_imeis", "An IMEI is 15 digits with a valid check digit.");
         if (serial is not null && newSerial is not null) throw InventoryErrors.Validation("new_serials", "Name either serial or new_serials, not both.");

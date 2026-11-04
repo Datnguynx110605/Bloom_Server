@@ -24,46 +24,23 @@ public sealed class ReturnedToSenderConsumer(InventoryDbContext db, StockLocks l
         var refId = message.RefId;
         var items = await locks.LockAsync(message.Units.Select(u => u.SkuId), ct);
 
-        var units = new List<(Guid SkuId, string? Serial, int Quantity, string Outcome)>();
         foreach (var u in message.Units)
-        {
             if (u.Outcome is not (Sealed or Failed))
                 throw new PermanentFailureException($"Returned-to-sender {refId}: unknown outcome '{u.Outcome}'.");
-            if (!items.TryGetValue(u.SkuId, out var item))
-                throw new PermanentFailureException($"Returned-to-sender {refId} names SKU {u.SkuId}, which has no stock record.");
-            if (item.Serialized)
-            {
-                var serial = u.Serial is null ? null : Identifiers.NormalizeSerial(u.Serial);
-                units.Add((u.SkuId, serial ?? throw new PermanentFailureException($"Returned-to-sender {refId}: serialized SKU {u.SkuId} needs a valid serial."), 1, u.Outcome));
-            }
-            else if (u.Quantity > 0) units.Add((u.SkuId, null, u.Quantity, u.Outcome));
-            else throw new PermanentFailureException($"Returned-to-sender {refId}: SKU {u.SkuId} has a non-positive quantity.");
-        }
-
-        var wanted = units.Where(u => u.Serial is not null).Select(u => u.Serial!).ToList();
-        var found = await db.SerialUnits.AsNoTracking().Where(s => wanted.Contains(s.Serial)).ToDictionaryAsync(s => s.Serial, ct);
-        foreach (var u in units.Where(u => u.Serial is not null))
-            if (!found.TryGetValue(u.Serial!, out var s) || s.SkuId != u.SkuId || s.Status != SerialStatuses.Shipped || s.RefId != refId)
-                throw new PermanentFailureException($"Returned-to-sender {refId}: serial {u.Serial} is not a shipped unit of SKU {u.SkuId} for this shipment.");
-        if (wanted.Distinct().Count() != wanted.Count)
-            throw new PermanentFailureException($"Returned-to-sender {refId} repeats a serial.");
+        var resolved = await ReturnUnits.ResolveAsync(db, $"Returned-to-sender {refId}", items,
+            message.Units.Select(u => (u.SkuId, u.Serial, u.Quantity)), refId, ct);
+        var units = resolved.Zip(message.Units, (r, u) => (r.SkuId, r.Serial, r.Quantity, u.Outcome)).ToList();
 
         // The ledger's ref_type follows the allocation kind of refId (plan R11); an order id is the fallback.
         var kind = await db.StockAllocations.AsNoTracking().Where(a => a.RefId == refId).Select(a => a.Kind).FirstOrDefaultAsync(ct);
-        var refType = kind == AllocationKinds.Reship ? RefTypes.Reship : RefTypes.Order;
+        var refType = RefTypes.Of(kind);
         var now = clock.GetUtcNow();
 
-        foreach (var u in units.Where(u => u.Serial is not null))
-            if (u.Outcome == Sealed)
-                await db.Database.ExecuteSqlAsync($"""
-                    UPDATE serial_units SET status = {SerialStatuses.InStock}, ref_id = NULL, version = version + 1, updated_at = {now}
-                    WHERE serial = {u.Serial} AND status = {SerialStatuses.Shipped}
-                    """, ct);
-            else
-                await db.Database.ExecuteSqlAsync($"""
-                    UPDATE serial_units SET status = {SerialStatuses.Damaged}, version = version + 1, updated_at = {now}
-                    WHERE serial = {u.Serial} AND status = {SerialStatuses.Shipped}
-                    """, ct);
+        foreach (var u in units.Where(u => u.Serial is not null)) // a damaged unit keeps its ref_id, already checked against refId
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE serial_units SET status = {(u.Outcome == Sealed ? SerialStatuses.InStock : SerialStatuses.Damaged)}, ref_id = {(u.Outcome == Sealed ? (Guid?)null : refId)}, version = version + 1, updated_at = {now}
+                WHERE serial = {u.Serial} AND status = {SerialStatuses.Shipped}
+                """, ct);
 
         foreach (var g in units.GroupBy(u => (u.SkuId, u.Outcome)).OrderBy(g => g.Key.SkuId))
         {

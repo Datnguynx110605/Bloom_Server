@@ -27,8 +27,5 @@ public sealed record Caller(Guid UserId, string UserType, string? Role)
     }
 
     public Caller RequireStaff(params string[] roles) =>
-        UserType == "staff" && Role is not null && roles.Contains(Role) ? this : throw Denied("Your role cannot do this.");
-
-    private static RpcException Denied(string message) =>
-        BloomErrors.Create(StatusCode.PermissionDenied, BloomErrors.RoleNotAllowed, message);
+        UserType == "staff" && Role is not null && roles.Contains(Role) ? this : throw BloomErrors.Create(StatusCode.PermissionDenied, BloomErrors.RoleNotAllowed, "Your role cannot do this.");
 }

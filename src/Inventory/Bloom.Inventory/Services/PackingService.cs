@@ -14,9 +14,9 @@ public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audi
 {
     public override async Task<Empty> AssignSerial(AssignSerialRequest request, ServerCallContext context)
     {
-        var refId = ParseId(request.RefId, "ref_id");
-        var skuId = ParseId(request.SkuId, "sku_id");
-        var serial = ParseSerial(request.Serial, "serial");
+        var refId = Inputs.Id(request.RefId, "ref_id");
+        var skuId = Inputs.Id(request.SkuId, "sku_id");
+        var serial = Inputs.Serial(request.Serial, "serial");
         var ct = context.CancellationToken;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
 
@@ -31,14 +31,15 @@ public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audi
 
         await SetAsync(serial, skuId, SerialStatuses.InStock, SerialStatuses.Assigned, refId, ct);
         Record(context, "inventory.serial-assigned", serial, new { refId });
-        await CommitAsync(tx, ct);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return new Empty();
     }
 
     public override async Task<Empty> UnassignSerial(UnassignSerialRequest request, ServerCallContext context)
     {
-        var refId = ParseId(request.RefId, "ref_id");
-        var serial = ParseSerial(request.Serial, "serial");
+        var refId = Inputs.Id(request.RefId, "ref_id");
+        var serial = Inputs.Serial(request.Serial, "serial");
         var ct = context.CancellationToken;
         // No sku_id in the request: read the serial's SKU, lock, then look again under the lock (plan R9).
         var skuId = (await FindAsync(serial, ct))?.SkuId ?? throw NotAvailable();
@@ -51,15 +52,16 @@ public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audi
 
         await SetAsync(serial, skuId, SerialStatuses.Assigned, SerialStatuses.InStock, null, ct);
         Record(context, "inventory.serial-unassigned", serial, new { refId });
-        await CommitAsync(tx, ct);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return new Empty();
     }
 
     public override async Task<Empty> ReplaceSerial(ReplaceSerialRequest request, ServerCallContext context)
     {
-        var refId = ParseId(request.RefId, "ref_id");
-        var oldSerial = ParseSerial(request.OldSerial, "old_serial");
-        var newSerial = ParseSerial(request.NewSerial, "new_serial");
+        var refId = Inputs.Id(request.RefId, "ref_id");
+        var oldSerial = Inputs.Serial(request.OldSerial, "old_serial");
+        var newSerial = Inputs.Serial(request.NewSerial, "new_serial");
         var ct = context.CancellationToken;
         var skuId = (await FindAsync(oldSerial, ct))?.SkuId ?? throw NotAvailable();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
@@ -74,7 +76,8 @@ public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audi
         await SetAsync(oldSerial, skuId, SerialStatuses.Assigned, SerialStatuses.InStock, null, ct);
         await SetAsync(newSerial, skuId, SerialStatuses.InStock, SerialStatuses.Assigned, refId, ct);
         Record(context, "inventory.serial-replaced", newSerial, new { refId, oldSerial });
-        await CommitAsync(tx, ct);
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
         return new Empty();
     }
 
@@ -106,17 +109,5 @@ public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audi
         audit.Record(caller?.UserId ?? Guid.Empty, caller?.Role ?? "", action, "serial", serial, details);
     }
 
-    private async Task CommitAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx, CancellationToken ct)
-    {
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
-    }
-
     private static RpcException NotAvailable() => InventoryErrors.Error(InventoryErrors.SerialNotAvailable, "The serial is not available for this allocation.");
-
-    private static Guid ParseId(string value, string field) =>
-        Guid.TryParseExact(value, "D", out var id) ? id : throw InventoryErrors.Validation(field, $"{field} must be a UUID.");
-
-    private static string ParseSerial(string value, string field) =>
-        Identifiers.NormalizeSerial(value) ?? throw InventoryErrors.Validation(field, $"{field} must be 1-32 letters or digits.");
 }
