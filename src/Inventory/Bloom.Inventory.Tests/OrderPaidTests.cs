@@ -182,4 +182,31 @@ public class OrderPaidTests(Containers containers)
         Assert.Empty(await db.StockAllocations.ToListAsync(Ct));
         Assert.Empty(await db.StockLedger.ToListAsync(Ct));
     }
+
+    [Fact]
+    public async Task First_receipt_and_preorder_paid_concurrently_never_leave_the_backorder_waiting()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        for (var round = 0; round < 20; round++)
+        {
+            // Many SKUs at once: the lost wake-up needs the two transactions to overlap inside a window of a few statements.
+            var races = Enumerable.Range(0, 16).Select(async _ =>
+            {
+                var sku = Seed.Sku(t); // never received
+                var orderId = Guid.CreateVersion7();
+                await Task.WhenAll(
+                    Task.Run(() => Seed.ReceiveAsync(t, sku, 3), Ct),
+                    Task.Run(() => PaidAsync(t, Paid(orderId, Guid.CreateVersion7(), DateTimeOffset.UtcNow, (sku, 2))), Ct));
+                return orderId;
+            }).ToList();
+            var orders = await Task.WhenAll(races);
+
+            var announced = (await Outbox.PayloadsAsync<StockAllocatedV1>(t, InventoryMessages.StockAllocated)).Select(m => m.OrderId).ToHashSet();
+            foreach (var orderId in orders)
+            {
+                Assert.Equal(AllocationStatuses.Committed, Assert.Single(await AllocationsAsync(t, orderId)).Status);
+                Assert.Contains(orderId, announced);
+            }
+        }
+    }
 }
