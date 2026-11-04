@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft — pending owner review |
+| **Status** | Approved (2026-11-04) |
 | **Date** | 2026-11-04 |
 | **Branch / PR base** | `feat/inventory` → `feat/catalog` |
 | **Implements** | [02-inventory](../../../doc/low-level-design/02-inventory.md) (all sections), INV-R01 … R20, BI-02, BI-06, BI-07, LCH-R19, R20, HLD §5, §6, §7, §8.5, HLD-ADR-009, HLD-ADR-013, HLD-ADR-014 (API/worker split) |
