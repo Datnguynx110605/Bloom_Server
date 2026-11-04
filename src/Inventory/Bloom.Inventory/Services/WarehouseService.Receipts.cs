@@ -3,6 +3,7 @@ using Bloom.Inventory.Context;
 using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Inventory.Errors;
+using Bloom.Inventory.Observability;
 using Bloom.Inventory.V1;
 using Bloom.Shared.Idempotency;
 using Grpc.Core;
@@ -14,7 +15,7 @@ namespace Bloom.Inventory.Services;
 /// <summary>02-inventory §3 component <c>Warehouse API</c>: staff only, transcoded to JSON under <c>/api/admin/inventory</c>.</summary>
 public sealed partial class WarehouseService(
     InventoryDbContext db, IdempotencyGuard guard, StockLocks locks, Ledger ledger, Allocator allocator, Audit audit,
-    CatalogInternal.CatalogInternalClient catalog, TimeProvider clock) : InventoryWarehouse.InventoryWarehouseBase
+    CatalogInternal.CatalogInternalClient catalog, InventoryMetrics metrics, TimeProvider clock) : InventoryWarehouse.InventoryWarehouseBase
 {
     private const int MaxNoteLength = 500;
     private static readonly TimeSpan CatalogDeadline = TimeSpan.FromSeconds(2);
