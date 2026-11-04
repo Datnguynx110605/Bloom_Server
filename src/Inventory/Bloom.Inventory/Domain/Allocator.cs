@@ -9,6 +9,7 @@ namespace Bloom.Inventory.Domain;
 /// <summary>Strict-FIFO backorder allocator (02-inventory §6.4, plan R12). The caller holds the SKU's <c>stock_items</c> lock, in its own transaction.</summary>
 public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter outbox, InventoryMetrics metrics, TimeProvider clock)
 {
+    private const int OrderLockNamespace = 0x4F4C4B; // "OLK"
     private readonly HashSet<Guid> _announced = [];
 
     /// <summary>Commits the SKU's <c>backordered</c> allocations oldest first, stopping at the first one the free units can't cover. No <c>stock_items</c> row: the first guarded update changes nothing, so nothing happens.</summary>
@@ -39,6 +40,9 @@ public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter
 
         foreach (var orderId in served.Distinct())
         {
+            // Another SKU's allocator may be committing this order's other lines right now; the order's lock makes the last one to commit see them all (§6.4 step 3).
+            // Two-int form: a different key space from StockLocks' single-bigint SKU keys. Taken after every SKU lock, so nothing holding it waits on a SKU lock.
+            await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({OrderLockNamespace}, hashtext({orderId.ToString()}))", ct);
             var pending = await db.Database.SqlQuery<bool>($"""
                 SELECT EXISTS (SELECT 1 FROM stock_allocations WHERE order_id = {orderId} AND kind = {AllocationKinds.Preorder} AND status <> {AllocationStatuses.Committed}) AS "Value"
                 """).SingleAsync(ct);

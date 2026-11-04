@@ -11,7 +11,7 @@ namespace Bloom.Inventory.Tests;
 public class ReceiptTests(Containers containers)
 {
     private const string Path = "/api/admin/inventory/receipts";
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static Task<HttpResponseMessage> PostAsync(TestInventory t, object body, TestCaller? caller = null, Guid? key = null) =>
         t.SendAsync(HttpMethod.Post, Path, body, caller ?? TestCaller.Staff("warehouse"), key ?? Guid.NewGuid());
@@ -125,6 +125,32 @@ public class ReceiptTests(Containers containers)
         Assert.All(allocated, e => Assert.Equal(("order", -2, 2), (e.RefType, e.DOnHand, e.DCommitted)));
         Assert.Equal(new[] { first, second }.Order(), (await Outbox.PayloadsAsync<StockAllocatedV1>(t, InventoryMessages.StockAllocated)).Select(m => m.OrderId).Order());
         Assert.Equal(2, metrics.Count("backorder_wait_seconds"));
+    }
+
+    [Fact]
+    public async Task Parallel_receipts_for_the_lines_of_one_preorder_announce_it_once()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var paidAt = DateTimeOffset.UtcNow;
+        var orders = new List<Guid>();
+        for (var round = 0; round < 20; round++)
+        {
+            var receipts = new List<Task>();
+            for (var i = 0; i < 4; i++)
+            {
+                var (a, b) = (Seed.Sku(t), Seed.Sku(t));
+                var orderId = await Seed.BackorderAsync(t, a, 1, paidAt);
+                await Seed.BackorderAsync(t, b, 1, paidAt, orderId);
+                orders.Add(orderId);
+                receipts.Add(Seed.ReceiveAsync(t, a, 1));
+                receipts.Add(Seed.ReceiveAsync(t, b, 1));
+            }
+            await Task.WhenAll(receipts);
+        }
+
+        await using var db = t.NewDb();
+        Assert.All(await db.StockAllocations.AsNoTracking().ToListAsync(Ct), a => Assert.Equal(AllocationStatuses.Committed, a.Status));
+        Assert.Equal(orders.Order(), (await Outbox.PayloadsAsync<StockAllocatedV1>(t, InventoryMessages.StockAllocated)).Select(m => m.OrderId).Order());
     }
 
     [Fact]

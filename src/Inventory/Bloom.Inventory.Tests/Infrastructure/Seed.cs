@@ -22,10 +22,10 @@ public static class Seed
         return Guid.Parse((await response.OkJsonAsync()).GetProperty("receiptId").GetString()!);
     }
 
-    /// <summary>A paid pre-order waiting for stock: a <c>preorder</c> / <c>backordered</c> allocation. Returns the order id.</summary>
-    public static async Task<Guid> BackorderAsync(TestInventory t, Guid skuId, int quantity, DateTimeOffset paidAt)
+    /// <summary>A paid pre-order waiting for stock: a <c>preorder</c> / <c>backordered</c> allocation. Returns the order id; <paramref name="existingOrderId"/> adds a line to that order.</summary>
+    public static async Task<Guid> BackorderAsync(TestInventory t, Guid skuId, int quantity, DateTimeOffset paidAt, Guid? existingOrderId = null)
     {
-        var orderId = Guid.CreateVersion7();
+        var orderId = existingOrderId ?? Guid.CreateVersion7();
         await using var db = t.NewDb();
         db.StockAllocations.Add(new StockAllocation
         {
