@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Google.Rpc;
+using Grpc.Core;
 
 namespace Bloom.Inventory.Tests;
 
@@ -49,4 +51,28 @@ public static class Api
         Assert.Equal(reason, info.GetProperty("reason").GetString());
         return info;
     }
+
+    /// <summary>Asserts the <c>VALIDATION_FAILED</c> error of the HTTP response names <paramref name="field"/>.</summary>
+    public static async Task ExpectValidationAsync(this HttpResponseMessage response, string field)
+    {
+        var info = await response.ExpectErrorAsync(400, "VALIDATION_FAILED");
+        Assert.Equal(field, info.GetProperty("metadata").GetProperty("field").GetString());
+    }
+}
+
+public static class Rpc
+{
+    public static ErrorInfo Info(RpcException e) => e.GetRpcStatus()!.Details.Single(d => d.Is(ErrorInfo.Descriptor)).Unpack<ErrorInfo>();
+
+    /// <summary>Runs the call, which must fail with <paramref name="reason"/>; returns its <c>ErrorInfo</c>.</summary>
+    public static async Task<ErrorInfo> FailsAsync(Task call, string reason)
+    {
+        var e = await Assert.ThrowsAsync<RpcException>(() => call);
+        var info = Info(e);
+        Assert.Equal("bloom", info.Domain);
+        Assert.Equal(reason, info.Reason);
+        return info;
+    }
+
+    public static Task<ErrorInfo> FailsAsync<T>(AsyncUnaryCall<T> call, string reason) => FailsAsync(call.ResponseAsync, reason);
 }

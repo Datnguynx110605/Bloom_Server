@@ -45,9 +45,6 @@ public class WorkerTests(Containers containers)
         NewEnvelope(OrderMessages.Paid, MessageKinds.Event, "order",
             new OrderPaidV1(orderId, "BL-1", Guid.CreateVersion7(), null, DateTimeOffset.UtcNow, 1000, [new OrderPaidLineV1(sku, quantity)]));
 
-    private static async Task ReserveAsync(TestInventory t, Guid orderId, Guid sku, int quantity) =>
-        await t.Stock.ReserveStockAsync(new() { OrderId = orderId.ToString(), Lines = { new StockLine { SkuId = sku.ToString(), Quantity = quantity } } }, cancellationToken: Ct);
-
     private static async Task<string> QueueOnAsync(IChannel channel, string exchange, string key)
     {
         var queue = $"test-{Guid.NewGuid():N}";
@@ -91,8 +88,8 @@ public class WorkerTests(Containers containers)
         var sku = Seed.Sku(api);
         await Seed.ReceiveAsync(api, sku, 5);
         var (order, other) = (Guid.CreateVersion7(), Guid.CreateVersion7());
-        await ReserveAsync(api, order, sku, 2);
-        await ReserveAsync(api, other, sku, 1);
+        await Seed.ReserveAsync(api, order, (sku, 2));
+        await Seed.ReserveAsync(api, other, (sku, 1));
         var paid = PaidEnvelope(order, sku, 2);
         var sentinel = PaidEnvelope(other, sku, 1); // queued after the duplicates, so its effect proves they were handled
 
@@ -119,7 +116,7 @@ public class WorkerTests(Containers containers)
         var sku = Seed.Sku(api, serialized: true);
         await Seed.ReceiveAsync(api, sku, 2, ["ABC123", "ABC124"]);
         var order = Guid.CreateVersion7();
-        await ReserveAsync(api, order, sku, 2);
+        await Seed.ReserveAsync(api, order, (sku, 2));
         await Consume.Async<Consumers.OrderPaidConsumer>(api, OrderMessages.Paid,
             new OrderPaidV1(order, "BL-1", Guid.CreateVersion7(), null, DateTimeOffset.UtcNow, 1000, [new OrderPaidLineV1(sku, 2)]));
         await api.Packing.AssignSerialAsync(new() { RefId = order.ToString(), SkuId = sku.ToString(), Serial = "ABC123" }, cancellationToken: Ct); // one of two
@@ -151,7 +148,7 @@ public class WorkerTests(Containers containers)
         var sku = Seed.Sku(api);
         await Seed.ReceiveAsync(api, sku, 3);
         var order = Guid.CreateVersion7();
-        await ReserveAsync(api, order, sku, 2);
+        await Seed.ReserveAsync(api, order, (sku, 2));
 
         await PublishAsync(channel, "inventory.commands", NewEnvelope(InventoryMessages.ReleaseReservation, MessageKinds.Command, "order", new ReleaseReservationV1(order)));
 
@@ -197,7 +194,7 @@ public class WorkerTests(Containers containers)
         var sku = Seed.Sku(api);
         await Seed.ReceiveAsync(api, sku, 5);
         var order = Guid.CreateVersion7();
-        await ReserveAsync(api, order, sku, 2);
+        await Seed.ReserveAsync(api, order, (sku, 2));
         await Seed.BackorderAsync(api, sku, 10, api.Clock.GetUtcNow());
 
         worker.Clock.Advance(TimeSpan.FromMinutes(29));

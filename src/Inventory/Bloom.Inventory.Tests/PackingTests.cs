@@ -14,16 +14,6 @@ public class PackingTests(Containers containers)
 
     private static readonly string[] Serials = ["ABC123", "ABC124", "ABC125"];
 
-    private static ErrorInfo Info(RpcException e) => e.GetRpcStatus()!.Details.Single(d => d.Is(ErrorInfo.Descriptor)).Unpack<ErrorInfo>();
-
-    private static async Task<ErrorInfo> FailsAsync<T>(AsyncUnaryCall<T> call, string reason)
-    {
-        var e = await Assert.ThrowsAsync<RpcException>(() => call.ResponseAsync);
-        var info = Info(e);
-        Assert.Equal(reason, info.Reason);
-        return info;
-    }
-
     private static Metadata Staff(TestCaller caller) => new()
     {
         { "x-bloom-user-id", caller.Id.ToString("D") }, { "x-bloom-user-type", caller.Type }, { "x-bloom-role", caller.Role! },
@@ -38,17 +28,9 @@ public class PackingTests(Containers containers)
         var sku = Seed.Sku(t, serialized: true);
         await Seed.ReceiveAsync(t, sku, 3, Serials);
         var orderId = Guid.CreateVersion7();
-        await t.Stock.ReserveStockAsync(new() { OrderId = orderId.ToString(), Lines = { new StockLine { SkuId = sku.ToString(), Quantity = 2 } } }, cancellationToken: Ct);
-        if (pay)
-            await Consume.Async<OrderPaidConsumer>(t, OrderMessages.Paid,
-                new OrderPaidV1(orderId, "BL-1", Guid.CreateVersion7(), null, DateTimeOffset.UtcNow, 1000, [new OrderPaidLineV1(sku, 2)]));
+        await Seed.ReserveAsync(t, orderId, (sku, 2));
+        if (pay) await Seed.PaidAsync(t, orderId, null, (sku, 2));
         return (sku, orderId);
-    }
-
-    private static async Task<SerialUnit> SerialAsync(TestInventory t, string serial)
-    {
-        await using var db = t.NewDb();
-        return await db.SerialUnits.AsNoTracking().SingleAsync(s => s.Serial == serial, Ct);
     }
 
     private static async Task<List<Bloom.Shared.DeadLetters.StaffActionRecorded>> SerialAuditAsync(TestInventory t) =>
@@ -64,7 +46,7 @@ public class PackingTests(Containers containers)
 
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC123"), Staff(staff), cancellationToken: Ct);
 
-        var unit = await SerialAsync(t, "ABC123");
+        var unit = await Seed.SerialAsync(t, "ABC123");
         Assert.Equal((SerialStatuses.Assigned, orderId), (unit.Status, unit.RefId));
         var audit = Assert.Single(await SerialAuditAsync(t));
         Assert.Equal((staff.Id, "warehouse", "inventory", "inventory.serial-assigned", "serial", "ABC123"),
@@ -82,7 +64,7 @@ public class PackingTests(Containers containers)
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC123"), Staff(TestCaller.Staff("warehouse")), cancellationToken: Ct);
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC123"), Staff(TestCaller.Staff("warehouse")), cancellationToken: Ct);
 
-        Assert.Equal(1, (await SerialAsync(t, "ABC123")).Version);
+        Assert.Equal(1, (await Seed.SerialAsync(t, "ABC123")).Version);
         Assert.Single(await SerialAuditAsync(t));
     }
 
@@ -94,10 +76,10 @@ public class PackingTests(Containers containers)
         var other = Seed.Sku(t, serialized: true);
         await Seed.ReceiveAsync(t, other, 1, ["ZZZ999"]);
 
-        await FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "ZZZ999"), cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
-        await FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "NOSUCH1"), cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "ZZZ999"), cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "NOSUCH1"), cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
 
-        Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "ZZZ999")).Status);
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "ZZZ999")).Status);
     }
 
     [Fact]
@@ -108,9 +90,9 @@ public class PackingTests(Containers containers)
 
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC123"), cancellationToken: Ct);
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC124"), cancellationToken: Ct);
-        await FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC125"), cancellationToken: Ct), "SERIAL_COUNT_EXCEEDED");
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC125"), cancellationToken: Ct), "SERIAL_COUNT_EXCEEDED");
 
-        Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "ABC125")).Status);
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "ABC125")).Status);
     }
 
     [Fact]
@@ -126,7 +108,7 @@ public class PackingTests(Containers containers)
                 await t.Packing.AssignSerialAsync(Assign(orderId, sku, s), cancellationToken: Ct);
                 return "ok";
             }
-            catch (RpcException e) { return Info(e).Reason; }
+            catch (RpcException e) { return Rpc.Info(e).Reason; }
         }));
 
         Assert.Equal(2, results.Count(r => r == "ok"));
@@ -141,10 +123,10 @@ public class PackingTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, reserved) = await CommittedAsync(t, pay: false);
 
-        await FailsAsync(t.Packing.AssignSerialAsync(Assign(reserved, sku, "ABC123"), cancellationToken: Ct), "NOT_COMMITTED");
-        await FailsAsync(t.Packing.AssignSerialAsync(Assign(Guid.CreateVersion7(), sku, "ABC123"), cancellationToken: Ct), "NOT_COMMITTED");
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(reserved, sku, "ABC123"), cancellationToken: Ct), "NOT_COMMITTED");
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(Guid.CreateVersion7(), sku, "ABC123"), cancellationToken: Ct), "NOT_COMMITTED");
 
-        Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "ABC123")).Status);
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "ABC123")).Status);
     }
 
     [Fact]
@@ -157,7 +139,7 @@ public class PackingTests(Containers containers)
 
         var unassign = new UnassignSerialRequest { RefId = orderId.ToString(), Serial = "ABC123" };
         await t.Packing.UnassignSerialAsync(unassign, staff, cancellationToken: Ct);
-        var unit = await SerialAsync(t, "ABC123");
+        var unit = await Seed.SerialAsync(t, "ABC123");
         Assert.Equal((SerialStatuses.InStock, (Guid?)null), (unit.Status, unit.RefId));
         await t.Packing.UnassignSerialAsync(unassign, staff, cancellationToken: Ct); // retry
         Assert.Equal(2, (await SerialAuditAsync(t)).Count); // assigned, unassigned: the retry wrote nothing
@@ -165,7 +147,7 @@ public class PackingTests(Containers containers)
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC123"), staff, cancellationToken: Ct);
         var replace = new ReplaceSerialRequest { RefId = orderId.ToString(), OldSerial = "ABC123", NewSerial = "ABC125" };
         await t.Packing.ReplaceSerialAsync(replace, staff, cancellationToken: Ct);
-        Assert.Equal((SerialStatuses.InStock, SerialStatuses.Assigned, (Guid?)orderId), ((await SerialAsync(t, "ABC123")).Status, (await SerialAsync(t, "ABC125")).Status, (await SerialAsync(t, "ABC125")).RefId));
+        Assert.Equal((SerialStatuses.InStock, SerialStatuses.Assigned, (Guid?)orderId), ((await Seed.SerialAsync(t, "ABC123")).Status, (await Seed.SerialAsync(t, "ABC125")).Status, (await Seed.SerialAsync(t, "ABC125")).RefId));
         await t.Packing.ReplaceSerialAsync(replace, staff, cancellationToken: Ct); // retry
 
         var audits = await SerialAuditAsync(t);
@@ -185,14 +167,14 @@ public class PackingTests(Containers containers)
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC123"), cancellationToken: Ct);
         var elsewhere = Guid.CreateVersion7().ToString();
 
-        await FailsAsync(t.Packing.UnassignSerialAsync(new() { RefId = elsewhere, Serial = "ABC123" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
-        await FailsAsync(t.Packing.UnassignSerialAsync(new() { RefId = orderId.ToString(), Serial = "NOSUCH1" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
-        await FailsAsync(t.Packing.ReplaceSerialAsync(new() { RefId = elsewhere, OldSerial = "ABC123", NewSerial = "ABC125" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
-        await FailsAsync(t.Packing.ReplaceSerialAsync(new() { RefId = orderId.ToString(), OldSerial = "ABC123", NewSerial = "ABC123" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
+        await Rpc.FailsAsync(t.Packing.UnassignSerialAsync(new() { RefId = elsewhere, Serial = "ABC123" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
+        await Rpc.FailsAsync(t.Packing.UnassignSerialAsync(new() { RefId = orderId.ToString(), Serial = "NOSUCH1" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
+        await Rpc.FailsAsync(t.Packing.ReplaceSerialAsync(new() { RefId = elsewhere, OldSerial = "ABC123", NewSerial = "ABC125" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
+        await Rpc.FailsAsync(t.Packing.ReplaceSerialAsync(new() { RefId = orderId.ToString(), OldSerial = "ABC123", NewSerial = "ABC123" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC124"), cancellationToken: Ct);
-        await FailsAsync(t.Packing.ReplaceSerialAsync(new() { RefId = orderId.ToString(), OldSerial = "ABC123", NewSerial = "ABC124" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
+        await Rpc.FailsAsync(t.Packing.ReplaceSerialAsync(new() { RefId = orderId.ToString(), OldSerial = "ABC123", NewSerial = "ABC124" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE");
 
-        Assert.Equal(SerialStatuses.Assigned, (await SerialAsync(t, "ABC123")).Status);
+        Assert.Equal(SerialStatuses.Assigned, (await Seed.SerialAsync(t, "ABC123")).Status);
     }
 
     [Fact]
@@ -202,9 +184,9 @@ public class PackingTests(Containers containers)
         var (sku, orderId) = await CommittedAsync(t);
 
         await t.Packing.AssignSerialAsync(Assign(orderId, sku, " abc123 "), cancellationToken: Ct);
-        Assert.Equal(SerialStatuses.Assigned, (await SerialAsync(t, "ABC123")).Status);
+        Assert.Equal(SerialStatuses.Assigned, (await Seed.SerialAsync(t, "ABC123")).Status);
 
-        var info = await FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "ab-1"), cancellationToken: Ct), "VALIDATION_FAILED");
+        var info = await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(orderId, sku, "ab-1"), cancellationToken: Ct), "VALIDATION_FAILED");
         Assert.Equal("serial", info.Metadata["field"]);
     }
 

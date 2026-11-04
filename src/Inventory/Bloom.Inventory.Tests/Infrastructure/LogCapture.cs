@@ -1,42 +1,23 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace Bloom.Inventory.Tests;
 
-/// <summary>Records every log entry (category, level, formatted message with exception, state and scope values) for assertions.</summary>
-public sealed class LogCapture : ILoggerProvider, ISupportExternalScope
+/// <summary>Records every log message (formatted, with its exception) for assertions.</summary>
+public sealed class LogCapture : ILoggerProvider, ILogger
 {
-    public sealed record Entry(LogLevel Level, string Message, IReadOnlyList<KeyValuePair<string, object?>> State);
+    private readonly ConcurrentQueue<string> _entries = new();
 
-    private readonly List<Entry> _entries = [];
-    private IExternalScopeProvider? _scopes;
+    public IReadOnlyCollection<string> Entries => _entries;
 
-    public IReadOnlyList<Entry> Entries
-    {
-        get { lock (_entries) return [.. _entries]; }
-    }
-
-    public void SetScopeProvider(IExternalScopeProvider scopeProvider) => _scopes = scopeProvider;
-
-    public ILogger CreateLogger(string categoryName) => new Recorder(this);
+    public ILogger CreateLogger(string categoryName) => this;
 
     public void Dispose() { }
 
-    private sealed class Recorder(LogCapture capture) : ILogger
-    {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => capture._scopes?.Push(state);
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+    public bool IsEnabled(LogLevel logLevel) => true;
 
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            var values = new List<KeyValuePair<string, object?>>(state as IEnumerable<KeyValuePair<string, object?>> ?? []);
-            capture._scopes?.ForEachScope((scope, list) =>
-            {
-                if (scope is IEnumerable<KeyValuePair<string, object?>> pairs) list.AddRange(pairs);
-                else list.Add(new("scope", scope));
-            }, values);
-            var entry = new Entry(logLevel, formatter(state, exception) + exception, values);
-            lock (capture._entries) capture._entries.Add(entry);
-        }
-    }
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+        _entries.Enqueue(formatter(state, exception) + exception);
 }

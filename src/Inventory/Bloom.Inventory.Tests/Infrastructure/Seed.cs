@@ -1,9 +1,13 @@
+using Bloom.Fulfillment.Contracts;
+using Bloom.Inventory.Consumers;
+using Bloom.Inventory.Contracts;
 using Bloom.Inventory.Data;
+using Bloom.Order.Contracts;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Tests;
 
-/// <summary>SKUs, stock and backorders for tests: stock goes in through the API, backorders straight into the database.</summary>
+/// <summary>SKUs, stock, backorders and the order-side events for tests: stock goes in through the API, backorders straight into the database, events through the consumers.</summary>
 public static class Seed
 {
     /// <summary>A SKU known to the fake catalog.</summary>
@@ -48,5 +52,50 @@ public static class Seed
         await using var db = t.NewDb();
         return await db.StockLedger.AsNoTracking().Where(e => e.SkuId == skuId).OrderBy(e => e.CreatedAt).ThenBy(e => e.Id)
             .ToListAsync(TestContext.Current.CancellationToken);
+    }
+
+    public static StockLine Line(Guid sku, int quantity) => new() { SkuId = sku.ToString(), Quantity = quantity };
+
+    /// <summary>Reserves the lines for a regular order through the Stock API.</summary>
+    public static Task ReserveAsync(TestInventory t, Guid orderId, params (Guid Sku, int Quantity)[] lines) =>
+        t.Stock.ReserveStockAsync(new() { OrderId = orderId.ToString(), Lines = { lines.Select(l => Line(l.Sku, l.Quantity)) } }, cancellationToken: TestContext.Current.CancellationToken).ResponseAsync;
+
+    public static OrderPaidV1 Paid(Guid orderId, Guid? launchId, DateTimeOffset paidAt, params (Guid Sku, int Quantity)[] lines) =>
+        new(orderId, "BL-1", Guid.CreateVersion7(), launchId, paidAt, 1000, lines.Select(l => new OrderPaidLineV1(l.Sku, l.Quantity)).ToList());
+
+    public static Task PaidAsync(TestInventory t, OrderPaidV1 paid) => Consume.Async<OrderPaidConsumer>(t, OrderMessages.Paid, paid);
+
+    /// <summary><c>order.paid</c> now; a non-null <paramref name="launchId"/> makes it a pre-order.</summary>
+    public static Task PaidAsync(TestInventory t, Guid orderId, Guid? launchId, params (Guid Sku, int Quantity)[] lines) =>
+        PaidAsync(t, Paid(orderId, launchId, DateTimeOffset.UtcNow, lines));
+
+    public static Task ReleaseAsync(TestInventory t, Guid orderId) =>
+        Consume.Async<ReleaseReservationConsumer>(t, InventoryMessages.ReleaseReservation, new ReleaseReservationV1(orderId));
+
+    public static Task ShipAsync(TestInventory t, Guid orderId, Guid refId, params (Guid Sku, int Quantity)[] lines) =>
+        Consume.Async<ShipmentShippedConsumer>(t, FulfillmentMessages.ShipmentShipped,
+            new ShipmentShippedV1(orderId, refId, lines.Select(l => new ShippedLineV1(l.Sku, l.Quantity, [])).ToList(), "TRK1"));
+
+    public static async Task<SerialUnit> SerialAsync(TestInventory t, string serial)
+    {
+        await using var db = t.NewDb();
+        return await db.SerialUnits.AsNoTracking().SingleAsync(s => s.Serial == serial, TestContext.Current.CancellationToken);
+    }
+
+    public static async Task<List<StockAllocation>> AllocationsAsync(TestInventory t, Guid orderId)
+    {
+        await using var db = t.NewDb();
+        return await db.StockAllocations.AsNoTracking().Where(a => a.OrderId == orderId).ToListAsync(TestContext.Current.CancellationToken);
+    }
+
+    public static (int OnHand, int Reserved, int Committed, int Returned, int Damaged, int Lost) Counters(StockItem i) =>
+        (i.OnHand, i.Reserved, i.Committed, i.Returned, i.Damaged, i.Lost);
+
+    /// <summary>A 15-digit IMEI with a valid Luhn check digit, built from <paramref name="n"/>.</summary>
+    public static string Imei(int n)
+    {
+        var body = $"35{n:D12}";
+        var sum = body.Reverse().Select((c, i) => (c - '0') * (i % 2 == 0 ? 2 : 1)).Sum(d => d / 10 + d % 10);
+        return body + (10 - sum % 10) % 10;
     }
 }

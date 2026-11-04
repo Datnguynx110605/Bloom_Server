@@ -19,14 +19,6 @@ public class ReceiptTests(Containers containers)
     private static object Line(Guid skuId, int quantity, string[]? serials = null, string[]? imeis = null) =>
         new { skuId, quantity, serials = serials ?? [], imeis = imeis ?? [] };
 
-    /// <summary>A 15-digit IMEI with a valid Luhn check digit, built from <paramref name="n"/>.</summary>
-    private static string Imei(int n)
-    {
-        var body = $"35{n:D12}";
-        var sum = body.Reverse().Select((c, i) => (c - '0') * (i % 2 == 0 ? 2 : 1)).Sum(d => d / 10 + d % 10);
-        return body + (10 - sum % 10) % 10;
-    }
-
     private static async Task<string[]> ViolationFieldsAsync(HttpResponseMessage response)
     {
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
@@ -74,7 +66,7 @@ public class ReceiptTests(Containers containers)
         using var response = await PostAsync(t, new
         {
             note = "Delivery 42",
-            lines = new[] { Line(plain, 5), Line(phone, 2, ["SN1", "SN2"], [Imei(1), Imei(2)]) },
+            lines = new[] { Line(plain, 5), Line(phone, 2, ["SN1", "SN2"], [Seed.Imei(1), Seed.Imei(2)]) },
         }, staff);
         var receiptId = Guid.Parse((await response.OkJsonAsync()).GetProperty("receiptId").GetString()!);
 
@@ -84,7 +76,7 @@ public class ReceiptTests(Containers containers)
         await using var db = t.NewDb();
         var serials = await db.SerialUnits.Where(u => u.SkuId == phone).OrderBy(u => u.Serial).ToListAsync(Ct);
         Assert.Equal(["SN1", "SN2"], serials.Select(s => s.Serial));
-        Assert.Equal([Imei(1), Imei(2)], serials.Select(s => s.Imei));
+        Assert.Equal([Seed.Imei(1), Seed.Imei(2)], serials.Select(s => s.Imei));
         Assert.All(serials, s => Assert.Equal((SerialStatuses.InStock, receiptId), (s.Status, s.ReceiptId)));
         var receipt = await db.GoodsReceipts.SingleAsync(Ct);
         Assert.Equal((receiptId, staff.Id, "Delivery 42"), (receipt.Id, receipt.StaffId, receipt.Note));
@@ -200,7 +192,7 @@ public class ReceiptTests(Containers containers)
                 Line(a, 0),                                                    // quantity
                 Line(held, 1, ["held1"]),                                      // already in stock, after normalization
                 Line(b, 1, ["SN2"], ["490154203237519"]),                      // IMEI fails Luhn
-                Line(c, 2, ["SN3", "SN4"], [Imei(3)]),                         // IMEI count differs
+                Line(c, 2, ["SN3", "SN4"], [Seed.Imei(3)]),                         // IMEI count differs
                 Line(a, 1),                                                    // duplicate sku line
             },
         });
@@ -320,7 +312,7 @@ public class ReceiptTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var sku = Seed.Sku(t, serialized: true);
         var (staff, key) = (TestCaller.Staff("warehouse"), Guid.NewGuid());
-        var body = new { lines = new[] { Line(sku, 2, ["SN1", "SN2"], [Imei(1), Imei(2)]) } };
+        var body = new { lines = new[] { Line(sku, 2, ["SN1", "SN2"], [Seed.Imei(1), Seed.Imei(2)]) } };
 
         using var first = await PostAsync(t, body, staff, key);
         var receiptId = (await first.OkJsonAsync()).GetProperty("receiptId").GetString();

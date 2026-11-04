@@ -21,43 +21,6 @@ public class AdjustmentTests(Containers containers)
     private static async Task<Guid> AdjustedAsync(HttpResponseMessage response) =>
         Guid.Parse((await response.OkJsonAsync()).GetProperty("adjustmentId").GetString()!);
 
-    private static async Task ExpectValidationAsync(HttpResponseMessage response, string field)
-    {
-        var info = await response.ExpectErrorAsync(400, "VALIDATION_FAILED");
-        Assert.Equal(field, info.GetProperty("metadata").GetProperty("field").GetString());
-    }
-
-    /// <summary>A 15-digit IMEI with a valid Luhn check digit, built from <paramref name="n"/>.</summary>
-    private static string Imei(int n)
-    {
-        var body = $"35{n:D12}";
-        var sum = body.Reverse().Select((c, i) => (c - '0') * (i % 2 == 0 ? 2 : 1)).Sum(d => d / 10 + d % 10);
-        return body + (10 - sum % 10) % 10;
-    }
-
-    private static Task ReserveAsync(TestInventory t, Guid orderId, Guid sku, int quantity) =>
-        t.Stock.ReserveStockAsync(new() { OrderId = orderId.ToString(), Lines = { new StockLine { SkuId = sku.ToString(), Quantity = quantity } } }, cancellationToken: Ct).ResponseAsync;
-
-    private static Task PaidAsync(TestInventory t, Guid orderId, Guid? launchId, Guid sku, int quantity) =>
-        Consume.Async<OrderPaidConsumer>(t, OrderMessages.Paid,
-            new OrderPaidV1(orderId, "BL-1", Guid.CreateVersion7(), launchId, DateTimeOffset.UtcNow, 1000, [new OrderPaidLineV1(sku, quantity)]));
-
-    private static Task ReleaseAsync(TestInventory t, Guid orderId) =>
-        Consume.Async<ReleaseReservationConsumer>(t, InventoryMessages.ReleaseReservation, new ReleaseReservationV1(orderId));
-
-    private static Task ShipAsync(TestInventory t, Guid orderId, Guid sku, int quantity) =>
-        Consume.Async<ShipmentShippedConsumer>(t, FulfillmentMessages.ShipmentShipped,
-            new ShipmentShippedV1(orderId, orderId, [new ShippedLineV1(sku, quantity, [])], "TRK1"));
-
-    private static (int OnHand, int Reserved, int Committed, int Returned, int Damaged, int Lost) Counters(StockItem i) =>
-        (i.OnHand, i.Reserved, i.Committed, i.Returned, i.Damaged, i.Lost);
-
-    private static async Task<SerialUnit> SerialAsync(TestInventory t, string serial)
-    {
-        await using var db = t.NewDb();
-        return await db.SerialUnits.AsNoTracking().SingleAsync(s => s.Serial == serial, Ct);
-    }
-
     private static async Task SetSerialStatusAsync(TestInventory t, string serial, string status)
     {
         await using var db = t.NewDb();
@@ -76,14 +39,14 @@ public class AdjustmentTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 3);
-        await ReserveAsync(t, Guid.CreateVersion7(), sku, 2);
+        await Seed.ReserveAsync(t, Guid.CreateVersion7(), (sku, 2));
         var ledgerBefore = (await Seed.LedgerAsync(t, sku)).Count;
         var auditBefore = (await Outbox.AuditAsync(t)).Count;
 
         using var response = await AdjustAsync(t, sku, -2, ReasonCodes.CountCorrection);
 
         await response.ExpectErrorAsync(400, "ADJUSTMENT_EXCEEDS_AVAILABLE");
-        Assert.Equal((3, 2, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((3, 2, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         Assert.Equal(0, await AdjustmentRowsAsync(t));
         Assert.Equal(ledgerBefore, (await Seed.LedgerAsync(t, sku)).Count);
         Assert.Equal(auditBefore, (await Outbox.AuditAsync(t)).Count);
@@ -95,12 +58,12 @@ public class AdjustmentTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 1);
-        await ReserveAsync(t, Guid.CreateVersion7(), sku, 1);
+        await Seed.ReserveAsync(t, Guid.CreateVersion7(), (sku, 1));
 
         using var response = await AdjustAsync(t, sku, -1, ReasonCodes.DamagedInWarehouse);
 
         await response.ExpectErrorAsync(400, "ADJUSTMENT_EXCEEDS_AVAILABLE");
-        Assert.Equal((1, 1, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((1, 1, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
 
     [Fact]
@@ -115,7 +78,7 @@ public class AdjustmentTests(Containers containers)
         using var response = await AdjustAsync(t, sku, -2, ReasonCodes.DamagedInWarehouse, "  dropped pallet  ", caller: staff);
         var id = await AdjustedAsync(response);
 
-        Assert.Equal((3, 0, 0, 0, 2, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((3, 0, 0, 0, 2, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         await using var db = t.NewDb();
         var row = await db.StockAdjustments.SingleAsync(Ct);
         Assert.Equal((id, sku, null, -2, "damaged_in_warehouse", "dropped pallet", staff.Id),
@@ -141,7 +104,7 @@ public class AdjustmentTests(Containers containers)
         using var response = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse);
         await AdjustedAsync(response);
 
-        Assert.Equal((4, 0, 0, 0, 0, 1), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((4, 0, 0, 0, 0, 1), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
 
     [Fact]
@@ -154,7 +117,7 @@ public class AdjustmentTests(Containers containers)
         using var response = await AdjustAsync(t, sku, -2, ReasonCodes.CountCorrection);
         await AdjustedAsync(response);
 
-        Assert.Equal((3, 0, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((3, 0, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
 
     [Fact]
@@ -168,7 +131,7 @@ public class AdjustmentTests(Containers containers)
         using var response = await AdjustAsync(t, sku, 2, ReasonCodes.Found);
         var id = await AdjustedAsync(response);
 
-        Assert.Equal((1, 0, 2, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((1, 0, 2, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         await using var db = t.NewDb();
         Assert.Equal(AllocationStatuses.Committed, (await db.StockAllocations.SingleAsync(a => a.OrderId == waiting, Ct)).Status);
         var ledger = await Seed.LedgerAsync(t, sku);
@@ -184,17 +147,17 @@ public class AdjustmentTests(Containers containers)
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 5);
 
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.Found)) await ExpectValidationAsync(r, "reason_code");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.DamagedInWarehouse)) await ExpectValidationAsync(r, "reason_code");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.LostInWarehouse)) await ExpectValidationAsync(r, "reason_code");
-        using (var r = await AdjustAsync(t, sku, 1, "miscounted")) await ExpectValidationAsync(r, "reason_code");
-        using (var r = await AdjustAsync(t, sku, 0, ReasonCodes.Other)) await ExpectValidationAsync(r, "delta");
-        using (var r = await AdjustAsync(t, sku, int.MinValue, ReasonCodes.Other)) await ExpectValidationAsync(r, "delta");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: "")) await ExpectValidationAsync(r, "note");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: "   ")) await ExpectValidationAsync(r, "note");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: new string('x', 501))) await ExpectValidationAsync(r, "note");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.Found)) await r.ExpectValidationAsync("reason_code");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.DamagedInWarehouse)) await r.ExpectValidationAsync("reason_code");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.LostInWarehouse)) await r.ExpectValidationAsync("reason_code");
+        using (var r = await AdjustAsync(t, sku, 1, "miscounted")) await r.ExpectValidationAsync("reason_code");
+        using (var r = await AdjustAsync(t, sku, 0, ReasonCodes.Other)) await r.ExpectValidationAsync("delta");
+        using (var r = await AdjustAsync(t, sku, int.MinValue, ReasonCodes.Other)) await r.ExpectValidationAsync("delta");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: "")) await r.ExpectValidationAsync("note");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: "   ")) await r.ExpectValidationAsync("note");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Other, note: new string('x', 501))) await r.ExpectValidationAsync("note");
         using (var r = await t.SendAsync(HttpMethod.Post, Path, new { skuId = "nope", delta = 1, reasonCode = "found", note = "n" }, TestCaller.Staff("warehouse"), Guid.NewGuid()))
-            await ExpectValidationAsync(r, "sku_id");
+            await r.ExpectValidationAsync("sku_id");
 
         Assert.Equal(5, (await Seed.ItemAsync(t, sku))!.OnHand);
         Assert.Equal(0, await AdjustmentRowsAsync(t));
@@ -229,8 +192,8 @@ public class AdjustmentTests(Containers containers)
         using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "s1"))
         {
             var id = await AdjustedAsync(r);
-            Assert.Equal(SerialStatuses.Lost, (await SerialAsync(t, "S1")).Status);
-            Assert.Equal((4, 0, 0, 0, 0, 1), Counters((await Seed.ItemAsync(t, sku))!));
+            Assert.Equal(SerialStatuses.Lost, (await Seed.SerialAsync(t, "S1")).Status);
+            Assert.Equal((4, 0, 0, 0, 0, 1), Seed.Counters((await Seed.ItemAsync(t, sku))!));
             await using var db = t.NewDb();
             Assert.Equal(("S1", id), ((await db.StockAdjustments.SingleAsync(Ct)).Serial, id));
             Assert.Equal("S1", (await Outbox.AuditAsync(t)).Last().Details.GetProperty("serial").GetString());
@@ -238,8 +201,8 @@ public class AdjustmentTests(Containers containers)
         using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.DamagedInWarehouse, serial: "S4"))
         {
             await AdjustedAsync(r);
-            Assert.Equal(SerialStatuses.Damaged, (await SerialAsync(t, "S4")).Status);
-            Assert.Equal((3, 0, 0, 0, 1, 1), Counters((await Seed.ItemAsync(t, sku))!));
+            Assert.Equal(SerialStatuses.Damaged, (await Seed.SerialAsync(t, "S4")).Status);
+            Assert.Equal((3, 0, 0, 0, 1, 1), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         }
 
         using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "S2")) await r.ExpectErrorAsync(400, "SERIAL_ASSIGNED");
@@ -249,13 +212,13 @@ public class AdjustmentTests(Containers containers)
         var other = Seed.Sku(t, serialized: true);
         await Seed.ReceiveAsync(t, other, 1, ["O1"]);
         using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "O1")) await r.ExpectErrorAsync(400, "SERIAL_NOT_AVAILABLE");
-        Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "O1")).Status);
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "O1")).Status);
 
-        using (var r = await AdjustAsync(t, sku, -2, ReasonCodes.LostInWarehouse, serial: "S5")) await ExpectValidationAsync(r, "delta");
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse)) await ExpectValidationAsync(r, "serial");
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "bad serial!")) await ExpectValidationAsync(r, "serial");
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "S5", newSerials: ["N1"])) await ExpectValidationAsync(r, "new_serials");
-        Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "S5")).Status);
+        using (var r = await AdjustAsync(t, sku, -2, ReasonCodes.LostInWarehouse, serial: "S5")) await r.ExpectValidationAsync("delta");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse)) await r.ExpectValidationAsync("serial");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "bad serial!")) await r.ExpectValidationAsync("serial");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "S5", newSerials: ["N1"])) await r.ExpectValidationAsync("new_serials");
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "S5")).Status);
         Assert.Equal(2, await AdjustmentRowsAsync(t));
     }
 
@@ -266,11 +229,11 @@ public class AdjustmentTests(Containers containers)
         var sku = Seed.Sku(t, serialized: true);
         await Seed.ReceiveAsync(t, sku, 1, ["S1"]);
 
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.CountCorrection, serial: "S1")) await ExpectValidationAsync(r, "reason_code");
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.Other, serial: "S1")) await ExpectValidationAsync(r, "reason_code");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.CountCorrection, serial: "S1")) await r.ExpectValidationAsync("reason_code");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.Other, serial: "S1")) await r.ExpectValidationAsync("reason_code");
 
-        Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "S1")).Status);
-        Assert.Equal((1, 0, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "S1")).Status);
+        Assert.Equal((1, 0, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
 
     [Fact]
@@ -281,33 +244,33 @@ public class AdjustmentTests(Containers containers)
         await Seed.ReceiveAsync(t, sku, 2, ["S1", "S2"]);
         using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "S1")) await AdjustedAsync(r);
 
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: [" n1 "], newImeis: [Imei(7)]))
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: [" n1 "], newImeis: [Seed.Imei(7)]))
         {
             var id = await AdjustedAsync(r);
-            var created = await SerialAsync(t, "N1");
-            Assert.Equal((SerialStatuses.InStock, id, Imei(7), sku), (created.Status, created.ReceiptId, created.Imei, created.SkuId));
-            Assert.Equal((2, 0, 0, 0, 0, 1), Counters((await Seed.ItemAsync(t, sku))!));
+            var created = await Seed.SerialAsync(t, "N1");
+            Assert.Equal((SerialStatuses.InStock, id, Seed.Imei(7), sku), (created.Status, created.ReceiptId, created.Imei, created.SkuId));
+            Assert.Equal((2, 0, 0, 0, 0, 1), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         }
         using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, serial: "S1"))
         {
             await AdjustedAsync(r);
-            Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "S1")).Status);
-            Assert.Equal((3, 0, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+            Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "S1")).Status);
+            Assert.Equal((3, 0, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
             var entry = (await Seed.LedgerAsync(t, sku)).Last();
             Assert.Equal((EntryTypes.Adjusted, 1, -1), (entry.EntryType, entry.DOnHand, entry.DLost));
         }
 
         using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, serial: "S2")) await r.ExpectErrorAsync(400, "SERIAL_NOT_AVAILABLE"); // in stock, not lost
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["S2"])) await ExpectValidationAsync(r, "new_serials"); // exists
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N2"], newImeis: [Imei(7)])) await ExpectValidationAsync(r, "new_imeis"); // exists
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N2"], newImeis: ["123"])) await ExpectValidationAsync(r, "new_imeis");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N2", "N3"])) await ExpectValidationAsync(r, "new_serials");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["!"])) await ExpectValidationAsync(r, "new_serials");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newImeis: [Imei(8)])) await ExpectValidationAsync(r, "new_imeis");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found)) await ExpectValidationAsync(r, "serial");
-        using (var r = await AdjustAsync(t, sku, 2, ReasonCodes.Found, newSerials: ["N2"])) await ExpectValidationAsync(r, "delta");
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, newSerials: ["N2"])) await ExpectValidationAsync(r, "new_serials");
-        Assert.Equal((3, 0, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["S2"])) await r.ExpectValidationAsync("new_serials"); // exists
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N2"], newImeis: [Seed.Imei(7)])) await r.ExpectValidationAsync("new_imeis"); // exists
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N2"], newImeis: ["123"])) await r.ExpectValidationAsync("new_imeis");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N2", "N3"])) await r.ExpectValidationAsync("new_serials");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["!"])) await r.ExpectValidationAsync("new_serials");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newImeis: [Seed.Imei(8)])) await r.ExpectValidationAsync("new_imeis");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found)) await r.ExpectValidationAsync("serial");
+        using (var r = await AdjustAsync(t, sku, 2, ReasonCodes.Found, newSerials: ["N2"])) await r.ExpectValidationAsync("delta");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, newSerials: ["N2"])) await r.ExpectValidationAsync("new_serials");
+        Assert.Equal((3, 0, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
 
     [Fact]
@@ -317,8 +280,8 @@ public class AdjustmentTests(Containers containers)
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 3);
 
-        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.Other, serial: "S1")) await ExpectValidationAsync(r, "serial");
-        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N1"])) await ExpectValidationAsync(r, "new_serials");
+        using (var r = await AdjustAsync(t, sku, -1, ReasonCodes.Other, serial: "S1")) await r.ExpectValidationAsync("serial");
+        using (var r = await AdjustAsync(t, sku, 1, ReasonCodes.Found, newSerials: ["N1"])) await r.ExpectValidationAsync("new_serials");
 
         Assert.Equal(3, (await Seed.ItemAsync(t, sku))!.OnHand);
     }
@@ -337,7 +300,7 @@ public class AdjustmentTests(Containers containers)
         using var again = await AdjustAsync(t, sku, -2, ReasonCodes.DamagedInWarehouse, caller: staff, key: key);
 
         Assert.Equal(id, await AdjustedAsync(again));
-        Assert.Equal((3, 0, 0, 0, 2, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((3, 0, 0, 0, 2, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         Assert.Equal(1, await AdjustmentRowsAsync(t));
         Assert.Equal(1, metrics.Sum("adjustments_total"));
         using var different = await AdjustAsync(t, sku, -1, ReasonCodes.DamagedInWarehouse, caller: staff, key: key);
@@ -378,22 +341,22 @@ public class AdjustmentTests(Containers containers)
         await Seed.ReceiveAsync(t, phone, 2, ["P1", "P2"]);
 
         var (a, b, c, d) = (Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7());
-        await ReserveAsync(t, a, plain, 5); // a: reserved, paid, shipped, one returned, two restocked, one damaged
-        await PaidAsync(t, a, null, plain, 5);
-        await ShipAsync(t, a, plain, 5);
+        await Seed.ReserveAsync(t, a, (plain, 5)); // a: reserved, paid, shipped, one returned, two restocked, one damaged
+        await Seed.PaidAsync(t, a, null, (plain, 5));
+        await Seed.ShipAsync(t, a, a, (plain, 5));
         await Consume.Async<CustomerReturnConsumer>(t, FulfillmentMessages.ReceiveCustomerReturn, new ReceiveCustomerReturnV1(a, [new ReturnedUnitV1(plain, null, 1)]));
         await Consume.Async<ReturnedToSenderConsumer>(t, FulfillmentMessages.ReceiveReturnedToSender, new ReceiveReturnedToSenderV1(a, [new ReturnedToSenderUnitV1(plain, null, 2, "sealed")]));
         await Consume.Async<ReturnedToSenderConsumer>(t, FulfillmentMessages.ReceiveReturnedToSender, new ReceiveReturnedToSenderV1(a, [new ReturnedToSenderUnitV1(plain, null, 1, "failed")]));
-        await ReserveAsync(t, b, plain, 3); // b: reserved, released
-        await ReleaseAsync(t, b);
-        await ReserveAsync(t, c, plain, 2); // c: committed, released
-        await PaidAsync(t, c, null, plain, 2);
-        await ReleaseAsync(t, c);
-        await ReserveAsync(t, d, plain, 4); // d: shipped, lost in transit
-        await PaidAsync(t, d, null, plain, 4);
-        await ShipAsync(t, d, plain, 4);
+        await Seed.ReserveAsync(t, b, (plain, 3)); // b: reserved, released
+        await Seed.ReleaseAsync(t, b);
+        await Seed.ReserveAsync(t, c, (plain, 2)); // c: committed, released
+        await Seed.PaidAsync(t, c, null, (plain, 2));
+        await Seed.ReleaseAsync(t, c);
+        await Seed.ReserveAsync(t, d, (plain, 4)); // d: shipped, lost in transit
+        await Seed.PaidAsync(t, d, null, (plain, 4));
+        await Seed.ShipAsync(t, d, d, (plain, 4));
         await Consume.Async<LostInTransitConsumer>(t, FulfillmentMessages.MarkLostInTransit, new MarkLostInTransitV1(d));
-        await PaidAsync(t, Guid.CreateVersion7(), Guid.CreateVersion7(), plain, 20); // pre-order: 13 on hand, waits
+        await Seed.PaidAsync(t, Guid.CreateVersion7(), Guid.CreateVersion7(), (plain, 20)); // pre-order: 13 on hand, waits
 
         using (var r = await AdjustAsync(t, plain, 10, ReasonCodes.Found)) await AdjustedAsync(r); // allocator serves the pre-order
         using (var r = await AdjustAsync(t, plain, -2, ReasonCodes.DamagedInWarehouse)) await AdjustedAsync(r);
@@ -409,10 +372,10 @@ public class AdjustmentTests(Containers containers)
             var ledger = await Seed.LedgerAsync(t, sku);
             types.UnionWith(ledger.Select(e => e.EntryType));
             var item = (await Seed.ItemAsync(t, sku))!;
-            Assert.Equal(Counters(item), (ledger.Sum(e => e.DOnHand), ledger.Sum(e => e.DReserved), ledger.Sum(e => e.DCommitted),
+            Assert.Equal(Seed.Counters(item), (ledger.Sum(e => e.DOnHand), ledger.Sum(e => e.DReserved), ledger.Sum(e => e.DCommitted),
                 ledger.Sum(e => e.DReturned), ledger.Sum(e => e.DDamaged), ledger.Sum(e => e.DLost)));
         }
-        Assert.Equal((0, 0, 20, 1, 3, 5), Counters((await Seed.ItemAsync(t, plain))!));
+        Assert.Equal((0, 0, 20, 1, 3, 5), Seed.Counters((await Seed.ItemAsync(t, plain))!));
         Assert.Equal(EntryTypes.All.Order(), types.Order());
     }
 }

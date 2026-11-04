@@ -28,19 +28,10 @@ public class WarehouseReadTests(Containers containers)
     private static Task<HttpResponseMessage> GetAsync(TestInventory t, string path, TestCaller? caller = null) =>
         t.SendAsync(HttpMethod.Get, Base + path, caller: caller ?? TestCaller.Staff("warehouse"));
 
-    private static Task ReserveAsync(TestInventory t, Guid sku, int quantity) =>
-        t.Stock.ReserveStockAsync(new() { OrderId = Guid.CreateVersion7().ToString(), Lines = { new StockLine { SkuId = sku.ToString(), Quantity = quantity } } }, cancellationToken: Ct).ResponseAsync;
-
     private static string[] SkuIds(JsonElement body) => body.GetProperty("items").EnumerateArray().Select(i => i.GetProperty("skuId").GetString()!).ToArray();
 
     /// <summary>Postgres orders uuids bytewise, which is the order of their lower-case hex text.</summary>
     private static string[] Sorted(params Guid[] ids) => ids.Select(i => i.ToString()).Order(StringComparer.Ordinal).ToArray();
-
-    private static async Task ExpectValidationAsync(HttpResponseMessage response, string field)
-    {
-        var info = await response.ExpectErrorAsync(400, "VALIDATION_FAILED");
-        Assert.Equal(field, info.GetProperty("metadata").GetProperty("field").GetString());
-    }
 
     [Fact]
     public async Task Stock_levels_filter_and_page()
@@ -55,7 +46,7 @@ public class WarehouseReadTests(Containers containers)
         await Seed.ReceiveAsync(t, a, 3);
         await Seed.ReceiveAsync(t, b, 5);
         await Seed.ReceiveAsync(t, c, 2);
-        await ReserveAsync(t, a, 3); // a is sold out
+        await Seed.ReserveAsync(t, Guid.CreateVersion7(), (a, 3)); // a is sold out
         await Seed.BackorderAsync(t, a, 4, DateTimeOffset.UtcNow);
         await Seed.BackorderAsync(t, a, 2, DateTimeOffset.UtcNow);
 
@@ -95,11 +86,11 @@ public class WarehouseReadTests(Containers containers)
         Assert.Equal((await Seed.ItemAsync(t, a))!.UpdatedAt, item.GetProperty("updatedAt").GetDateTimeOffset());
 
         using var negative = await GetAsync(t, "/stock?availableAtMost=-1");
-        await ExpectValidationAsync(negative, "available_at_most");
+        await negative.ExpectValidationAsync("available_at_most");
         using var badProduct = await GetAsync(t, "/stock?productId=nope");
-        await ExpectValidationAsync(badProduct, "product_id");
+        await badProduct.ExpectValidationAsync("product_id");
         using var badSku = await GetAsync(t, $"/stock?skuIds={a}&skuIds=nope");
-        await ExpectValidationAsync(badSku, "sku_ids");
+        await badSku.ExpectValidationAsync("sku_ids");
     }
 
     [Fact]
@@ -168,7 +159,7 @@ public class WarehouseReadTests(Containers containers)
         using var unknown = await GetAsync(t, $"/ledger/{Guid.CreateVersion7()}");
         Assert.Empty((await unknown.OkJsonAsync()).GetProperty("entries").EnumerateArray());
         using var malformed = await GetAsync(t, "/ledger/nope");
-        await ExpectValidationAsync(malformed, "sku_id");
+        await malformed.ExpectValidationAsync("sku_id");
     }
 
     [Fact]
@@ -198,7 +189,7 @@ public class WarehouseReadTests(Containers containers)
         using var unknown = await GetAsync(t, "/serials/NOPE1");
         await unknown.ExpectErrorAsync(404, "NOT_FOUND");
         using var malformed = await GetAsync(t, "/serials/bad-serial!");
-        await ExpectValidationAsync(malformed, "serial");
+        await malformed.ExpectValidationAsync("serial");
     }
 
     [Theory, MemberData(nameof(RoleMatrix))]
@@ -241,6 +232,6 @@ public class WarehouseReadTests(Containers containers)
 
         using var response = await GetAsync(t, path);
 
-        await ExpectValidationAsync(response, path.Contains("page=") ? "page" : "page_size");
+        await response.ExpectValidationAsync(path.Contains("page=") ? "page" : "page_size");
     }
 }

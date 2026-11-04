@@ -56,16 +56,14 @@ public class ShellTests(Containers containers)
 
     private static Status Detail(RpcException e) => e.GetRpcStatus()!;
 
-    private static ErrorInfo Info(RpcException e) => Detail(e).Details.Single(d => d.Is(ErrorInfo.Descriptor)).Unpack<ErrorInfo>();
-
     [Theory, MemberData(nameof(ReasonTable))]
     public void Each_reason_has_its_status(string reason, StatusCode code)
     {
         var e = InventoryErrors.Error(reason, "m");
 
         Assert.Equal(code, e.StatusCode);
-        Assert.Equal(reason, Info(e).Reason);
-        Assert.Equal("bloom", Info(e).Domain);
+        Assert.Equal(reason, Rpc.Info(e).Reason);
+        Assert.Equal("bloom", Rpc.Info(e).Domain);
     }
 
     [Fact]
@@ -76,8 +74,8 @@ public class ShellTests(Containers containers)
         var e = InventoryErrors.SoldOut(sku);
 
         Assert.Equal(StatusCode.FailedPrecondition, e.StatusCode);
-        Assert.Equal("SOLD_OUT", Info(e).Reason);
-        Assert.Equal(sku.ToString(), Info(e).Metadata["skuId"]);
+        Assert.Equal("SOLD_OUT", Rpc.Info(e).Reason);
+        Assert.Equal(sku.ToString(), Rpc.Info(e).Metadata["skuId"]);
     }
 
     [Fact]
@@ -86,7 +84,7 @@ public class ShellTests(Containers containers)
         var e = InventoryErrors.ReceiptInvalid([("lines[0].quantity", "must be positive"), ("lines[1].serials[0]", "already in stock")]);
 
         Assert.Equal(StatusCode.InvalidArgument, e.StatusCode);
-        Assert.Equal("RECEIPT_INVALID", Info(e).Reason);
+        Assert.Equal("RECEIPT_INVALID", Rpc.Info(e).Reason);
         var violations = Detail(e).Details.Single(d => d.Is(BadRequest.Descriptor)).Unpack<BadRequest>().FieldViolations;
         Assert.Equal(["lines[0].quantity", "lines[1].serials[0]"], violations.Select(v => v.Field));
         Assert.Equal(["must be positive", "already in stock"], violations.Select(v => v.Description));
@@ -112,7 +110,7 @@ public class ShellTests(Containers containers)
         })
         {
             Assert.Equal(StatusCode.PermissionDenied, e.StatusCode);
-            Assert.Equal(BloomErrors.RoleNotAllowed, Info(e).Reason);
+            Assert.Equal(BloomErrors.RoleNotAllowed, Rpc.Info(e).Reason);
         }
     }
 

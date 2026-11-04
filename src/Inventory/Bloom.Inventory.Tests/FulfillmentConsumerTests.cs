@@ -12,15 +12,12 @@ public class FulfillmentConsumerTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private static StockLine Line(Guid sku, int quantity) => new() { SkuId = sku.ToString(), Quantity = quantity };
-
     /// <summary>Reserves, pays and (for serialized SKUs) assigns the given serials: a committed allocation per line. Returns the order id.</summary>
     private static async Task<Guid> CommittedAsync(TestInventory t, (Guid Sku, int Quantity)[] lines, params (Guid Sku, string Serial)[] assigned)
     {
         var orderId = Guid.CreateVersion7();
-        await t.Stock.ReserveStockAsync(new() { OrderId = orderId.ToString(), Lines = { lines.Select(l => Line(l.Sku, l.Quantity)) } }, cancellationToken: Ct);
-        await Consume.Async<OrderPaidConsumer>(t, OrderMessages.Paid,
-            new OrderPaidV1(orderId, "BL-1", Guid.CreateVersion7(), null, DateTimeOffset.UtcNow, 1000, lines.Select(l => new OrderPaidLineV1(l.Sku, l.Quantity)).ToList()));
+        await Seed.ReserveAsync(t, orderId, lines);
+        await Seed.PaidAsync(t, orderId, null, lines);
         foreach (var (sku, serial) in assigned)
             await t.Packing.AssignSerialAsync(new() { RefId = orderId.ToString(), SkuId = sku.ToString(), Serial = serial }, cancellationToken: Ct);
         return orderId;
@@ -35,10 +32,6 @@ public class FulfillmentConsumerTests(Containers containers)
         return (sku, orderId);
     }
 
-    private static Task ShipAsync(TestInventory t, Guid orderId, Guid refId, params (Guid Sku, int Quantity)[] lines) =>
-        Consume.Async<ShipmentShippedConsumer>(t, FulfillmentMessages.ShipmentShipped,
-            new ShipmentShippedV1(orderId, refId, lines.Select(l => new ShippedLineV1(l.Sku, l.Quantity, [])).ToList(), "TRK1"));
-
     private static Task ReturnAsync(TestInventory t, Guid orderId, params ReturnedUnitV1[] units) =>
         Consume.Async<CustomerReturnConsumer>(t, FulfillmentMessages.ReceiveCustomerReturn, new ReceiveCustomerReturnV1(orderId, units));
 
@@ -48,23 +41,8 @@ public class FulfillmentConsumerTests(Containers containers)
     private static Task LostAsync(TestInventory t, Guid refId) =>
         Consume.Async<LostInTransitConsumer>(t, FulfillmentMessages.MarkLostInTransit, new MarkLostInTransitV1(refId));
 
-    private static async Task<SerialUnit> SerialAsync(TestInventory t, string serial)
-    {
-        await using var db = t.NewDb();
-        return await db.SerialUnits.AsNoTracking().SingleAsync(s => s.Serial == serial, Ct);
-    }
-
-    private static async Task<List<StockAllocation>> AllocationsAsync(TestInventory t, Guid orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.StockAllocations.AsNoTracking().Where(a => a.OrderId == orderId).ToListAsync(Ct);
-    }
-
     private static async Task<int> AvailableAsync(TestInventory t, Guid sku) =>
         (await t.Stock.GetAvailabilityAsync(new() { SkuIds = { sku.ToString() } }, cancellationToken: Ct)).Items.Single().Available;
-
-    private static (int OnHand, int Reserved, int Committed, int Returned, int Damaged, int Lost) Counters(StockItem i) =>
-        (i.OnHand, i.Reserved, i.Committed, i.Returned, i.Damaged, i.Lost);
 
     [Fact]
     public async Task Shipment_moves_committed_to_shipped()
@@ -72,12 +50,12 @@ public class FulfillmentConsumerTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, orderId) = await SoldSerializedAsync(t);
 
-        await ShipAsync(t, orderId, orderId, (sku, 2));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
 
-        Assert.Equal((1, 0, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
-        Assert.Equal(AllocationStatuses.Shipped, Assert.Single(await AllocationsAsync(t, orderId)).Status);
+        Assert.Equal((1, 0, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(AllocationStatuses.Shipped, Assert.Single(await Seed.AllocationsAsync(t, orderId)).Status);
         Assert.Equal([SerialStatuses.Shipped, SerialStatuses.Shipped, SerialStatuses.InStock],
-            [(await SerialAsync(t, "ABC123")).Status, (await SerialAsync(t, "ABC124")).Status, (await SerialAsync(t, "ABC125")).Status]);
+            [(await Seed.SerialAsync(t, "ABC123")).Status, (await Seed.SerialAsync(t, "ABC124")).Status, (await Seed.SerialAsync(t, "ABC125")).Status]);
         var entry = (await Seed.LedgerAsync(t, sku)).Last();
         Assert.Equal((EntryTypes.Shipped, 0, 0, -2, RefTypes.Order, orderId, "inventory"),
             (entry.EntryType, entry.DOnHand, entry.DReserved, entry.DCommitted, entry.RefType, entry.RefId, entry.Actor));
@@ -90,11 +68,11 @@ public class FulfillmentConsumerTests(Containers containers)
         var (sku, orderId) = await SoldSerializedAsync(t, assignAll: false);
         var ledgerBefore = (await Seed.LedgerAsync(t, sku)).Count;
 
-        await Assert.ThrowsAsync<PermanentFailureException>(() => ShipAsync(t, orderId, orderId, (sku, 2)));
+        await Assert.ThrowsAsync<PermanentFailureException>(() => Seed.ShipAsync(t, orderId, orderId, (sku, 2)));
 
-        Assert.Equal((1, 0, 2, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
-        Assert.Equal(AllocationStatuses.Committed, Assert.Single(await AllocationsAsync(t, orderId)).Status);
-        Assert.Equal(SerialStatuses.Assigned, (await SerialAsync(t, "ABC123")).Status);
+        Assert.Equal((1, 0, 2, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(AllocationStatuses.Committed, Assert.Single(await Seed.AllocationsAsync(t, orderId)).Status);
+        Assert.Equal(SerialStatuses.Assigned, (await Seed.SerialAsync(t, "ABC123")).Status);
         Assert.Equal(ledgerBefore, (await Seed.LedgerAsync(t, sku)).Count);
     }
 
@@ -105,10 +83,10 @@ public class FulfillmentConsumerTests(Containers containers)
         var (sku, orderId) = await SoldSerializedAsync(t);
         var ledgerBefore = (await Seed.LedgerAsync(t, sku)).Count;
 
-        await ShipAsync(t, orderId, Guid.CreateVersion7(), (sku, 2));
+        await Seed.ShipAsync(t, orderId, Guid.CreateVersion7(), (sku, 2));
 
-        Assert.Equal((1, 0, 2, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
-        Assert.Equal(AllocationStatuses.Committed, Assert.Single(await AllocationsAsync(t, orderId)).Status);
+        Assert.Equal((1, 0, 2, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(AllocationStatuses.Committed, Assert.Single(await Seed.AllocationsAsync(t, orderId)).Status);
         Assert.Equal(ledgerBefore, (await Seed.LedgerAsync(t, sku)).Count);
     }
 
@@ -120,10 +98,10 @@ public class FulfillmentConsumerTests(Containers containers)
         await Seed.ReceiveAsync(t, sku, 5);
         var orderId = await CommittedAsync(t, [(sku, 2)]);
 
-        await ShipAsync(t, orderId, orderId, (sku, 2));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
 
-        Assert.Equal((3, 0, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
-        Assert.Equal(AllocationStatuses.Shipped, Assert.Single(await AllocationsAsync(t, orderId)).Status);
+        Assert.Equal((3, 0, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(AllocationStatuses.Shipped, Assert.Single(await Seed.AllocationsAsync(t, orderId)).Status);
         Assert.Equal(EntryTypes.Shipped, (await Seed.LedgerAsync(t, sku)).Last().EntryType);
     }
 
@@ -132,13 +110,13 @@ public class FulfillmentConsumerTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, orderId) = await SoldSerializedAsync(t);
-        await ShipAsync(t, orderId, orderId, (sku, 2));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
         var availableBefore = await AvailableAsync(t, sku);
 
         await ReturnAsync(t, orderId, new ReturnedUnitV1(sku, "abc123", 1));
 
-        Assert.Equal(SerialStatuses.Returned, (await SerialAsync(t, "ABC123")).Status);
-        Assert.Equal((1, 0, 0, 1, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(SerialStatuses.Returned, (await Seed.SerialAsync(t, "ABC123")).Status);
+        Assert.Equal((1, 0, 0, 1, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         Assert.Equal(availableBefore, await AvailableAsync(t, sku));
         var entry = (await Seed.LedgerAsync(t, sku)).Last();
         Assert.Equal((EntryTypes.CustomerReturned, 0, 1, RefTypes.Order, orderId), (entry.EntryType, entry.DOnHand, entry.DReturned, entry.RefType, entry.RefId));
@@ -149,15 +127,15 @@ public class FulfillmentConsumerTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, orderId) = await SoldSerializedAsync(t);
-        await ShipAsync(t, orderId, orderId, (sku, 2));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
 
         // ABC124 is shipped and valid, ABC125 never left stock: the whole message fails before the first write.
         await Assert.ThrowsAsync<PermanentFailureException>(() =>
             ReturnAsync(t, orderId, new ReturnedUnitV1(sku, "ABC124", 1), new ReturnedUnitV1(sku, "ABC125", 1)));
 
         Assert.Equal(0, (await Seed.ItemAsync(t, sku))!.Returned);
-        Assert.Equal(SerialStatuses.Shipped, (await SerialAsync(t, "ABC124")).Status);
-        Assert.Equal(SerialStatuses.InStock, (await SerialAsync(t, "ABC125")).Status);
+        Assert.Equal(SerialStatuses.Shipped, (await Seed.SerialAsync(t, "ABC124")).Status);
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "ABC125")).Status);
     }
 
     [Fact]
@@ -165,15 +143,15 @@ public class FulfillmentConsumerTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, orderId) = await SoldSerializedAsync(t);
-        await ShipAsync(t, orderId, orderId, (sku, 2));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
         var waiting = await Seed.BackorderAsync(t, sku, 2, DateTimeOffset.UtcNow.AddHours(-1)); // on hand 1: waits for one more unit
 
         await RtsAsync(t, orderId, new ReturnedToSenderUnitV1(sku, "ABC123", 1, "sealed"));
 
-        var serial = await SerialAsync(t, "ABC123");
+        var serial = await Seed.SerialAsync(t, "ABC123");
         Assert.Equal((SerialStatuses.InStock, null), (serial.Status, serial.RefId));
-        Assert.Equal((0, 0, 2, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!)); // restocked, then both units went to the waiting pre-order
-        Assert.Equal(AllocationStatuses.Committed, Assert.Single(await AllocationsAsync(t, waiting)).Status);
+        Assert.Equal((0, 0, 2, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!)); // restocked, then both units went to the waiting pre-order
+        Assert.Equal(AllocationStatuses.Committed, Assert.Single(await Seed.AllocationsAsync(t, waiting)).Status);
         var ledger = await Seed.LedgerAsync(t, sku);
         Assert.Equal([EntryTypes.RtsRestocked, EntryTypes.BackorderAllocated], ledger.TakeLast(2).Select(e => e.EntryType));
         Assert.Equal((1, RefTypes.Order, orderId), (ledger[^2].DOnHand, ledger[^2].RefType, ledger[^2].RefId));
@@ -185,12 +163,12 @@ public class FulfillmentConsumerTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, orderId) = await SoldSerializedAsync(t);
-        await ShipAsync(t, orderId, orderId, (sku, 2));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
 
         await RtsAsync(t, orderId, new ReturnedToSenderUnitV1(sku, "ABC123", 1, "failed"));
 
-        Assert.Equal(SerialStatuses.Damaged, (await SerialAsync(t, "ABC123")).Status);
-        Assert.Equal((1, 0, 0, 0, 1, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(SerialStatuses.Damaged, (await Seed.SerialAsync(t, "ABC123")).Status);
+        Assert.Equal((1, 0, 0, 0, 1, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         var entry = (await Seed.LedgerAsync(t, sku)).Last();
         Assert.Equal((EntryTypes.RtsDamaged, 1, RefTypes.Order, orderId), (entry.EntryType, entry.DDamaged, entry.RefType, entry.RefId));
     }
@@ -200,13 +178,13 @@ public class FulfillmentConsumerTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, orderId) = await SoldSerializedAsync(t);
-        await ShipAsync(t, orderId, orderId, (sku, 2));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
 
         await Assert.ThrowsAsync<PermanentFailureException>(() => RtsAsync(t, Guid.CreateVersion7(), new ReturnedToSenderUnitV1(sku, "ABC123", 1, "sealed")));
         await Assert.ThrowsAsync<PermanentFailureException>(() => RtsAsync(t, orderId, new ReturnedToSenderUnitV1(sku, "ABC123", 1, "broken")));
 
-        Assert.Equal((1, 0, 0, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
-        Assert.Equal(SerialStatuses.Shipped, (await SerialAsync(t, "ABC123")).Status);
+        Assert.Equal((1, 0, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(SerialStatuses.Shipped, (await Seed.SerialAsync(t, "ABC123")).Status);
     }
 
     [Fact]
@@ -216,12 +194,12 @@ public class FulfillmentConsumerTests(Containers containers)
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 5);
         var orderId = await CommittedAsync(t, [(sku, 3)]);
-        await ShipAsync(t, orderId, orderId, (sku, 3));
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 3));
 
         await ReturnAsync(t, orderId, new ReturnedUnitV1(sku, null, 1));
         await RtsAsync(t, orderId, new ReturnedToSenderUnitV1(sku, null, 2, "sealed"));
 
-        Assert.Equal((4, 0, 0, 1, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((4, 0, 0, 1, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
 
     [Fact]
@@ -232,16 +210,16 @@ public class FulfillmentConsumerTests(Containers containers)
         await Seed.ReceiveAsync(t, serialized, 2, ["ABC123", "ABC124"]);
         await Seed.ReceiveAsync(t, plain, 5);
         var orderId = await CommittedAsync(t, [(serialized, 2), (plain, 3)], (serialized, "ABC123"), (serialized, "ABC124"));
-        await ShipAsync(t, orderId, orderId, (serialized, 2), (plain, 3));
+        await Seed.ShipAsync(t, orderId, orderId, (serialized, 2), (plain, 3));
 
         await LostAsync(t, orderId);
 
-        Assert.Equal([SerialStatuses.Lost, SerialStatuses.Lost], [(await SerialAsync(t, "ABC123")).Status, (await SerialAsync(t, "ABC124")).Status]);
-        Assert.Equal((0, 0, 0, 0, 0, 2), Counters((await Seed.ItemAsync(t, serialized))!));
-        Assert.Equal((2, 0, 0, 0, 0, 3), Counters((await Seed.ItemAsync(t, plain))!));
+        Assert.Equal([SerialStatuses.Lost, SerialStatuses.Lost], [(await Seed.SerialAsync(t, "ABC123")).Status, (await Seed.SerialAsync(t, "ABC124")).Status]);
+        Assert.Equal((0, 0, 0, 0, 0, 2), Seed.Counters((await Seed.ItemAsync(t, serialized))!));
+        Assert.Equal((2, 0, 0, 0, 0, 3), Seed.Counters((await Seed.ItemAsync(t, plain))!));
         var entry = (await Seed.LedgerAsync(t, plain)).Last();
         Assert.Equal((EntryTypes.LostInTransit, 3, RefTypes.Order, orderId), (entry.EntryType, entry.DLost, entry.RefType, entry.RefId));
-        Assert.All(await AllocationsAsync(t, orderId), a => Assert.Equal(AllocationStatuses.Shipped, a.Status));
+        Assert.All(await Seed.AllocationsAsync(t, orderId), a => Assert.Equal(AllocationStatuses.Shipped, a.Status));
     }
 
     [Fact]
@@ -253,6 +231,6 @@ public class FulfillmentConsumerTests(Containers containers)
         await Assert.ThrowsAsync<PermanentFailureException>(() => LostAsync(t, Guid.CreateVersion7()));
         await Assert.ThrowsAsync<PermanentFailureException>(() => LostAsync(t, orderId));
 
-        Assert.Equal((1, 0, 2, 0, 0, 0), Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal((1, 0, 2, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
 }
