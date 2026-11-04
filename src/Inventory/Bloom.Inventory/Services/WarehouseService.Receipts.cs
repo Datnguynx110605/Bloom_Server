@@ -26,6 +26,9 @@ public sealed partial class WarehouseService(
     {
         var caller = Caller.From(context).RequireStaff(Caller.StockWriters);
         var ct = context.CancellationToken;
+        if (await KeyClaimedAsync(caller.UserId, context, ct)) // a retry: the guard replays the stored outcome (spec §4); its own serials are stored now, so (a) would reject it
+            return await guard.ExecuteAsync<RecordGoodsReceiptRequest, RecordGoodsReceiptResponse>(request, context,
+                _ => throw new InvalidOperationException("The idempotency key vanished between the check and the claim; retry the request."));
         if (request.Lines.Count == 0) throw InventoryErrors.Validation("lines", "A receipt needs at least one line.");
         if (request.Note.Length > MaxNoteLength) throw InventoryErrors.Validation("note", $"The note is at most {MaxNoteLength} characters.");
 
@@ -104,6 +107,15 @@ public sealed partial class WarehouseService(
                 new { lines = sorted.Select(l => new { skuId = l.SkuId, quantity = l.Quantity }) });
             return new RecordGoodsReceiptResponse { ReceiptId = receiptId.ToString() };
         });
+    }
+
+    /// <summary>True when the request's <c>Idempotency-Key</c> is a UUID that already has a row for this user. In the single-transaction form a visible row is a committed outcome. A missing or invalid key is the guard's to reject.</summary>
+    private async Task<bool> KeyClaimedAsync(Guid userId, ServerCallContext context, CancellationToken ct)
+    {
+        var raw = context.RequestHeaders.GetValue("idempotency-key");
+        if (raw is null || raw.Length > 36 || !Guid.TryParseExact(raw, "D", out var parsed)) return false;
+        var key = parsed.ToString();
+        return await db.Database.SqlQuery<bool>($"SELECT EXISTS (SELECT 1 FROM idempotency_keys WHERE user_id = {userId} AND key = {key}) AS \"Value\"").SingleAsync(ct);
     }
 
     /// <summary>Step (a): every check that doesn't need <c>serialized</c>, in request order. Returns the parsed lines, usable only while <paramref name="violations"/> stays empty.</summary>

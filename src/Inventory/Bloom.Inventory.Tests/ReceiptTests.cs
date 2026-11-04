@@ -289,6 +289,29 @@ public class ReceiptTests(Containers containers)
     }
 
     [Fact]
+    public async Task Same_key_replays_a_serialized_receipt()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t, serialized: true);
+        var (staff, key) = (TestCaller.Staff("warehouse"), Guid.NewGuid());
+        var body = new { lines = new[] { Line(sku, 2, ["SN1", "SN2"], [Imei(1), Imei(2)]) } };
+
+        using var first = await PostAsync(t, body, staff, key);
+        var receiptId = (await first.OkJsonAsync()).GetProperty("receiptId").GetString();
+        using var again = await PostAsync(t, body, staff, key); // its own serials are stored now; the retry must not trip over them
+
+        Assert.Equal(receiptId, (await again.OkJsonAsync()).GetProperty("receiptId").GetString());
+        Assert.Equal(2, (await Seed.ItemAsync(t, sku))!.OnHand);
+        await using var db = t.NewDb();
+        var serials = await db.SerialUnits.ToListAsync(Ct);
+        Assert.Equal(["SN1", "SN2"], serials.Select(s => s.Serial).Order());
+        Assert.All(serials, s => Assert.Equal(receiptId, s.ReceiptId.ToString()));
+        Assert.Single(await Outbox.AuditAsync(t));
+        using var different = await PostAsync(t, new { lines = new[] { Line(sku, 1, ["SN3"]) } }, staff, key);
+        await different.ExpectErrorAsync(400, "IDEMPOTENCY_KEY_REUSED");
+    }
+
+    [Fact]
     public async Task Concurrent_receipts_for_one_sku_allocate_serially()
     {
         await using var t = await TestInventory.StartAsync(containers);
