@@ -67,6 +67,7 @@ public static class InventoryApp
         {
             app.MapGrpcService<WarehouseService>();
             app.MapGrpcService<StockService>(); // internal, no HTTP route (spec §6)
+            app.MapGrpcService<PackingService>(); // internal, like StockService
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;
