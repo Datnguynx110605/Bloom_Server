@@ -1,3 +1,4 @@
+using Bloom.Fulfillment.Consumers;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Observability;
 using Bloom.Fulfillment.Services;
@@ -39,6 +40,7 @@ public static class FulfillmentApp
             o.RabbitMqUri = options.RabbitMq;
         });
         bloom.SendsCommandsTo("inventory", "payment");
+        bloom.AddConsumer<ReadyToFulfillConsumer>("ready-to-fulfill", ReadyToFulfillConsumer.Bindings);
         builder.Services.AddGrpcClient<InventoryPacking.InventoryPackingClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
 
