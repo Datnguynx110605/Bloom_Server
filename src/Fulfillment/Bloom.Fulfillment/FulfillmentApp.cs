@@ -3,6 +3,8 @@ using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Observability;
 using Bloom.Fulfillment.Services;
+using Bloom.Fulfillment.Shippo;
+using Bloom.Fulfillment.Worker;
 using Bloom.Inventory.Contracts;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
@@ -46,6 +48,12 @@ public static class FulfillmentApp
         builder.Services.AddScoped<Audit>();
         builder.Services.AddScoped<InventoryCalls>();
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
+        builder.Services.AddHttpClient<IShippo, ShippoClient>(c =>
+        {
+            c.BaseAddress = ShippoClient.BaseAddress;
+            c.Timeout = ShippoClient.Timeout;
+            c.DefaultRequestHeaders.Authorization = new("ShippoToken", options.Shippo.ApiKey);
+        });
 
         if (api)
         {
@@ -58,6 +66,7 @@ public static class FulfillmentApp
         else
         {
             bloom.AddWorker(); // worker only (plan R6)
+            builder.Services.AddHostedService<LabelWorker>();
         }
 
         var app = builder.Build();

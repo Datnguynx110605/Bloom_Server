@@ -1,7 +1,9 @@
 using Bloom.Fulfillment.Consumers;
 using Bloom.Fulfillment.Data;
+using Bloom.Fulfillment.Worker;
 using Bloom.Order.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Bloom.Fulfillment.Tests;
 
@@ -82,6 +84,18 @@ public static class Seed
         await using var db = t.NewDb();
         var shipmentId = await db.Shipments.AsNoTracking().Where(s => s.PackTaskId == task.Id).Select(s => s.Id).SingleAsync(TestContext.Current.CancellationToken);
         return (task.Id, shipmentId);
+    }
+
+    /// <summary>One pass of the label worker (the API-mode test host doesn't run it, plan R23).</summary>
+    public static Task RunLabelWorkerAsync(TestFulfillment t) =>
+        ActivatorUtilities.CreateInstance<LabelWorker>(t.Services).RunOnceAsync(TestContext.Current.CancellationToken);
+
+    /// <summary><see cref="PackedAsync"/> plus one label worker pass: the outbound shipment is <c>label_ready</c>.</summary>
+    public static async Task<(Guid TaskId, Guid ShipmentId)> LabelReadyAsync(TestFulfillment t, OrderReadyToFulfillV1 order, params string[] serials)
+    {
+        var packed = await PackedAsync(t, order, serials);
+        await RunLabelWorkerAsync(t);
+        return packed;
     }
 
     public static async Task SetTaskStatusAsync(TestFulfillment t, Guid orderId, string status)

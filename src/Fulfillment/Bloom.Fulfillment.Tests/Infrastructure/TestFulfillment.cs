@@ -1,5 +1,6 @@
 using Bloom.Fulfillment.Contracts;
 using Bloom.Fulfillment.Data;
+using Bloom.Fulfillment.Shippo;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -49,6 +50,9 @@ public sealed class TestFulfillment : IAsyncDisposable
     /// <summary>The inventory double the app calls; one per host.</summary>
     public required FakeInventory Inventory { get; init; }
 
+    /// <summary>The Shippo double behind the app's real <see cref="ShippoClient"/>; one per host.</summary>
+    public required FakeShippo Shippo { get; init; }
+
     /// <summary>The connection string of the database (the app connects as its owner, plan R2).</summary>
     public required string ConnectionString { get; init; }
 
@@ -63,6 +67,7 @@ public sealed class TestFulfillment : IAsyncDisposable
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var logs = new LogCapture();
         var inventory = await FakeInventory.StartAsync();
+        var shippo = new FakeShippo();
 
         var config = new Dictionary<string, string?>
         {
@@ -94,6 +99,7 @@ public sealed class TestFulfillment : IAsyncDisposable
             b.Configuration.AddInMemoryCollection(config);
             b.Services.AddSingleton<TimeProvider>(clock); // registered first, so the app's TryAdd keeps it
             b.Services.AddSingleton<ILoggerProvider>(logs);
+            b.Services.AddHttpClient<IShippo, ShippoClient>().ConfigurePrimaryHttpMessageHandler(() => shippo); // the app's own registration adds the rest
         });
         if (fresh)
         {
@@ -108,6 +114,7 @@ public sealed class TestFulfillment : IAsyncDisposable
             Clock = clock,
             Logs = logs,
             Inventory = inventory,
+            Shippo = shippo,
             ConnectionString = connectionString,
         };
     }
