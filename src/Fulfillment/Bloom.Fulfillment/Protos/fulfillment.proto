@@ -37,6 +37,11 @@ service FulfillmentWarehouse {
   rpc CompletePacking(CompletePackingRequest) returns (CompletePackingResponse) {
     option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/complete" body: "*" };
   }
+
+  // The label scan: label_ready -> handed_over (shipment and, for outbound, its pack task). A shipment already handed over is returned unchanged.
+  rpc HandOver(HandOverRequest) returns (Shipment) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/handover" body: "*" };
+  }
 }
 
 // `status` is a pack task status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
@@ -75,6 +80,14 @@ message ReplaceSerialRequest {
 message CompletePackingRequest {
   string task_id = 1;
   int64 version = 2;
+}
+
+// Exactly one of the two; neither is VALIDATION_FAILED `target`.
+message HandOverRequest {
+  oneof target {
+    string shipment_id = 1;
+    string tracking_number = 2;
+  }
 }
 
 message CompletePackingResponse {

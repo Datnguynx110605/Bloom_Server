@@ -3,6 +3,7 @@ using Bloom.Fulfillment.Context;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Errors;
+using Bloom.Fulfillment.Observability;
 using Bloom.Fulfillment.V1;
 using Bloom.Shared.Concurrency;
 using Bloom.Shared.Messaging;
@@ -16,7 +17,7 @@ namespace Bloom.Fulfillment.Services;
 
 /// <summary>05-fulfillment §3 component <c>Warehouse API</c>, packing (§6.2). Role first (plan R7), then validation (R10), then state (R9). Scans call inventory first, outside any transaction (spec §7).</summary>
 public sealed partial class WarehouseService(
-    FulfillmentDbContext db, ConcurrentUpdates updates, InventoryCalls inventory, Audit audit, OutboxWriter outbox, TimeProvider clock) : FulfillmentWarehouse.FulfillmentWarehouseBase
+    FulfillmentDbContext db, ConcurrentUpdates updates, InventoryCalls inventory, Audit audit, OutboxWriter outbox, FulfillmentMetrics metrics, TimeProvider clock) : FulfillmentWarehouse.FulfillmentWarehouseBase
 {
     public override async Task<ListPackTasksResponse> ListPackTasks(ListPackTasksRequest request, ServerCallContext context)
     {
