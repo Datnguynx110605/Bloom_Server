@@ -1,5 +1,6 @@
 using Bloom.Fulfillment.Consumers;
 using Bloom.Fulfillment.Data;
+using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Observability;
 using Bloom.Fulfillment.Services;
 using Bloom.Inventory.Contracts;
@@ -42,6 +43,8 @@ public static class FulfillmentApp
         bloom.SendsCommandsTo("inventory", "payment");
         bloom.AddConsumer<ReadyToFulfillConsumer>("ready-to-fulfill", ReadyToFulfillConsumer.Bindings);
         builder.Services.AddGrpcClient<InventoryPacking.InventoryPackingClient>(o => o.Address = new Uri(options.Inventory));
+        builder.Services.AddScoped<Audit>();
+        builder.Services.AddScoped<InventoryCalls>();
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
 
         if (api)
@@ -61,6 +64,7 @@ public static class FulfillmentApp
         if (api)
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
+            app.MapGrpcService<WarehouseService>();
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;

@@ -66,6 +66,24 @@ public static class Seed
         return await db.PackTasks.AsNoTracking().SingleOrDefaultAsync(p => p.RefId == orderId, TestContext.Current.CancellationToken);
     }
 
+    /// <summary>Starts packing, scans <paramref name="serials"/> onto the serialized product lines in line order (each up to its quantity), completes, all as <c>warehouse</c> over HTTP.</summary>
+    public static async Task<(Guid TaskId, Guid ShipmentId)> PackedAsync(TestFulfillment t, OrderReadyToFulfillV1 order, params string[] serials)
+    {
+        var warehouse = TestCaller.Staff("warehouse");
+        var task = (await TaskAsync(t, order.OrderId))!;
+        var path = $"/api/admin/fulfillment/tasks/{task.Id}";
+        using (var start = await t.SendAsync(HttpMethod.Post, $"{path}/start", new { version = task.Version }, warehouse)) await start.OkJsonAsync();
+        var next = 0;
+        foreach (var line in order.Lines.Where(l => l is { Kind: "product", Serialized: true }).OrderBy(l => l.LineNo))
+            for (var i = 0; i < line.Quantity && next < serials.Length; i++)
+                using (var scan = await t.SendAsync(HttpMethod.Post, $"{path}/serials", new { lineNo = line.LineNo, serial = serials[next++] }, warehouse)) await scan.OkJsonAsync();
+        using (var complete = await t.SendAsync(HttpMethod.Post, $"{path}/complete", new { version = task.Version + 1 }, warehouse)) await complete.OkJsonAsync();
+
+        await using var db = t.NewDb();
+        var shipmentId = await db.Shipments.AsNoTracking().Where(s => s.PackTaskId == task.Id).Select(s => s.Id).SingleAsync(TestContext.Current.CancellationToken);
+        return (task.Id, shipmentId);
+    }
+
     public static async Task SetTaskStatusAsync(TestFulfillment t, Guid orderId, string status)
     {
         await using var db = t.NewDb();

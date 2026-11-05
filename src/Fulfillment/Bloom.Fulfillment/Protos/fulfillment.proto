@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package bloom.fulfillment.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Fulfillment.V1";
+
+// 05-fulfillment §5.1, Warehouse API: staff only (warehouse, admin), transcoded to JSON under /api/admin/fulfillment (spec §6).
+service FulfillmentWarehouse {
+  // Oldest first by (created_at, id); cancellation markers are left out.
+  rpc ListPackTasks(ListPackTasksRequest) returns (ListPackTasksResponse) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/tasks" };
+  }
+
+  // pending -> packing at `version`. Publishes packing-started for order tasks.
+  rpc StartPacking(StartPackingRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/start" body: "*" };
+  }
+
+  // Calls inventory first, then records the serial on the line. The same serial again on the same line changes nothing.
+  rpc ScanSerial(ScanSerialRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/serials" body: "*" };
+  }
+
+  rpc UnassignSerial(UnassignSerialRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/serials/unassign" body: "*" };
+  }
+
+  // The new serial takes the old one's line and position.
+  rpc ReplaceSerial(ReplaceSerialRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/serials/replace" body: "*" };
+  }
+
+  // packing -> packed at `version`: SERIALS_INCOMPLETE unless every serialized line is full. Creates the outbound shipment and the warranty coverages.
+  rpc CompletePacking(CompletePackingRequest) returns (CompletePackingResponse) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/complete" body: "*" };
+  }
+}
+
+// `status` is a pack task status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
+message ListPackTasksRequest {
+  optional string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListPackTasksResponse {
+  repeated PackTask items = 1;
+}
+
+message StartPackingRequest {
+  string task_id = 1;
+  int64 version = 2;
+}
+
+message ScanSerialRequest {
+  string task_id = 1;
+  int32 line_no = 2;
+  string serial = 3;
+}
+
+message UnassignSerialRequest {
+  string task_id = 1;
+  string serial = 2;
+}
+
+message ReplaceSerialRequest {
+  string task_id = 1;
+  string old_serial = 2;
+  string new_serial = 3;
+}
+
+message CompletePackingRequest {
+  string task_id = 1;
+  int64 version = 2;
+}
+
+message CompletePackingResponse {
+  PackTask task = 1;
+  Shipment shipment = 2;
+}
+
+// `kind` is order | reship; `status` is pending | packing | packed | handed_over | cancelled; `ref_id` is the order id or the reship id.
+message PackTask {
+  string id = 1;
+  string order_id = 2;
+  string ref_id = 3;
+  string kind = 4;
+  string status = 5;
+  string shipping_option = 6;
+  int64 version = 7;
+  repeated PackTaskLine lines = 8;
+  repeated ScannedSerial serials = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message PackTaskLine {
+  int32 line_no = 1;
+  string kind = 2;
+  string sku_id = 3;
+  string product_id = 4;
+  bool serialized = 5;
+  int32 quantity = 6;
+  optional int32 parent_line_no = 7;
+  optional int32 coverage_months = 8;
+}
+
+// `seq` is the scan order within the task.
+message ScannedSerial {
+  int32 line_no = 1;
+  string serial = 2;
+  int32 seq = 3;
+}
+
+message Shipment {
+  string id = 1;
+  string order_id = 2;
+  string direction = 3;
+  string service = 4;
+  string status = 5;
+  string tracking_number = 6;
+  string label_url = 7;
+  int64 version = 8;
+}

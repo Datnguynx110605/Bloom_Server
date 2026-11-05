@@ -46,6 +46,9 @@ public sealed class TestFulfillment : IAsyncDisposable
 
     public required LogCapture Logs { get; init; }
 
+    /// <summary>The inventory double the app calls; one per host.</summary>
+    public required FakeInventory Inventory { get; init; }
+
     /// <summary>The connection string of the database (the app connects as its owner, plan R2).</summary>
     public required string ConnectionString { get; init; }
 
@@ -59,13 +62,14 @@ public sealed class TestFulfillment : IAsyncDisposable
         var connectionString = options.ConnectionString ?? await containers.CreateDatabaseAsync();
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var logs = new LogCapture();
+        var inventory = await FakeInventory.StartAsync();
 
         var config = new Dictionary<string, string?>
         {
             ["Fulfillment:Mode"] = options.Mode,
             ["Fulfillment:Database"] = connectionString,
             ["Fulfillment:RabbitMq"] = containers.RabbitMqUri,
-            ["Fulfillment:Inventory"] = "http://localhost:8080", // Task 4 replaces it with FakeInventory's address
+            ["Fulfillment:Inventory"] = inventory.Address.ToString(),
             ["Fulfillment:Shippo:ApiKey"] = "key-test",
             ["Fulfillment:Shippo:WebhookSecret"] = "secret-test",
             ["Fulfillment:Shippo:Carrier"] = "usps",
@@ -103,6 +107,7 @@ public sealed class TestFulfillment : IAsyncDisposable
             Http = app.GetTestClient(),
             Clock = clock,
             Logs = logs,
+            Inventory = inventory,
             ConnectionString = connectionString,
         };
     }
@@ -118,5 +123,6 @@ public sealed class TestFulfillment : IAsyncDisposable
         Http.Dispose();
         _channel.Dispose();
         await _app.DisposeAsync();
+        await Inventory.DisposeAsync();
     }
 }
