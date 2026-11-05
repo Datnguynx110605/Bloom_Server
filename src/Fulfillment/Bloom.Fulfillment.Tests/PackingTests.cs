@@ -115,6 +115,14 @@ public class PackingTests(Containers containers)
         Assert.Equal(TaskStatuses.Cancelled, (await Seed.TaskAsync(t, packed.OrderId))!.Status);
         await using var db = t.NewDb();
         Assert.Equal(ShipmentStatuses.Voided, (await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == shipmentId, Ct)).Status); // label_pending: nothing was bought
+        var coverage = await db.WarrantyCoverages.AsNoTracking().SingleAsync(Ct);
+        Assert.Equal((packed.OrderId, "PK1", CoverageStatuses.Cancelled), (coverage.OrderId, coverage.Serial, coverage.Status));
+
+        var again = Seed.Ready(); // the released serial is free for another order (ux_warranty_coverages_serial_open)
+        await Seed.ReadyAsync(t, again);
+        await Seed.PackedAsync(t, again, "PK1", "PK3");
+        Assert.Equal([CoverageStatuses.Cancelled, CoverageStatuses.PendingDelivery],
+            await db.WarrantyCoverages.AsNoTracking().OrderBy(c => c.Status).Select(c => c.Status).ToListAsync(Ct));
     }
 
     [Fact]

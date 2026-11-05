@@ -39,12 +39,19 @@ public sealed class InternalService(FulfillmentDbContext db, TimeProvider clock)
             if (cancelled == 1)
             {
                 if (support)
+                {
                     await db.Database.ExecuteSqlAsync($"""
                         UPDATE shipments
                         SET status = CASE WHEN status = {ShipmentStatuses.LabelReady} THEN {ShipmentStatuses.VoidPending} ELSE {ShipmentStatuses.Voided} END, version = version + 1
                         WHERE pack_task_id = (SELECT id FROM pack_tasks WHERE ref_id = {orderId})
                           AND status IN ({ShipmentStatuses.LabelPending}, {ShipmentStatuses.LabelReady})
                         """, ct);
+                    // Last in the lock order. The released serials must be free for another order (ux_warranty_coverages_serial_open).
+                    await db.Database.ExecuteSqlAsync($"""
+                        UPDATE warranty_coverages SET status = {CoverageStatuses.Cancelled}
+                        WHERE order_id = {orderId} AND status = {CoverageStatuses.PendingDelivery}
+                        """, ct);
+                }
                 break;
             }
 
