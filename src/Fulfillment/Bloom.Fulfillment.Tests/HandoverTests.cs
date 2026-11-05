@@ -27,11 +27,12 @@ public class HandoverTests(Containers containers)
         return await db.PackTasks.AsNoTracking().Where(p => p.Id == taskId).Select(p => p.Status).SingleAsync(Ct);
     }
 
-    private static async Task<(Bloom.Order.Contracts.OrderReadyToFulfillV1 Order, Guid TaskId, Guid ShipmentId)> LabelReadyAsync(TestFulfillment t)
+    private static async Task<(Bloom.Order.Contracts.OrderReadyToFulfillV1 Order, Guid TaskId, Guid ShipmentId)> LabelReadyAsync(TestFulfillment t, string? id = null)
     {
+        id ??= Guid.NewGuid().ToString("N")[..12].ToUpperInvariant(); // an open coverage keeps its serial, so each round needs fresh ones (F01)
         var ready = Seed.Ready();
         await Seed.ReadyAsync(t, ready);
-        var (taskId, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB", "SNA");
+        var (taskId, shipmentId) = await Seed.LabelReadyAsync(t, ready, $"SNB{id}", $"SNA{id}");
         return (ready, taskId, shipmentId);
     }
 
@@ -40,7 +41,8 @@ public class HandoverTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
-        var (order, taskId, shipmentId) = await LabelReadyAsync(t);
+        const string id = "X1";
+        var (order, taskId, shipmentId) = await LabelReadyAsync(t, id);
         var tracking = (await ShipmentAsync(t, shipmentId)).TrackingNumber!;
         t.Clock.Advance(TimeSpan.FromSeconds(90.5));
 
@@ -56,7 +58,7 @@ public class HandoverTests(Containers containers)
         Assert.Equal((order.OrderId, order.OrderId, tracking), (shipped.OrderId, shipped.RefId, shipped.TrackingNumber));
         var line = Assert.Single(shipped.Lines); // the plan line is left out
         Assert.Equal((order.Lines[0].SkuId, 2), (line.SkuId, line.Quantity));
-        Assert.Equal(["SNB", "SNA"], line.Serials);
+        Assert.Equal([$"SNB{id}", $"SNA{id}"], line.Serials);
         var audit = (await Outbox.AuditAsync(t)).Last();
         Assert.Equal(("fulfillment.hand-over", "shipment", shipmentId.ToString(), Warehouse.Id), (audit.Action, audit.TargetType, audit.TargetId, audit.ActorId));
         Assert.Equal(1, metrics.Count("time_to_handover_seconds", ("shipping_option", "standard")));
