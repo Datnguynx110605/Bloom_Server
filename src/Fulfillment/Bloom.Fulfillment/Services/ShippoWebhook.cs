@@ -123,6 +123,12 @@ public static class ShippoWebhook
             case ShipmentStatuses.ReturnedToSender:
                 await failures.ConfirmReturnedAsync(s.Id, ct);
                 break;
+            case ShipmentStatuses.InTransit when s.Direction == Directions.Return: // lock order: shipments → return_requests
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE return_requests SET status = {ReturnStatuses.InTransit}, version = version + 1, updated_at = {now}
+                    WHERE id = {s.ReturnRequestId} AND status = {ReturnStatuses.LabelIssued}
+                    """, ct);
+                break;
             case ShipmentStatuses.Delivered when s.Direction == Directions.Outbound:
                 await DeliveredAsync(s, db, outbox, now, ct);
                 break;
@@ -132,13 +138,15 @@ public static class ShippoWebhook
         return to is not null;
     }
 
-    // Return-direction shipments (label_issued → in_transit) are the returns work's; here they only take last_tracking_at.
+    // Return shipments follow the label and the carrier (label_ready → in_transit → delivered); their request is the warehouse's to receive, so only TRANSIT moves it.
     private static string? Target(Shipment s, string tracking) => (s.Direction, tracking) switch
     {
         (Directions.Outbound, "TRANSIT") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.PossiblyLost => ShipmentStatuses.InTransit,
         (Directions.Outbound, "DELIVERED") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit or ShipmentStatuses.PossiblyLost => ShipmentStatuses.Delivered,
         (Directions.Outbound, "RETURNED") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit or ShipmentStatuses.PossiblyLost => ShipmentStatuses.ReturnedToSender,
         (Directions.Outbound, "FAILURE") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit => ShipmentStatuses.PossiblyLost,
+        (Directions.Return, "TRANSIT") when s.Status == ShipmentStatuses.LabelReady => ShipmentStatuses.InTransit,
+        (Directions.Return, "DELIVERED") when s.Status is ShipmentStatuses.LabelReady or ShipmentStatuses.InTransit => ShipmentStatuses.Delivered,
         (Directions.ShipBack, "TRANSIT") when s.Status == ShipmentStatuses.HandedOver => ShipmentStatuses.InTransit,
         (Directions.ShipBack, "DELIVERED") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit => ShipmentStatuses.Delivered,
         _ => null,

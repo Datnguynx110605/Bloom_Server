@@ -205,7 +205,7 @@ public class LabelTests(Containers containers)
     }
 
     /// <summary>Blocks (synchronously: it runs inside the fake's handler) until some session waits for a lock, so the test really exercises the row-lock wait.</summary>
-    private static void WaitUntilSomeoneWaitsForALock(string connectionString)
+    internal static void WaitUntilSomeoneWaitsForALock(string connectionString)
     {
         using var conn = new NpgsqlConnection(connectionString);
         conn.Open();

@@ -43,4 +43,30 @@ public static class Views
         Id = s.Id.ToString(), OrderId = s.OrderId.ToString(), Direction = s.Direction, Service = s.Service, Status = s.Status,
         TrackingNumber = s.TrackingNumber ?? "", LabelUrl = s.LabelUrl ?? "", Version = s.Version,
     };
+
+    /// <summary>The returns with their units (by <c>unit_no</c>) and label URLs, in the order given; two queries for the whole page.</summary>
+    public static async Task<List<V1.ReturnRequest>> ReturnsAsync(FulfillmentDbContext db, IReadOnlyList<Data.ReturnRequest> returns, CancellationToken ct)
+    {
+        var ids = returns.Select(r => r.Id).ToList();
+        var shipmentIds = returns.Select(r => r.ReturnShipmentId).OfType<Guid>().ToList();
+        var units = (await db.ReturnUnits.AsNoTracking().Where(u => ids.Contains(u.ReturnId)).OrderBy(u => u.UnitNo).ToListAsync(ct)).ToLookup(u => u.ReturnId);
+        var labels = await db.Shipments.AsNoTracking().Where(s => shipmentIds.Contains(s.Id)).ToDictionaryAsync(s => s.Id, s => s.LabelUrl, ct);
+        return returns.Select(r =>
+        {
+            var view = new V1.ReturnRequest
+            {
+                Id = r.Id.ToString(), OrderId = r.OrderId.ToString(), Status = r.Status, ExpiresAt = Timestamp.FromDateTimeOffset(r.ExpiresAt),
+                LabelUrl = (r.ReturnShipmentId is { } sid ? labels.GetValueOrDefault(sid) : null) ?? "", Version = r.Version, CreatedAt = Timestamp.FromDateTimeOffset(r.CreatedAt),
+            };
+            view.Units.AddRange(units[r.Id].Select(u => new V1.ReturnUnit
+            {
+                UnitNo = u.UnitNo, LineNo = u.LineNo, ReceivedSerial = u.ReceivedSerial ?? "", InspectionResult = u.InspectionResult ?? "", InspectionNotes = u.InspectionNotes ?? "",
+                Decision = u.Decision ?? "", RefundCents = u.RefundCents, RefundTaxCents = u.RefundTaxCents,
+            }));
+            return view;
+        }).ToList();
+    }
+
+    public static async Task<V1.ReturnRequest> ReturnAsync(FulfillmentDbContext db, Guid returnId, CancellationToken ct) =>
+        (await ReturnsAsync(db, await db.ReturnRequests.AsNoTracking().Where(r => r.Id == returnId).ToListAsync(ct), ct)).Single();
 }

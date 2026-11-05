@@ -76,6 +76,7 @@ public static class FulfillmentApp
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<WarehouseService>();
+            app.MapGrpcService<CustomerService>();
             app.MapShippoWebhook();
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }

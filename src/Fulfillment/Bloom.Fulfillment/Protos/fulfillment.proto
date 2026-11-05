@@ -42,6 +42,105 @@ service FulfillmentWarehouse {
   rpc HandOver(HandOverRequest) returns (Shipment) {
     option (google.api.http) = { post: "/api/admin/fulfillment/handover" body: "*" };
   }
+
+  // Oldest first by (created_at, id). ReturnViewers: warehouse, support, admin.
+  rpc ListReturns(ListReturnsRequest) returns (ListReturnsResponse) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/returns" };
+  }
+
+  // label_issued | in_transit -> received. INVALID_RETURN_STATE otherwise.
+  rpc ReceiveReturn(ReceiveReturnRequest) returns (ReturnRequest) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/receive" body: "*" };
+  }
+
+  // received -> inspected. Covers every unit exactly once. A serial the order never shipped is stored with result wrong_item.
+  rpc RecordInspection(RecordInspectionRequest) returns (ReturnRequest) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/inspection" body: "*" };
+  }
+}
+
+// 05-fulfillment §5.1, Customer API: customers only, transcoded to JSON under /api/returns (spec §6).
+service FulfillmentCustomer {
+  // Product units of a delivered order, within 14 days of delivery.
+  rpc RequestReturn(RequestReturnRequest) returns (ReturnRequest) {
+    option (google.api.http) = { post: "/api/returns" body: "*" };
+  }
+
+  // The caller's own returns, newest first.
+  rpc ListMyReturns(ListMyReturnsRequest) returns (ListMyReturnsResponse) {
+    option (google.api.http) = { get: "/api/returns" };
+  }
+}
+
+// `status` is a return status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
+message ListReturnsRequest {
+  optional string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListReturnsResponse {
+  repeated ReturnRequest items = 1;
+}
+
+message ListMyReturnsRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message ListMyReturnsResponse {
+  repeated ReturnRequest items = 1;
+}
+
+message ReceiveReturnRequest {
+  string return_id = 1;
+}
+
+message RequestReturnRequest {
+  string order_id = 1;
+  repeated ReturnLine units = 2;
+}
+
+message ReturnLine {
+  int32 line_no = 1;
+  int32 quantity = 2;
+}
+
+message RecordInspectionRequest {
+  string return_id = 1;
+  repeated InspectionUnit units = 2;
+}
+
+// `received_serial` is required for serialized lines and empty for the others; `result` is ok | damaged | missing_parts | wrong_item; `notes` up to 500 characters.
+message InspectionUnit {
+  int32 unit_no = 1;
+  string received_serial = 2;
+  string result = 3;
+  string notes = 4;
+}
+
+// `status` is requested | label_issued | in_transit | received | inspected | decided | expired; `label_url` is empty until the label is bought.
+message ReturnRequest {
+  string id = 1;
+  string order_id = 2;
+  string status = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  string label_url = 5;
+  int64 version = 6;
+  repeated ReturnUnit units = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// The inspection and decision fields are empty (0 for the amounts) until recorded.
+message ReturnUnit {
+  int32 unit_no = 1;
+  int32 line_no = 2;
+  string received_serial = 3;
+  string inspection_result = 4;
+  string inspection_notes = 5;
+  string decision = 6;
+  int64 refund_cents = 7;
+  int64 refund_tax_cents = 8;
 }
 
 // `status` is a pack task status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using Bloom.Fulfillment.Consumers;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Worker;
@@ -96,6 +98,65 @@ public static class Seed
         var packed = await PackedAsync(t, order, serials);
         await RunLabelWorkerAsync(t);
         return packed;
+    }
+
+    /// <summary>Shippo now reports <paramref name="status"/> for the number and the webhook fires; asserts HTTP 200.</summary>
+    public static async Task TrackAsync(TestFulfillment t, string tracking, string status)
+    {
+        t.Shippo.SetTracking(tracking, status);
+        var body = $$$"""{"event":"track_updated","data":{"tracking_number":"{{{tracking}}}"}}""";
+        using var response = await t.Http.PostAsync("/webhooks/shippo/secret-test", new StringContent(body, Encoding.UTF8, "application/json"), TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    /// <summary><see cref="LabelReadyAsync"/>, the handover scan and a <c>DELIVERED</c> event: the order's return window opens at the fake clock's now.</summary>
+    public static async Task<(Guid TaskId, Guid ShipmentId)> DeliveredAsync(TestFulfillment t, OrderReadyToFulfillV1 order, params string[] serials)
+    {
+        var ready = await LabelReadyAsync(t, order, serials);
+        using (var handover = await t.SendAsync(HttpMethod.Post, "/api/admin/fulfillment/handover", new { shipmentId = ready.ShipmentId }, TestCaller.Staff("warehouse")))
+            await handover.OkJsonAsync();
+        await using var db = t.NewDb();
+        var tracking = await db.Shipments.AsNoTracking().Where(s => s.Id == ready.ShipmentId).Select(s => s.TrackingNumber).SingleAsync(TestContext.Current.CancellationToken);
+        await TrackAsync(t, tracking!, "DELIVERED");
+        return ready;
+    }
+
+    /// <summary><c>RequestReturn</c> as <paramref name="customer"/> (status <c>requested</c>, label not yet bought).</summary>
+    public static async Task<Guid> ReturnAsync(TestFulfillment t, Guid orderId, TestCaller customer, params (int LineNo, int Qty)[] units)
+    {
+        using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId, units = units.Select(u => new { lineNo = u.LineNo, quantity = u.Qty }) }, customer);
+        return Guid.Parse((await response.OkJsonAsync()).GetProperty("id").GetString()!);
+    }
+
+    /// <summary><see cref="ReturnAsync"/>, one label worker pass and <c>ReceiveReturn</c> as <c>warehouse</c>.</summary>
+    public static async Task<Guid> ReceivedReturnAsync(TestFulfillment t, Guid orderId, TestCaller customer, params (int LineNo, int Qty)[] units)
+    {
+        var returnId = await ReturnAsync(t, orderId, customer, units);
+        await RunLabelWorkerAsync(t);
+        using var receive = await t.SendAsync(HttpMethod.Post, $"/api/admin/fulfillment/returns/{returnId}/receive", new { }, TestCaller.Staff("warehouse"));
+        await receive.OkJsonAsync();
+        return returnId;
+    }
+
+    /// <summary><see cref="ReceivedReturnAsync"/> and <c>RecordInspection</c>, every unit <c>ok</c>. A serialized line's units take the order's shipped serials of that line by <c>seq</c>, skipping serials an earlier return of the order already took.</summary>
+    public static async Task<Guid> InspectedReturnAsync(TestFulfillment t, Guid orderId, TestCaller customer, params (int LineNo, int Qty)[] units)
+    {
+        var returnId = await ReceivedReturnAsync(t, orderId, customer, units);
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = t.NewDb();
+        var rows = await db.ReturnUnits.AsNoTracking().Where(u => u.ReturnId == returnId).OrderBy(u => u.UnitNo).ToListAsync(ct);
+        var used = await db.ReturnUnits.AsNoTracking().Where(u => u.ReceivedSerial != null && db.ReturnRequests.Any(r => r.Id == u.ReturnId && r.OrderId == orderId))
+            .Select(u => u.ReceivedSerial!).ToListAsync(ct);
+        var shipped = (await db.PackTaskSerials.AsNoTracking().Where(s => db.PackTasks.Any(p => p.Id == s.TaskId && p.OrderId == orderId)).OrderBy(s => s.Seq).ToListAsync(ct))
+            .GroupBy(s => s.LineNo).ToDictionary(g => g.Key, g => new Queue<string>(g.Select(s => s.Serial).Except(used)));
+
+        var inspection = rows.Select(u => new
+        {
+            unitNo = u.UnitNo, receivedSerial = shipped.TryGetValue(u.LineNo, out var queue) && queue.Count > 0 ? queue.Dequeue() : "", result = "ok",
+        }).ToList();
+        using var response = await t.SendAsync(HttpMethod.Post, $"/api/admin/fulfillment/returns/{returnId}/inspection", new { units = inspection }, TestCaller.Staff("warehouse"));
+        await response.OkJsonAsync();
+        return returnId;
     }
 
     public static async Task SetTaskStatusAsync(TestFulfillment t, Guid orderId, string status)
