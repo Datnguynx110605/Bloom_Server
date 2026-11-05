@@ -47,6 +47,7 @@ public static class FulfillmentApp
         builder.Services.AddGrpcClient<InventoryPacking.InventoryPackingClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddScoped<Audit>();
         builder.Services.AddScoped<InventoryCalls>();
+        builder.Services.AddScoped<Failures>();
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddHttpClient<IShippo, ShippoClient>(c =>
         {
@@ -67,6 +68,7 @@ public static class FulfillmentApp
         {
             bloom.AddWorker(); // worker only (plan R6)
             builder.Services.AddHostedService<LabelWorker>();
+            builder.Services.AddHostedService<Sweeps>();
         }
 
         var app = builder.Build();
@@ -74,6 +76,7 @@ public static class FulfillmentApp
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<WarehouseService>();
+            app.MapShippoWebhook();
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;
