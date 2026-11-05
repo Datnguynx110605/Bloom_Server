@@ -7,6 +7,8 @@
   </Folder>
   <Folder Name="/src/Fulfillment/">
     <Project Path="src/Fulfillment/Bloom.Fulfillment.Contracts/Bloom.Fulfillment.Contracts.csproj" />
+    <Project Path="src/Fulfillment/Bloom.Fulfillment.Tests/Bloom.Fulfillment.Tests.csproj" />
+    <Project Path="src/Fulfillment/Bloom.Fulfillment/Bloom.Fulfillment.csproj" />
   </Folder>
   <Folder Name="/src/Gateway/">
     <Project Path="src/Gateway/Bloom.Gateway.Tests/Bloom.Gateway.Tests.csproj" />
@@ -27,6 +29,9 @@
   </Folder>
   <Folder Name="/src/Order/">
     <Project Path="src/Order/Bloom.Order.Contracts/Bloom.Order.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/src/Payment/">
+    <Project Path="src/Payment/Bloom.Payment.Contracts/Bloom.Payment.Contracts.csproj" />
   </Folder>
   <Folder Name="/src/Shared/">
     <Project Path="src/Shared/Bloom.Shared.Tests/Bloom.Shared.Tests.csproj" />
