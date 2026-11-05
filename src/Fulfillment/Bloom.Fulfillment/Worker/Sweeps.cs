@@ -37,17 +37,22 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, ILog
 
     /// <summary>
     /// <c>requested</c> / <c>label_issued</c> requests past <c>expires_at</c> (RET-R15, spec §7), one transaction each: lock the shipment, guarded request → <c>expired</c>
-    /// (checked again under the lock), the shipment's label taken away (plan R15) and <c>return-closed</c>. <c>in_transit</c> and later never expire.
+    /// (checked again under the lock), the shipment's label taken away (plan R15) and <c>return-closed</c>. <c>in_transit</c> and later never expire, nor does a request whose return shipment the carrier has scanned.
     /// </summary>
     internal async Task RunReturnExpiryAsync(CancellationToken ct)
     {
         string[] open = [ReturnStatuses.Requested, ReturnStatuses.LabelIssued];
+        string[] scanned = [ShipmentStatuses.InTransit, ShipmentStatuses.Delivered]; // the carrier has the label: RET-R15 is "label not scanned within 14 days"
         List<Guid> due;
         await using (var scope = scopes.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
             var now = clock.GetUtcNow();
-            due = await db.Database.SqlQuery<Guid>($"SELECT id AS \"Value\" FROM return_requests WHERE status = ANY({open}) AND expires_at < {now}").ToListAsync(ct);
+            due = await db.Database.SqlQuery<Guid>($"""
+                SELECT r.id AS "Value" FROM return_requests r
+                WHERE r.status = ANY({open}) AND r.expires_at < {now}
+                  AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.return_request_id = r.id AND s.direction = {Directions.Return} AND s.status = ANY({scanned}))
+                """).ToListAsync(ct);
         }
 
         foreach (var id in due)
@@ -60,6 +65,7 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, ILog
             var orderId = (await db.Database.SqlQuery<Guid>($"""
                 UPDATE return_requests SET status = {ReturnStatuses.Expired}, version = version + 1, updated_at = {now}
                 WHERE id = {id} AND status = ANY({open}) AND expires_at < {now}
+                  AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.return_request_id = {id} AND s.direction = {Directions.Return} AND s.status = ANY({scanned}))
                 RETURNING order_id AS "Value"
                 """).ToListAsync(ct)).SingleOrDefault();
             if (orderId == Guid.Empty) continue; // moved on since the scan

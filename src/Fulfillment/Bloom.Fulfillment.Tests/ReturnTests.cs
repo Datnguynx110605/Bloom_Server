@@ -239,6 +239,63 @@ public class ReturnTests(Containers containers)
     }
 
     [Fact]
+    public async Task Duplicate_serial_in_one_inspection_is_VALIDATION_FAILED()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t);
+        var returnId = await Seed.ReceivedReturnAsync(t, order.OrderId, customer, (1, 2));
+
+        using var response = await InspectAsync(t, returnId, new[] { Inspect(1, serials[0]), Inspect(2, serials[0].ToLowerInvariant()) });
+
+        await response.ExpectValidationAsync("units");
+        Assert.Equal(ReturnStatuses.Received, (await ReturnAsync(t, returnId)).Status);
+        Assert.All(await UnitsAsync(t, returnId), u => Assert.Equal((null, null), (u.ReceivedSerial, u.InspectionResult)));
+    }
+
+    [Fact]
+    public async Task Serial_of_another_line_is_wrong_item()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var id = Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
+        string[] serials = [$"LA{id}", $"LB{id}", $"LC{id}"]; // lines: 1 has two units, 3 has one
+        var ready = Seed.Ready(b => b.Line(3, serialized: true, quantity: 1));
+        await Seed.ReadyAsync(t, ready);
+        await Seed.DeliveredAsync(t, ready, serials);
+        var customer = TestCaller.Customer(ready.AccountId);
+        var returnId = await Seed.ReceivedReturnAsync(t, ready.OrderId, customer, (1, 2), (3, 1));
+
+        using var response = await InspectAsync(t, returnId, new[] { Inspect(1, serials[0]), Inspect(2, serials[2]), Inspect(3, serials[1]) }); // unit 2 is line 1, unit 3 is line 3
+        await response.OkJsonAsync();
+
+        Assert.Equal([("ok", serials[0]), ("wrong_item", serials[2]), ("wrong_item", serials[1])],
+            (await UnitsAsync(t, returnId)).Select(u => (u.InspectionResult!, u.ReceivedSerial!)).ToArray());
+    }
+
+    [Theory]
+    [InlineData(ReturnStatuses.Inspected, null, "wrong_item")]
+    [InlineData(ReturnStatuses.Decided, Decisions.Full, "wrong_item")]
+    [InlineData(ReturnStatuses.Decided, Decisions.Reject, "ok")]
+    public async Task Serial_held_by_another_return_of_the_order_is_wrong_item(string firstStatus, string? firstDecision, string expected)
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t);
+        var first = await Seed.InspectedReturnAsync(t, order.OrderId, customer, (1, 1));
+        var held = (await UnitsAsync(t, first)).Single().ReceivedSerial!;
+        Assert.Contains(held, serials);
+        await using (var db = t.NewDb())
+        {
+            await db.ReturnRequests.Where(r => r.Id == first).ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, firstStatus), Ct);
+            await db.ReturnUnits.Where(u => u.ReturnId == first).ExecuteUpdateAsync(s => s.SetProperty(u => u.Decision, firstDecision), Ct);
+        }
+        var second = await Seed.ReceivedReturnAsync(t, order.OrderId, customer, (1, 1));
+
+        using var response = await InspectAsync(t, second, new[] { Inspect(1, held) });
+        await response.OkJsonAsync();
+
+        Assert.Equal(expected, (await UnitsAsync(t, second)).Single().InspectionResult);
+    }
+
+    [Fact]
     public async Task Receive_in_wrong_state_is_INVALID_RETURN_STATE()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
@@ -334,6 +391,25 @@ public class ReturnTests(Containers containers)
         Assert.Equal(ShipmentStatuses.Voided, (await ReturnShipmentAsync(t, returnId)).Status);
         Assert.Equal([transactionId], t.Shippo.Refunds);
         Assert.Equal(2, t.Shippo.Transactions.Count);
+    }
+
+    [Fact]
+    public async Task Expiry_leaves_a_carrier_scanned_return_alone()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, _, customer) = await DeliveredAsync(t);
+        var returnId = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 1));
+        await Seed.RunLabelWorkerAsync(t);
+        await Seed.TrackAsync(t, (await ReturnShipmentAsync(t, returnId)).TrackingNumber!, "DELIVERED"); // no TRANSIT event came
+
+        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
+        await SweepAsync(t);
+
+        Assert.Equal(ShipmentStatuses.Delivered, (await ReturnShipmentAsync(t, returnId)).Status);
+        Assert.Equal(ReturnStatuses.LabelIssued, (await ReturnAsync(t, returnId)).Status);
+        Assert.Empty(await Outbox.PayloadsAsync<ReturnClosedV1>(t, FulfillmentMessages.ReturnClosed));
+        using var receive = await ReceiveAsync(t, returnId);
+        Assert.Equal("received", (await receive.OkJsonAsync()).GetProperty("status").GetString());
     }
 
     [Fact]

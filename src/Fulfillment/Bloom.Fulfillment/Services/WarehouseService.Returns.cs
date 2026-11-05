@@ -53,7 +53,8 @@ public sealed partial class WarehouseService
 
     /// <summary>
     /// Validation first (R10), then the guarded <c>received → inspected</c> (R9). Every unit exactly once; serialized lines need a valid serial, the others none.
-    /// A serial that is in no <c>pack_task_serials</c> row of the order is stored with <c>wrong_item</c> whatever the staff member chose.
+    /// A serial is stored with <c>wrong_item</c>, whatever the staff member chose, when it was not shipped on the unit's own line of this order or another return of the order already holds it
+    /// (<c>received</c> / <c>inspected</c>, or <c>decided</c> with a unit decision other than <c>reject</c>). One serial on two units of the call is <c>VALIDATION_FAILED</c>.
     /// </summary>
     public override async Task<V1.ReturnRequest> RecordInspection(RecordInspectionRequest request, ServerCallContext context)
     {
@@ -81,8 +82,9 @@ public sealed partial class WarehouseService
             else serials[unit.UnitNo] = null;
         }
         var claimed = serials.Values.OfType<string>().ToList();
-        var shipped = await db.PackTaskSerials.AsNoTracking().Where(s => claimed.Contains(s.Serial) && db.PackTasks.Any(p => p.Id == s.TaskId && p.OrderId == orderId))
-            .Select(s => s.Serial).ToListAsync(ct);
+        if (claimed.Distinct().Count() != claimed.Count) throw FulfillmentErrors.Validation("units", "A serial can be on one unit only.");
+        var shipped = (await db.PackTaskSerials.AsNoTracking().Where(s => claimed.Contains(s.Serial) && db.PackTasks.Any(p => p.Id == s.TaskId && p.OrderId == orderId))
+            .Select(s => new { s.Serial, s.LineNo }).ToListAsync(ct)).Select(s => (s.Serial, s.LineNo)).ToHashSet();
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var now = clock.GetUtcNow();
@@ -92,11 +94,18 @@ public sealed partial class WarehouseService
             """, ct) != 1)
             throw await WrongReturnStateAsync(returnId, "received", ct);
 
+        // Lock order: return_requests → order_accounts. Two returns of one order can't both take a serial.
+        await db.Database.ExecuteSqlAsync($"SELECT 1 FROM order_accounts WHERE order_id = {orderId} FOR UPDATE", ct);
+        var held = await db.ReturnUnits.AsNoTracking()
+            .Where(u => claimed.Contains(u.ReceivedSerial!) && db.ReturnRequests.Any(r => r.Id == u.ReturnId && r.OrderId == orderId && r.Id != returnId
+                && (r.Status == ReturnStatuses.Received || r.Status == ReturnStatuses.Inspected || (r.Status == ReturnStatuses.Decided && u.Decision != Decisions.Reject))))
+            .Select(u => u.ReceivedSerial!).ToListAsync(ct);
+
         foreach (var unit in units)
         {
             var serial = serials[unit.UnitNo];
             unit.ReceivedSerial = serial;
-            unit.InspectionResult = serial is not null && !shipped.Contains(serial) ? InspectionResults.WrongItem : given[unit.UnitNo].Result;
+            unit.InspectionResult = serial is not null && (!shipped.Contains((serial, unit.LineNo)) || held.Contains(serial)) ? InspectionResults.WrongItem : given[unit.UnitNo].Result;
             unit.InspectionNotes = given[unit.UnitNo].Notes.Length == 0 ? null : given[unit.UnitNo].Notes;
         }
         audit.Record(caller.UserId, caller.Role!, "fulfillment.record-inspection", "return_request", returnId.ToString(), new { orderId });
