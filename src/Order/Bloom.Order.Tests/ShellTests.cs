@@ -25,6 +25,14 @@ public class ShellTests(Containers containers)
         return OrderApp.Build([], b => b.Configuration.AddInMemoryCollection(config));
     }
 
+    [Theory, InlineData("api"), InlineData("worker")]
+    public async Task Each_mode_builds_with_valid_config(string mode)
+    {
+        await using var app = Build(mode); // a gRPC service mapped in worker mode throws here: AddGrpc is api only
+
+        Assert.NotNull(app);
+    }
+
     [Fact]
     public void Unknown_mode_fails_at_build()
     {

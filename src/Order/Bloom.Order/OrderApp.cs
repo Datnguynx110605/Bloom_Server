@@ -67,8 +67,10 @@ public static class OrderApp
 
         var app = builder.Build();
         if (api)
+        {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<CartService>();
+        }
         return app;
     }
 }
