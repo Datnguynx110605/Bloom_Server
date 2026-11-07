@@ -105,7 +105,8 @@ public sealed class CheckoutService(
         }
         catch (RpcException e) when (Upstreams.IsRejection(e))
         {
-            await CancelAsync(order, compensate: false, ct); // nothing was held
+            // A new order holds nothing yet; a resumed one may hold from an earlier attempt that did not answer (owner item 2, extended).
+            await CancelAsync(order, compensate: existed, ct);
             throw;
         }
 

@@ -289,6 +289,32 @@ public class CheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task Resumed_order_rejected_before_the_hold_also_releases()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, device) = await CartOfOneAsync(t);
+        var key = Guid.NewGuid();
+        t.Upstreams.Fail("ReserveStock", StatusCode.Unavailable); // inventory did hold: the call is recorded, then it answers badly
+        await UnavailableAsync(Seed.CheckoutAsync(t, account, key));
+        var withdrawn = device.Clone();
+        withdrawn.Buyable = false;
+        t.Upstreams.Sku(withdrawn);
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.FailedPrecondition, "SKU_NOT_BUYABLE");
+
+        var order = await AssertCancelledAsync(t, account);
+        Assert.Equal(order.Id, Assert.Single(await ReleasesAsync(t)).OrderId);
+        await using var db = t.NewDb();
+        var saga = await db.OrderSagas.AsNoTracking().SingleAsync(Ct);
+        Assert.Equal((order.Id, SagaTypes.CheckoutCompensation), (saga.OrderId, saga.Type));
+        Assert.Equal([SagaSteps.InventoryRelease], saga.PendingSteps);
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.FailedPrecondition, "SKU_NOT_BUYABLE"); // stored on the key
+        Assert.Equal(1, t.Upstreams.Count("ReserveStock"));
+        Assert.Single(await ReleasesAsync(t));
+    }
+
+    [Fact]
     public async Task Swept_order_on_resume_is_CHECKOUT_CLOSED()
     {
         await using var t = await TestOrder.StartAsync(containers);
