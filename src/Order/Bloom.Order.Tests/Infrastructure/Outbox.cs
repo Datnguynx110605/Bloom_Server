@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using Bloom.Identity.Contracts;
 using Bloom.Shared.DeadLetters;
 using Bloom.Shared.Messaging;
@@ -16,10 +15,6 @@ public static class Outbox
     /// <summary>The payloads of every outbox message of <paramref name="messageType"/>, oldest first.</summary>
     public static async Task<IReadOnlyList<T>> PayloadsAsync<T>(TestOrder t, string messageType) =>
         (await EnvelopesAsync(t, messageType)).Select(e => e.GetPayload<T>()).ToList();
-
-    /// <summary>The payloads as they went on the wire, for a field that must be absent.</summary>
-    public static async Task<IReadOnlyList<JsonElement>> JsonAsync(TestOrder t, string messageType) =>
-        (await EnvelopesAsync(t, messageType)).Select(e => e.Payload).ToList();
 
     private static async Task<List<Envelope>> EnvelopesAsync(TestOrder t, string messageType)
     {

@@ -130,9 +130,9 @@ public class PaymentTests(Containers containers)
         Assert.Equal((OrderStatuses.Cancelled, CancelReasons.CheckoutExpired), (order.Status, order.CancelReason));
         var saga = await SagaAsync(t, orderId, SagaTypes.LatePayment);
         Assert.Equal([SagaSteps.Refund], saga!.PendingSteps);
-        var refund = Assert.Single(await Outbox.JsonAsync(t, PaymentMessages.RefundPayment)); // as sent: no lines (see the report on RefundPaymentV1.Lines)
-        Assert.Equal((orderId.ToString(), order.TotalCents, "late_payment", false),
-            (refund.GetProperty("orderId").GetString(), refund.GetProperty("amountCents").GetInt64(), refund.GetProperty("reason").GetString(), refund.TryGetProperty("lines", out _)));
+        var refund = Assert.Single(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment)); // read back the way payment reads it
+        Assert.Equal((orderId, order.TotalCents, "late_payment"), (refund.OrderId, refund.AmountCents, refund.Reason));
+        Assert.Null(refund.Lines);
         var late = Assert.Single(await Outbox.PayloadsAsync<OrderCancelledV1>(t, OrderMessages.Cancelled), c => c.Reason == "late_payment");
         Assert.Equal((orderId, order.Number, account), (late.OrderId, late.OrderNumber, late.AccountId));
         Assert.Equal(1, metrics.Sum("late_payments_total"));
@@ -234,7 +234,7 @@ public class PaymentTests(Containers containers)
 
             var order = await OrderAsync(t, orderId);
             var late = await SagaAsync(t, orderId, SagaTypes.LatePayment);
-            var refunds = (await Outbox.JsonAsync(t, PaymentMessages.RefundPayment)).Count(r => r.GetProperty("orderId").GetString() == orderId.ToString());
+            var refunds = (await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment)).Count(r => r.OrderId == orderId);
             if (order.Status == OrderStatuses.Paid)
             {
                 Assert.Equal((null, 0), (late, refunds));
