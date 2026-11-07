@@ -35,10 +35,11 @@ public static class Seed
         return sku;
     }
 
-    /// <summary>A product SKU that belongs to a launch (never allowed in the cart).</summary>
+    /// <summary>A product SKU that belongs to a launch (never allowed in the cart); <c>buyable</c> only once <c>released</c>, as catalog answers.</summary>
     public static SkuPricing LaunchSku(FakeUpstreams u, Guid launchId, string stage = "preorder_open", long priceCents = 99900)
     {
         var sku = Device(u, priceCents);
+        sku.Buyable = stage == "released"; // 08-catalog §6.1: not buyable in the regular flow before the release
         sku.Launch = new LaunchInfo { LaunchId = launchId.ToString("D"), Stage = stage };
         u.Sku(sku);
         return sku;

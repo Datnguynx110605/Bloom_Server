@@ -165,6 +165,19 @@ public class LaunchCheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task Preorder_open_sku_is_accepted_although_catalog_says_not_buyable()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, launchId) = (Guid.NewGuid(), Guid.NewGuid());
+        var device = Seed.LaunchSku(t.Upstreams, launchId);
+        Assert.False(device.Buyable); // 08-catalog §6.1: the launch flow judges it, not buyable
+
+        var response = await LaunchCheckout(t, account, launchId, lines: [Product(device)]);
+
+        Assert.NotEmpty(response.PaymentUrl);
+    }
+
+    [Fact]
     public async Task Stage_not_open_is_SKU_NOT_BUYABLE()
     {
         await using var t = await TestOrder.StartAsync(containers);

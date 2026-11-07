@@ -171,9 +171,11 @@ public sealed class CheckoutService(
 
         PricedLine Line(CartLine l, int no, int? parentNo)
         {
-            if (!pricing.TryGetValue(l.SkuId, out var sku) || !sku.Buyable || !sku.HasPriceCents || sku.Kind != l.Kind)
+            // A launch product is judged by its launch flow below (catalog says buyable = false while pre-orders are open, 08-catalog §6.1); a plan still has to be buyable.
+            var byLaunch = launch && l.Kind == LineKinds.Product;
+            if (!pricing.TryGetValue(l.SkuId, out var sku) || !(sku.Buyable || byLaunch) || !sku.HasPriceCents || sku.Kind != l.Kind)
                 throw OrderErrors.Error(OrderErrors.SkuNotBuyable, "An item cannot be bought any more.");
-            if (launch && l.Kind == LineKinds.Product)
+            if (byLaunch)
             {
                 if (sku.Launch is not { } info || Guid.Parse(info.LaunchId) != order.LaunchId)
                     throw OrderErrors.Error(OrderErrors.MixedLaunchOrder, "A launch order holds only SKUs of its launch.");
