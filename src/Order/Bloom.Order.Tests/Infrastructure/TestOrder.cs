@@ -1,3 +1,4 @@
+using Bloom.Order.Api;
 using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Grpc.Net.Client;
@@ -40,6 +41,8 @@ public sealed class TestOrder : IAsyncDisposable
     public sealed class RpcClients(GrpcChannel channel)
     {
         public OrderInternal.OrderInternalClient Internal { get; } = new(channel);
+
+        public OrderCart.OrderCartClient Cart { get; } = new(channel);
     }
 
     public RpcClients Rpc { get; }

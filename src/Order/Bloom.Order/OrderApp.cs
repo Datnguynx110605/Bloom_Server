@@ -45,6 +45,7 @@ public static class OrderApp
         });
         bloom.SendsCommandsTo("inventory", "launch", "payment");
         builder.Services.AddScoped<Audit>();
+        builder.Services.AddScoped<Upstreams>();
         builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddGrpcClient<LaunchInternal.LaunchInternalClient>(o => o.Address = new Uri(options.Launch));
@@ -67,6 +68,7 @@ public static class OrderApp
         var app = builder.Build();
         if (api)
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
+            app.MapGrpcService<CartService>();
         return app;
     }
 }

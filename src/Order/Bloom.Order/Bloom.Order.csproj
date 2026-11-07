@@ -6,7 +6,7 @@
 
   <ItemGroup>
     <Content Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
-    <Protobuf Include="Protos\*.proto" GrpcServices="Server" />
+    <Protobuf Include="Protos\*.proto" GrpcServices="Both" />
     <InternalsVisibleTo Include="Bloom.Order.Tests" />
     <ProjectReference Include="..\..\Shared\Bloom.Shared\Bloom.Shared.csproj" />
     <ProjectReference Include="..\..\Catalog\Bloom.Catalog.Contracts\Bloom.Catalog.Contracts.csproj" />

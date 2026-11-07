@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package bloom.order.v1;
 
+import "google/api/annotations.proto";
+
 option csharp_namespace = "Bloom.Order.Api";
 
 // 03-order §9: the address of a checkout. The services of 03-order §5.1 join this file in their own tasks.
@@ -12,4 +14,54 @@ message ShipTo {
   string state = 4;
   string zip = 5;
   string phone = 6;
+}
+
+// 03-order §5.1, Cart API: customers only, transcoded to JSON under /api/cart (spec §6).
+service OrderCart {
+  // No cart is version 0 with no lines. Each line carries its current catalog price and flags (spec §4).
+  rpc GetCart(GetCartRequest) returns (Cart) {
+    option (google.api.http) = { get: "/api/cart" };
+  }
+
+  // `quantity` is absolute; 0 removes the line and, for a device, its plan lines. `version` must be the cart's (0 for no cart).
+  rpc UpsertCartLine(UpsertCartLineRequest) returns (Cart) {
+    option (google.api.http) = { put: "/api/cart/lines" body: "*" };
+  }
+
+  // A device line takes its plan lines with it. `version` travels as a query parameter.
+  rpc RemoveCartLine(RemoveCartLineRequest) returns (Cart) {
+    option (google.api.http) = { delete: "/api/cart/lines/{line_no}" };
+  }
+}
+
+message GetCartRequest {}
+
+message UpsertCartLineRequest {
+  string kind = 1; // product | warranty_plan
+  string sku_id = 2;
+  optional int32 parent_line_no = 3; // plans only: the device line
+  int32 quantity = 4;
+  int64 version = 5;
+}
+
+message RemoveCartLineRequest {
+  int32 line_no = 1;
+  int64 version = 2;
+}
+
+message Cart {
+  int64 version = 1;
+  repeated CartLine lines = 2;
+}
+
+message CartLine {
+  int32 line_no = 1;
+  string kind = 2;
+  string sku_id = 3;
+  optional int32 parent_line_no = 4;
+  int32 quantity = 5;
+  string name = 6;
+  optional int64 price_cents = 7; // current catalog price
+  bool available = 8; // catalog `buyable`
+  optional bool out_of_stock = 9; // product lines only; absent when inventory is unreachable
 }
