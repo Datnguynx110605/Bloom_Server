@@ -13,6 +13,7 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using CartLine = Bloom.Order.Data.CartLine;
+using OrderLine = Bloom.Order.Data.OrderLine;
 
 namespace Bloom.Order.Services;
 

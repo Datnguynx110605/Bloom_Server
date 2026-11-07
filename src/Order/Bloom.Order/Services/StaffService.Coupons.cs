@@ -14,7 +14,7 @@ using Coupon = Bloom.Order.Data.Coupon;
 namespace Bloom.Order.Services;
 
 /// <summary>03-order §5.1, staff API. Coupons: catalog manager and admin; checkout settings: admin (plan R7). Every write audits in its transaction (spec §7).</summary>
-public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates concurrent, Audit audit, TimeProvider clock) : OrderStaff.OrderStaffBase
+public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates concurrent, Audit audit, TimeProvider clock, Cancellations cancellations) : OrderStaff.OrderStaffBase
 {
     private const string CodeIndex = "ux_coupons_code_normalized";
     private const string UsesCheck = "ck_coupons_uses_le_total_limit";

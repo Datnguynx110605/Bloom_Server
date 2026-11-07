@@ -1,14 +1,16 @@
 using Bloom.Catalog.Contracts;
+using Bloom.Fulfillment.Contracts;
 using Bloom.Inventory.Contracts;
 using Bloom.Launch.Contracts;
 using Bloom.Order.Context;
+using Bloom.Order.Errors;
 using Bloom.Payment.Contracts;
 using Grpc.Core;
 
 namespace Bloom.Order.Domain;
 
 /// <summary>Calls to the services order depends on (plan R10, 03-order §5.2): 5 s deadline each. The checkout calls join as their tasks arrive.</summary>
-public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, InventoryStock.InventoryStockClient inventory, LaunchInternal.LaunchInternalClient launch, PaymentInternal.PaymentInternalClient payment)
+public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, InventoryStock.InventoryStockClient inventory, LaunchInternal.LaunchInternalClient launch, PaymentInternal.PaymentInternalClient payment, FulfillmentInternal.FulfillmentInternalClient fulfillment)
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
 
@@ -86,10 +88,33 @@ public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, Inv
         return await payment.CreatePaymentAsync(request, deadline: DateTime.UtcNow + Deadline, cancellationToken: ct);
     }
 
+    /// <summary>
+    /// Fulfillment's <c>CancelPackTask</c> (idempotent; <paramref name="by"/> is <c>customer</c> or <c>support</c>). <c>PACKING_STARTED</c> is <c>CANCEL_NOT_ALLOWED</c>, <c>ALREADY_SHIPPED</c> passes
+    /// through, a timeout or <c>UNAVAILABLE</c> is <c>UNAVAILABLE</c> (spec §7).
+    /// </summary>
+    public async Task CancelPackTaskAsync(Guid orderId, string by, CancellationToken ct)
+    {
+        try
+        {
+            await fulfillment.CancelPackTaskAsync(new CancelPackTaskRequest { OrderId = orderId.ToString("D"), By = by }, deadline: DateTime.UtcNow + Deadline, cancellationToken: ct);
+        }
+        catch (RpcException e) when (BloomReason(e) == "PACKING_STARTED")
+        {
+            throw OrderErrors.Error(OrderErrors.CancelNotAllowed, "Packing has started; the order can no longer be cancelled.");
+        }
+        catch (RpcException e) when (e.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded)
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, "Fulfillment is unavailable."));
+        }
+    }
+
+    /// <summary>The reason of the <c>bloom</c> <c>ErrorInfo</c> the error carries, or null.</summary>
+    public static string? BloomReason(RpcException e) =>
+        e.GetRpcStatus()?.Details.Where(d => d.Is(Google.Rpc.ErrorInfo.Descriptor)).Select(d => d.Unpack<Google.Rpc.ErrorInfo>()).FirstOrDefault(i => i.Domain == "bloom")?.Reason;
+
     /// <summary>The statuses the idempotency guard stores and replays as the answer (spec §6.7).</summary>
     public static bool IsRejection(RpcException e) =>
         e.StatusCode is StatusCode.FailedPrecondition or StatusCode.InvalidArgument or StatusCode.NotFound or StatusCode.AlreadyExists or StatusCode.PermissionDenied;
 
-    private static bool IsBloom(RpcException e) =>
-        e.GetRpcStatus()?.Details.Any(d => d.Is(Google.Rpc.ErrorInfo.Descriptor) && d.Unpack<Google.Rpc.ErrorInfo>().Domain == "bloom") == true;
+    private static bool IsBloom(RpcException e) => BloomReason(e) is not null;
 }

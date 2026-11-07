@@ -89,6 +89,21 @@ service OrderStaff {
     option (google.api.http) = { post: "/api/admin/coupons/{coupon_id}/deactivate" body: "*" };
   }
 
+  // Any order, any status. 03-order §5.1.
+  rpc GetOrder(GetOrderRequest) returns (Order) {
+    option (google.api.http) = { get: "/api/admin/orders/{order_id}" };
+  }
+
+  // Newest first; `number`, `account_id` and `status` filter in any combination. `page` from 1 (0 is 1), `page_size` 1-100 (0 is 50).
+  rpc SearchOrders(SearchOrdersRequest) returns (ListOrdersResponse) {
+    option (google.api.http) = { get: "/api/admin/orders" };
+  }
+
+  // `paid`, `awaiting_stock` or `packing` (ORD-R14). Versioned; audited.
+  rpc SupportCancelOrder(SupportCancelOrderRequest) returns (Order) {
+    option (google.api.http) = { post: "/api/admin/orders/{order_id}/cancel" body: "*" };
+  }
+
   rpc GetCheckoutSettings(GetCheckoutSettingsRequest) returns (CheckoutSettings) {
     option (google.api.http) = { get: "/api/admin/settings/checkout" };
   }
@@ -222,4 +237,115 @@ message StartCheckoutResponse {
   int64 total_cents = 7;
   string payment_url = 8;
   google.protobuf.Timestamp deadline_at = 9;
+}
+
+// 03-order §5.1, Order API: customers only, transcoded to JSON under /api/orders (spec §6). Another customer's order, and any `creating` one, is NOT_FOUND.
+service OrderCustomer {
+  // Newest first, never `creating`. `page` from 1 (0 is 1), `page_size` 1-100 (0 is 50).
+  rpc ListMyOrders(ListMyOrdersRequest) returns (ListOrdersResponse) {
+    option (google.api.http) = { get: "/api/orders" };
+  }
+
+  rpc GetOrder(GetOrderRequest) returns (Order) {
+    option (google.api.http) = { get: "/api/orders/{order_id}" };
+  }
+
+  // `paid` or `awaiting_stock`, and only while fulfillment has not started packing (ORD-R05). Versioned.
+  rpc CancelOrder(CancelOrderRequest) returns (Order) {
+    option (google.api.http) = { post: "/api/orders/{order_id}/cancel" body: "*" };
+  }
+}
+
+message Order {
+  string id = 1;
+  string number = 2;
+  string account_id = 3;
+  string kind = 4; // regular | launch
+  string launch_id = 5; // launch orders only
+  string status = 6;
+  string cancel_reason = 7; // cancelled orders only
+  ShipTo ship_to = 8;
+  string shipping_option = 9;
+  string currency = 10;
+  int64 subtotal_cents = 11;
+  int64 discount_cents = 12;
+  int64 tax_cents = 13;
+  int64 shipping_cents = 14;
+  int64 total_cents = 15;
+  int32 tax_rate_bp = 16;
+  google.protobuf.Timestamp deadline_at = 17;
+  google.protobuf.Timestamp delivered_at = 18;
+  int64 version = 19;
+  google.protobuf.Timestamp created_at = 20;
+  repeated OrderLine lines = 21;
+  repeated StatusChange history = 22;
+}
+
+message OrderLine {
+  int32 line_no = 1;
+  string kind = 2; // product | warranty_plan
+  string sku_id = 3;
+  string product_id = 4;
+  string category_id = 5;
+  string name = 6;
+  bool serialized = 7;
+  optional int32 parent_line_no = 8; // plans only: the covered device line
+  optional int32 coverage_months = 9; // plans only
+  int32 quantity = 10;
+  int64 unit_price_cents = 11;
+  int64 discount_cents = 12;
+  int64 tax_cents = 13;
+  int64 paid_cents = 14;
+  int32 returned_qty = 15;
+  int64 refunded_cents = 16;
+}
+
+message StatusChange {
+  string from_status = 1; // empty on the first row
+  string to_status = 2;
+  string actor_type = 3; // customer | staff | system
+  string actor_id = 4; // empty for the system
+  string reason = 5;
+  google.protobuf.Timestamp at = 6;
+}
+
+message OrderSummary {
+  string id = 1;
+  string number = 2;
+  string kind = 3;
+  string status = 4;
+  int64 total_cents = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message ListMyOrdersRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message SearchOrdersRequest {
+  optional string number = 1;
+  optional string account_id = 2;
+  optional string status = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListOrdersResponse {
+  repeated OrderSummary items = 1;
+}
+
+message CancelOrderRequest {
+  string order_id = 1;
+  int64 version = 2;
+}
+
+message SupportCancelOrderRequest {
+  string order_id = 1;
+  string reason = 2;
+  int64 version = 3;
 }

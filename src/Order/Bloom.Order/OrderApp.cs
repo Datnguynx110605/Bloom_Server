@@ -52,6 +52,7 @@ public static class OrderApp
         builder.Services.AddScoped<Sagas>();
         builder.Services.AddScoped<Coupons>();
         builder.Services.AddScoped<CheckoutFailures>();
+        builder.Services.AddScoped<Cancellations>();
         bloom.AddConsumer<PaymentSucceededConsumer>("payment-succeeded", PaymentSucceededConsumer.Bindings); // both modes, for the DLQ catalog (plan R6)
         bloom.AddConsumer<PaymentFailedConsumer>("payment-failed", PaymentFailedConsumer.Bindings);
         bloom.AddConsumer<ReservationReleasedConsumer>("inventory-reservation-released", ReservationReleasedConsumer.Bindings);
@@ -83,6 +84,7 @@ public static class OrderApp
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<CartService>();
             app.MapGrpcService<CheckoutService>();
+            app.MapGrpcService<CustomerService>();
             app.MapGrpcService<StaffService>();
         }
         return app;
