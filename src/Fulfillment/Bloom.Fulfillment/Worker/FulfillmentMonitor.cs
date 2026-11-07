@@ -34,8 +34,11 @@ public sealed class FulfillmentMonitor(IServiceScopeFactory scopes, FulfillmentM
         var cutoff = clock.GetUtcNow() - StuckAfter;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
-        var packTasks = await db.PackTasks.AsNoTracking().GroupBy(p => p.Status).Select(g => new { g.Key, Count = g.LongCount() }).ToDictionaryAsync(g => g.Key, g => g.Count, ct);
-        var returns = await db.ReturnRequests.AsNoTracking().GroupBy(r => r.Status).Select(g => new { g.Key, Count = g.LongCount() }).ToDictionaryAsync(g => g.Key, g => g.Count, ct);
+        // Every status is reported, so one that has just emptied drops to 0 instead of keeping its last sample.
+        var packTasks = TaskStatuses.All.ToDictionary(s => s, _ => 0L);
+        foreach (var g in await db.PackTasks.AsNoTracking().GroupBy(p => p.Status).Select(g => new { g.Key, Count = g.LongCount() }).ToListAsync(ct)) packTasks[g.Key] = g.Count;
+        var returns = ReturnStatuses.All.ToDictionary(s => s, _ => 0L);
+        foreach (var g in await db.ReturnRequests.AsNoTracking().GroupBy(r => r.Status).Select(g => new { g.Key, Count = g.LongCount() }).ToListAsync(ct)) returns[g.Key] = g.Count;
         var lost = await db.DeliveryFailures.AsNoTracking().LongCountAsync(f => f.Status == FailureStatuses.PossiblyLost, ct);
         metrics.SetGauges(packTasks, returns, lost);
 

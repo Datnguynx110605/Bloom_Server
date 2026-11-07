@@ -65,9 +65,13 @@ public sealed class ShippoClient(HttpClient http, FulfillmentOptions options) : 
     private static object Address(ShippoAddress a) =>
         new { name = a.Name, street1 = a.Street1, street2 = a.Street2 ?? "", city = a.City, state = a.State, zip = a.Zip, country = "US", phone = a.Phone };
 
+    // A "SUCCESS" transaction without id, tracking number or label URL is unusable: fail the attempt (retry path) instead of writing nulls.
     private static ShippoLabel Label(JsonElement t) => new(
-        t.GetProperty("object_id").GetString()!, t.GetProperty("tracking_number").GetString()!, t.GetProperty("label_url").GetString()!,
+        Required(t, "object_id"), Required(t, "tracking_number"), Required(t, "label_url"),
         t.GetProperty("metadata").GetString()!, t.GetProperty("object_created").GetDateTimeOffset());
+
+    private static string Required(JsonElement t, string name) =>
+        t.GetProperty(name).GetString() is { Length: > 0 } value ? value : throw new ShippoException($"Shippo transaction has no '{name}'.");
 
     /// <summary>One Shippo call; <paramref name="parse"/> reads the answer. Whatever goes wrong becomes a <see cref="ShippoException"/>.</summary>
     private async Task<T> CallAsync<T>(HttpMethod method, string url, object? body, Func<JsonElement, T> parse, CancellationToken ct)

@@ -99,16 +99,8 @@ public sealed class SupportService(
         }
         db.ReturnUnits.AddRange(planUnits);
 
-        await refunds.ApplyAsync(orderId, perLine, ct);
-        var shipping = await refunds.ShippingIfCompleteAsync(account, ct);
-        foreach (var id in cancelled) await refunds.CancelCoverageAsync(id, ct);
-
-        var total = perLine.Values.Sum(v => v.Cents) + shipping;
-        var refundId = refunds.Send(orderId, returnId, SagaTypes.ReturnRefund, "return", total, RefundEngine.Lines(perLine));
+        var (refundId, total) = await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, ct);
         await SendToInventoryAsync(orderId, accepted, ct);
-        outbox.PublishEvent(FulfillmentMessages.ReturnDecided, new ReturnDecidedV1(
-            orderId, returnId, accepted.Concat(planUnits).GroupBy(u => u.LineNo).OrderBy(g => g.Key).Select(g => new AcceptedLineV1(g.Key, g.Count())).ToList(), total));
-        outbox.PublishEvent(FulfillmentMessages.ReturnClosed, new ReturnClosedV1(orderId, returnId, "decided"));
 
         if (units.Any(u => u.Decision == Decisions.Reject)) // RET-R08: Bloom ships the rejected units back at its cost
             db.Shipments.Add(new Shipment

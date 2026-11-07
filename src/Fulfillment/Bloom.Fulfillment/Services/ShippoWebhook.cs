@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -20,10 +21,18 @@ public static class ShippoWebhook
     private const int MaxBodyBytes = 64 * 1024;
     private static readonly string[] Terminal = [ShipmentStatuses.Delivered, ShipmentStatuses.Lost, ShipmentStatuses.ReturnedToSender, ShipmentStatuses.VoidPending, ShipmentStatuses.Voided];
 
+    private const string Route = "/webhooks/shippo/{secret}";
+
     public static IEndpointRouteBuilder MapShippoWebhook(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/webhooks/shippo/{secret}", HandleAsync);
+        app.MapPost(Route, HandleAsync);
         return app;
+    }
+
+    /// <summary>The secret is part of the URL: spans of this route must not carry it in <c>url.path</c> (the span name already uses the route template).</summary>
+    internal static void HideSecret(Activity activity, HttpRequest request)
+    {
+        if (request.Path.StartsWithSegments("/webhooks/shippo")) activity.SetTag("url.path", Route);
     }
 
     private static async Task<IResult> HandleAsync(

@@ -69,6 +69,24 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
             """, ct) == 1 ? a.ShippingCents : 0;
 
     /// <summary>
+    /// The money tail both <c>DecideReturn</c> and a plan-only <c>RequestReturn</c> end with: the guarded line updates, the shipping, the cancelled coverages (WAR-R05, WAR-R06), the refund command
+    /// and its saga, then <c>return-decided</c> (<paramref name="perLine"/> are the accepted units) and <c>return-closed</c>. Returns the refund id (null when the amount is 0) and the amount.
+    /// </summary>
+    public async Task<(Guid? RefundId, long Total)> SettleReturnAsync(OrderAccount account, Guid returnId, IReadOnlyDictionary<int, (int Units, long Cents)> perLine, IReadOnlyList<Guid> cancelledCoverages, CancellationToken ct)
+    {
+        await ApplyAsync(account.OrderId, perLine, ct);
+        var shipping = await ShippingIfCompleteAsync(account, ct);
+        foreach (var id in cancelledCoverages) await CancelCoverageAsync(id, ct);
+
+        var total = perLine.Values.Sum(v => v.Cents) + shipping;
+        var refundId = Send(account.OrderId, returnId, SagaTypes.ReturnRefund, "return", total, Lines(perLine));
+        outbox.PublishEvent(FulfillmentMessages.ReturnDecided, new ReturnDecidedV1(
+            account.OrderId, returnId, perLine.OrderBy(p => p.Key).Select(p => new AcceptedLineV1(p.Key, p.Value.Units)).ToList(), total));
+        outbox.PublishEvent(FulfillmentMessages.ReturnClosed, new ReturnClosedV1(account.OrderId, returnId, "decided"));
+        return (refundId, total);
+    }
+
+    /// <summary>
     /// The refund of a delivery failure (ORD-R17, spec §7): every line with a remainder becomes fully refunded and the shipping is added when not yet refunded, so the amount is
     /// <c>total − Σ refunded − (shipping if refunded)</c>. Lines in the command are the <c>paid − refunded</c> of the lines with cents left. <paramref name="a"/> comes from <see cref="LockOrderAsync"/>.
     /// </summary>

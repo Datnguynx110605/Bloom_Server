@@ -27,7 +27,7 @@ public sealed record MarkLostInTransitV1(Guid RefId);
 /// <summary>Published when the pack task of a <c>kind = order</c> task starts (05-fulfillment §5.3).</summary>
 public sealed record PackingStartedV1(Guid OrderId);
 
-/// <summary>Published when the carrier delivers; <c>RefId</c> is the shipment id (task) or the reship id.</summary>
+/// <summary>Published when the carrier delivers; <c>RefId</c> is the task's <c>ref_id</c>: the order id, or the reship id for a reship task.</summary>
 public sealed record ShipmentDeliveredV1(Guid OrderId, Guid RefId, DateTimeOffset DeliveredAt);
 
 /// <summary><c>Kind</c> is the failure kind: <c>lost</c> or <c>returned_to_sender</c>.</summary>

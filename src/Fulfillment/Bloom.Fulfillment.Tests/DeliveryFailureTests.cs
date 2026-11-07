@@ -5,6 +5,7 @@ using Bloom.Fulfillment.Domain;
 using Bloom.Inventory.Contracts;
 using Bloom.Order.Contracts;
 using Bloom.Payment.Contracts;
+using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -28,7 +29,7 @@ public class DeliveryFailureTests(Containers containers)
         string[] serials = [$"SNB{id}", $"SNA{id}"];
         var (taskId, shipmentId) = await Seed.LabelReadyAsync(t, ready, serials);
         using (var response = await t.SendAsync(HttpMethod.Post, $"{Admin}/handover", new { shipmentId }, Warehouse)) await response.OkJsonAsync();
-        return new Flow(ready, taskId, shipmentId, (await ShipmentAsync(t, shipmentId)).TrackingNumber!, serials);
+        return new Flow(ready, taskId, shipmentId, (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!, serials);
     }
 
     /// <summary>Handed over, then the carrier reports <c>FAILURE</c>: the shipment is <c>possibly_lost</c>.</summary>
@@ -46,24 +47,6 @@ public class DeliveryFailureTests(Containers containers)
         var f = await HandedOverAsync(t, configure);
         await Seed.TrackAsync(t, f.Tracking, "RETURNED");
         return f;
-    }
-
-    private static async Task<Shipment> ShipmentAsync(TestFulfillment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == id, Ct);
-    }
-
-    private static async Task<DeliveryFailure> FailureAsync(TestFulfillment t, Guid shipmentId)
-    {
-        await using var db = t.NewDb();
-        return await db.DeliveryFailures.AsNoTracking().SingleAsync(f => f.ShipmentId == shipmentId, Ct);
-    }
-
-    private static async Task<List<WarrantyCoverage>> CoveragesAsync(TestFulfillment t, Guid orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.WarrantyCoverages.AsNoTracking().Where(c => c.OrderId == orderId).OrderBy(c => c.PlanLineNo).ToListAsync(Ct);
     }
 
     private static async Task<List<FulfillmentSaga>> SagasAsync(TestFulfillment t, Guid shipmentId)
@@ -124,9 +107,9 @@ public class DeliveryFailureTests(Containers containers)
         Assert.All(await LinesAsync(t, f.Order.OrderId), l => Assert.Equal((l.Quantity, l.PaidCents), (l.RefundedUnits, l.RefundedCents)));
         await using (var db = t.NewDb()) Assert.True((await db.OrderAccounts.AsNoTracking().SingleAsync(Ct)).ShippingRefunded);
 
-        Assert.All(await CoveragesAsync(t, f.Order.OrderId), c => Assert.Equal(CoverageStatuses.Cancelled, c.Status));
+        Assert.All(await Seed.CoveragesAsync(t, f.Order.OrderId), c => Assert.Equal(CoverageStatuses.Cancelled, c.Status));
         Assert.Equal(new DeliveryFailedV1(f.Order.OrderId, "returned_to_sender"), Assert.Single(await Outbox.PayloadsAsync<DeliveryFailedV1>(t, FulfillmentMessages.DeliveryFailed)));
-        var failure = await FailureAsync(t, f.ShipmentId);
+        var failure = (await Seed.FailureAsync(t, f.ShipmentId))!;
         Assert.Equal((FailureStatuses.ResolvedRefund, Warehouse.Id), (failure.Status, failure.DecidedBy));
         Assert.Contains("sealed", failure.RtsOutcomes);
         Assert.Contains("failed", failure.RtsOutcomes);
@@ -172,7 +155,7 @@ public class DeliveryFailureTests(Containers containers)
         Assert.Empty(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment));
         Assert.Empty(await SagasAsync(t, f.ShipmentId));
         Assert.Single(await Outbox.PayloadsAsync<DeliveryFailedV1>(t, FulfillmentMessages.DeliveryFailed));
-        Assert.Equal(FailureStatuses.ResolvedRefund, (await FailureAsync(t, f.ShipmentId)).Status);
+        Assert.Equal(FailureStatuses.ResolvedRefund, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
     }
 
     [Fact]
@@ -201,7 +184,7 @@ public class DeliveryFailureTests(Containers containers)
         }
         using (var noKey = await t.SendAsync(HttpMethod.Post, $"{Admin}/shipments/{f.ShipmentId}/returned-to-sender", new { units = new[] { Unit(a, "sealed") } }, Warehouse))
             await noKey.ExpectErrorAsync(400, "IDEMPOTENCY_KEY_REQUIRED");
-        Assert.Equal(FailureStatuses.Confirmed, (await FailureAsync(t, f.ShipmentId)).Status);
+        Assert.Equal(FailureStatuses.Confirmed, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
         Assert.Empty(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment));
 
         using var ok = await RtsAsync(t, f.ShipmentId, [Unit(a, "sealed"), Unit(b, "failed"), Loose("sealed"), Loose("sealed")]);
@@ -233,7 +216,7 @@ public class DeliveryFailureTests(Containers containers)
         using (var badId = await t.SendAsync(HttpMethod.Post, $"{Admin}/shipments/nope/lost", new { resolution = "refund" }, Support, Guid.NewGuid())) await badId.ExpectValidationAsync("shipment_id");
         using (var noKey = await t.SendAsync(HttpMethod.Post, $"{Admin}/shipments/{lost.ShipmentId}/lost", new { resolution = "refund" }, Support))
             await noKey.ExpectErrorAsync(400, "IDEMPOTENCY_KEY_REQUIRED");
-        Assert.Equal(ShipmentStatuses.PossiblyLost, (await ShipmentAsync(t, lost.ShipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, lost.ShipmentId)).Status);
 
         await LostOkAsync(t, lost.ShipmentId, "refund");
         using (var again = await LostAsync(t, lost.ShipmentId, "refund")) await again.ExpectErrorAsync(400, "INVALID_STATE");
@@ -251,15 +234,15 @@ public class DeliveryFailureTests(Containers containers)
         var body = await LostOkAsync(t, f.ShipmentId, "refund");
 
         Assert.Equal(("lost", "resolved_refund"), (body.GetProperty("kind").GetString(), body.GetProperty("status").GetString()));
-        Assert.Equal(ShipmentStatuses.Lost, (await ShipmentAsync(t, f.ShipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.Lost, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
         Assert.Equal(f.Order.OrderId, Assert.Single(await Outbox.PayloadsAsync<MarkLostInTransitV1>(t, FulfillmentMessages.MarkLostInTransit)).RefId);
         var refund = Assert.Single(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment));
         Assert.Equal((f.Order.OrderId, "delivery_failure", f.Order.TotalCents), (refund.OrderId, refund.Reason, refund.AmountCents));
         Assert.Equal([(1, 2002L), (2, 9900L)], CommandLines(refund));
         Assert.All(await LinesAsync(t, f.Order.OrderId), l => Assert.Equal((l.Quantity, l.PaidCents), (l.RefundedUnits, l.RefundedCents)));
-        Assert.All(await CoveragesAsync(t, f.Order.OrderId), c => Assert.Equal(CoverageStatuses.Cancelled, c.Status));
+        Assert.All(await Seed.CoveragesAsync(t, f.Order.OrderId), c => Assert.Equal(CoverageStatuses.Cancelled, c.Status));
         Assert.Equal(new DeliveryFailedV1(f.Order.OrderId, "lost"), Assert.Single(await Outbox.PayloadsAsync<DeliveryFailedV1>(t, FulfillmentMessages.DeliveryFailed)));
-        var failure = await FailureAsync(t, f.ShipmentId);
+        var failure = (await Seed.FailureAsync(t, f.ShipmentId))!;
         Assert.Equal((FailureStatuses.ResolvedRefund, Support.Id, null), (failure.Status, failure.DecidedBy, failure.ReshipId));
         var saga = Assert.Single(await SagasAsync(t, f.ShipmentId));
         Assert.Equal((SagaTypes.DeliveryFailure, refund.RefundId), (saga.Type, saga.RefundId));
@@ -289,8 +272,8 @@ public class DeliveryFailureTests(Containers containers)
         Assert.Empty(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment));
         Assert.Empty(await Outbox.PayloadsAsync<DeliveryFailedV1>(t, FulfillmentMessages.DeliveryFailed));
         Assert.Equal(f.Order.OrderId, Assert.Single(await Outbox.PayloadsAsync<MarkLostInTransitV1>(t, FulfillmentMessages.MarkLostInTransit)).RefId);
-        Assert.Equal(ShipmentStatuses.Lost, (await ShipmentAsync(t, f.ShipmentId)).Status);
-        var failure = await FailureAsync(t, f.ShipmentId);
+        Assert.Equal(ShipmentStatuses.Lost, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
+        var failure = (await Seed.FailureAsync(t, f.ShipmentId))!;
         Assert.Equal((FailureStatuses.ResolvedReship, reshipId, Support.Id), (failure.Status, failure.ReshipId, failure.DecidedBy));
 
         await using var db = t.NewDb();
@@ -301,31 +284,33 @@ public class DeliveryFailureTests(Containers containers)
         Assert.Equal(lines.o.Select(x => (x.LineNo, x.Kind, x.SkuId, x.Serialized, x.Quantity, x.ParentLineNo, x.CoverageMonths)), lines.l.Select(x => (x.LineNo, x.Kind, x.SkuId, x.Serialized, x.Quantity, x.ParentLineNo, x.CoverageMonths)));
 
         // Pack the reship with new serials: the coverage moves to the serial of the same rank (the first one) and no coverage is added.
-        var before = Assert.Single(await CoveragesAsync(t, f.Order.OrderId));
+        var before = Assert.Single(await Seed.CoveragesAsync(t, f.Order.OrderId));
         Assert.Equal((CoverageStatuses.PendingDelivery, f.Serials[0]), (before.Status, before.Serial));
         var fresh = new[] { "RSB" + f.Serials[0][3..], "RSA" + f.Serials[0][3..] };
         var task = $"{Admin}/tasks/{reship.Id}";
         using (var start = await t.SendAsync(HttpMethod.Post, $"{task}/start", new { version = reship.Version }, Warehouse)) await start.OkJsonAsync();
+        // Owner item 5: the reship task doesn't publish packing-started (the order stays Shipped); only the original task's was published.
+        Assert.Single(await Outbox.PayloadsAsync<PackingStartedV1>(t, FulfillmentMessages.PackingStarted));
         foreach (var serial in fresh)
             using (var scan = await t.SendAsync(HttpMethod.Post, $"{task}/serials", new { lineNo = 1, serial }, Warehouse)) await scan.OkJsonAsync();
         using (var complete = await t.SendAsync(HttpMethod.Post, $"{task}/complete", new { version = reship.Version + 1 }, Warehouse)) await complete.OkJsonAsync();
-        var moved = Assert.Single(await CoveragesAsync(t, f.Order.OrderId));
+        var moved = Assert.Single(await Seed.CoveragesAsync(t, f.Order.OrderId));
         Assert.Equal((before.Id, CoverageStatuses.PendingDelivery, fresh[0]), (moved.Id, moved.Status, moved.Serial));
 
         // Deliver it: the order is delivered, the coverage active, and shipment-delivered names the reship.
         await Seed.RunLabelWorkerAsync(t);
         var reshipShipment = await db.Shipments.AsNoTracking().SingleAsync(s => s.PackTaskId == reship.Id, Ct);
         using (var handover = await t.SendAsync(HttpMethod.Post, $"{Admin}/handover", new { shipmentId = reshipShipment.Id }, Warehouse)) await handover.OkJsonAsync();
-        var tracking = (await ShipmentAsync(t, reshipShipment.Id)).TrackingNumber!;
+        var tracking = (await Seed.ShipmentAsync(t, reshipShipment.Id)).TrackingNumber!;
         t.Clock.Advance(TimeSpan.FromDays(3));
         await Seed.TrackAsync(t, tracking, "DELIVERED");
 
         var delivered = Assert.Single(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
         Assert.Equal((f.Order.OrderId, reshipId, t.Clock.GetUtcNow()), (delivered.OrderId, delivered.RefId, delivered.DeliveredAt));
-        var active = Assert.Single(await CoveragesAsync(t, f.Order.OrderId));
+        var active = Assert.Single(await Seed.CoveragesAsync(t, f.Order.OrderId));
         Assert.Equal((CoverageStatuses.Active, fresh[0], t.Clock.GetUtcNow()), (active.Status, active.Serial, active.StartsAt));
         Assert.Equal(t.Clock.GetUtcNow(), (await db.OrderAccounts.AsNoTracking().SingleAsync(Ct)).DeliveredAt);
-        Assert.Equal(ShipmentStatuses.Lost, (await ShipmentAsync(t, f.ShipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.Lost, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
     }
 
     /// <summary>Starts, scans <paramref name="serials"/> onto device line 1 in order, completes, buys the label and hands the reship over.</summary>
@@ -340,7 +325,7 @@ public class DeliveryFailureTests(Containers containers)
         await using var db = t.NewDb();
         var shipment = await db.Shipments.AsNoTracking().SingleAsync(s => s.PackTaskId == reship.Id, Ct);
         using (var handover = await t.SendAsync(HttpMethod.Post, $"{Admin}/handover", new { shipmentId = shipment.Id }, Warehouse)) await handover.OkJsonAsync();
-        return (shipment.Id, (await ShipmentAsync(t, shipment.Id)).TrackingNumber!);
+        return (shipment.Id, (await Seed.ShipmentAsync(t, shipment.Id)).TrackingNumber!);
     }
 
     [Fact]
@@ -348,7 +333,7 @@ public class DeliveryFailureTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var f = await PossiblyLostAsync(t, b => b.Line(2, "warranty_plan", quantity: 2, parent: 1, months: 12, paid: 9900, tax: 800)); // a plan on both devices
-        var covered = (await CoveragesAsync(t, f.Order.OrderId)).ToDictionary(c => c.Serial, c => c.Id);
+        var covered = (await Seed.CoveragesAsync(t, f.Order.OrderId)).ToDictionary(c => c.Serial, c => c.Id);
         Assert.Equal(f.Serials.Order(), covered.Keys.Order());
         var suffix = f.Serials[0][3..];
 
@@ -361,9 +346,9 @@ public class DeliveryFailureTests(Containers containers)
         Assert.Equal(Ids.ReshipId(firstShipment), second.RefId);
         await PackAndHandOverAsync(t, second, "RBA" + suffix, "RBB" + suffix);
 
-        var now = (await CoveragesAsync(t, f.Order.OrderId)).ToDictionary(c => c.Id, c => c.Serial);
+        var now = (await Seed.CoveragesAsync(t, f.Order.OrderId)).ToDictionary(c => c.Id, c => c.Serial);
         Assert.Equal(("RBA" + suffix, "RBB" + suffix), (now[covered[f.Serials[0]]], now[covered[f.Serials[1]]])); // rank 0 stays rank 0, rank 1 stays rank 1
-        Assert.All(await CoveragesAsync(t, f.Order.OrderId), c => Assert.Equal(CoverageStatuses.PendingDelivery, c.Status));
+        Assert.All(await Seed.CoveragesAsync(t, f.Order.OrderId), c => Assert.Equal(CoverageStatuses.PendingDelivery, c.Status));
         Assert.Equal(2, (await ReshipTasksAsync(t, f.Order.OrderId)).Count);
     }
 
@@ -378,13 +363,26 @@ public class DeliveryFailureTests(Containers containers)
         using (var response = await LostAsync(t, f.ShipmentId, "reship", key)) await response.ExpectErrorAsync(400, "RESHIP_NO_STOCK");
 
         Assert.Empty(await ReshipTasksAsync(t, f.Order.OrderId));
-        Assert.Equal(FailureStatuses.PossiblyLost, (await FailureAsync(t, f.ShipmentId)).Status);
+        Assert.Equal(FailureStatuses.PossiblyLost, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
         await using (var db = t.NewDb())
             Assert.Equal(0, await db.Database.SqlQuery<long>($"SELECT count(*) AS \"Value\" FROM idempotency_keys WHERE key = {key.ToString()}").SingleAsync(Ct)); // released, not stored
 
         var body = await LostOkAsync(t, f.ShipmentId, "refund");
         Assert.Equal("resolved_refund", body.GetProperty("status").GetString());
         Assert.Single(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment));
+    }
+
+    [Fact]
+    public async Task Reship_passes_other_inventory_refusals_through() // R11: only SOLD_OUT is renamed
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var f = await PossiblyLostAsync(t);
+        t.Inventory.Fail("CommitForReship", StatusCode.FailedPrecondition, "NOT_COMMITTED");
+
+        using (var response = await LostAsync(t, f.ShipmentId, "reship", Guid.NewGuid())) await response.ExpectErrorAsync(400, "NOT_COMMITTED");
+
+        Assert.Empty(await ReshipTasksAsync(t, f.Order.OrderId));
+        Assert.Equal(FailureStatuses.PossiblyLost, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
     }
 
     [Fact]
@@ -420,8 +418,8 @@ public class DeliveryFailureTests(Containers containers)
 
         Assert.Equal(1, t.Inventory.Count("CommitForReship"));
         Assert.Empty(await ReshipTasksAsync(t, f.Order.OrderId));
-        Assert.Equal(ShipmentStatuses.Delivered, (await ShipmentAsync(t, f.ShipmentId)).Status);
-        Assert.Equal(FailureStatuses.Dismissed, (await FailureAsync(t, f.ShipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.Delivered, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
+        Assert.Equal(FailureStatuses.Dismissed, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
         Assert.Empty(await Outbox.PayloadsAsync<MarkLostInTransitV1>(t, FulfillmentMessages.MarkLostInTransit));
     }
 
@@ -430,7 +428,7 @@ public class DeliveryFailureTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var f = await PossiblyLostAsync(t, inTransit: true);
-        Assert.Equal((ShipmentStatuses.PossiblyLost, ShipmentStatuses.InTransit), ((await ShipmentAsync(t, f.ShipmentId)).Status, (await FailureAsync(t, f.ShipmentId)).PreviousStatus));
+        Assert.Equal((ShipmentStatuses.PossiblyLost, ShipmentStatuses.InTransit), ((await Seed.ShipmentAsync(t, f.ShipmentId)).Status, (await Seed.FailureAsync(t, f.ShipmentId))!.PreviousStatus));
 
         using (var response = await t.SendAsync(HttpMethod.Post, $"{Admin}/shipments/{f.ShipmentId}/dismiss", new { }, Support))
         {
@@ -438,8 +436,8 @@ public class DeliveryFailureTests(Containers containers)
             Assert.Equal(("dismissed", "in_transit"), (body.GetProperty("status").GetString(), body.GetProperty("previousStatus").GetString()));
         }
 
-        Assert.Equal(ShipmentStatuses.InTransit, (await ShipmentAsync(t, f.ShipmentId)).Status);
-        var failure = await FailureAsync(t, f.ShipmentId);
+        Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
+        var failure = (await Seed.FailureAsync(t, f.ShipmentId))!;
         Assert.Equal((FailureStatuses.Dismissed, t.Clock.GetUtcNow()), (failure.Status, failure.DismissedAt));
         using (var again = await t.SendAsync(HttpMethod.Post, $"{Admin}/shipments/{f.ShipmentId}/dismiss", new { }, Support)) await again.ExpectErrorAsync(400, "INVALID_STATE");
         var audit = Assert.Single(await Outbox.AuditAsync(t), a => a.Action == "fulfillment.dismiss-possibly-lost");
@@ -490,7 +488,7 @@ public class DeliveryFailureTests(Containers containers)
             using var response = await t.SendAsync(method, Admin + path, body, caller);
             await response.ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
         }
-        Assert.Equal(FailureStatuses.PossiblyLost, (await FailureAsync(t, lost.ShipmentId)).Status);
+        Assert.Equal(FailureStatuses.PossiblyLost, (await Seed.FailureAsync(t, lost.ShipmentId))!.Status);
     }
 
     [Fact]

@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Bloom.Fulfillment.Data.Migrations
 {
     [DbContext(typeof(FulfillmentDbContext))]
-    [Migration("20261105125315_Initial")]
+    [Migration("20261107115005_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -262,6 +262,9 @@ namespace Bloom.Fulfillment.Data.Migrations
                         .HasColumnName("version");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OrderId")
+                        .HasDatabaseName("ix_pack_tasks_order_id");
 
                     b.HasIndex("RefId")
                         .IsUnique()
@@ -541,6 +544,9 @@ namespace Bloom.Fulfillment.Data.Migrations
 
                     b.HasIndex("PackTaskId")
                         .HasDatabaseName("ix_shipments_pack_task");
+
+                    b.HasIndex("ReturnRequestId")
+                        .HasDatabaseName("ix_shipments_return_request_id");
 
                     b.HasIndex("ShippoTransactionId")
                         .IsUnique()

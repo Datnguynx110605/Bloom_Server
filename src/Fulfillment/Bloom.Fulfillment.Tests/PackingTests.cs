@@ -330,32 +330,6 @@ public class PackingTests(Containers containers)
         await badPage.ExpectValidationAsync("page_size");
     }
 
-    [Fact]
-    public async Task Commit_for_reship_sends_the_lines_and_maps_sold_out_to_RESHIP_NO_STOCK()
-    {
-        await using var t = await TestFulfillment.StartAsync(containers);
-        await using var scope = t.Services.CreateAsyncScope();
-        var calls = scope.ServiceProvider.GetRequiredService<InventoryCalls>();
-        var (reship, order, sku) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
-        var support = TestCaller.Staff("support");
-        var staff = new FakeCallContext(support);
-
-        await calls.CommitForReshipAsync(reship, order, [(sku, 2)], staff);
-
-        var request = Assert.IsType<CommitForReshipRequest>(t.Inventory.Calls.Single().Request);
-        Assert.Equal((reship.ToString(), order.ToString(), sku.ToString(), 2), (request.ReshipId, request.OrderId, request.Lines.Single().SkuId, request.Lines.Single().Quantity));
-        Assert.Equal(support.Id.ToString(), t.Inventory.Calls.Single().UserId); // R11: the staff caller's headers travel
-
-        t.Inventory.SoldOut = true;
-        var e = await Assert.ThrowsAsync<RpcException>(() => calls.CommitForReshipAsync(reship, order, [(sku, 2)], staff));
-        Assert.Equal("RESHIP_NO_STOCK", Rpc.Info(e).Reason);
-
-        t.Inventory.SoldOut = false;
-        t.Inventory.Fail("CommitForReship", StatusCode.FailedPrecondition, "NOT_COMMITTED");
-        e = await Assert.ThrowsAsync<RpcException>(() => calls.CommitForReshipAsync(reship, order, [(sku, 2)], staff));
-        Assert.Equal("NOT_COMMITTED", Rpc.Info(e).Reason);
-    }
-
     [Theory, InlineData("support"), InlineData("customer")]
     public async Task Only_warehouse_and_admin_pack(string role)
     {

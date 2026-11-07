@@ -256,6 +256,8 @@ public class SchemaTests(Containers containers)
         [
             ("shipments", ["(next_attempt_at)", "WHERE", "'label_pending'"]),
             ("shipments", ["(pack_task_id)"]),
+            ("shipments", ["ix_shipments_return_request_id", "(return_request_id)"]),
+            ("pack_tasks", ["ix_pack_tasks_order_id", "(order_id)"]),
             ("order_accounts", ["(account_id)"]),
             ("return_requests", ["(order_id)"]),
             ("return_requests", ["(account_id, created_at)"]),

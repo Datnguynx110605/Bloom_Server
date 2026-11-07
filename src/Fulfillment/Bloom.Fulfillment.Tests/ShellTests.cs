@@ -13,27 +13,7 @@ namespace Bloom.Fulfillment.Tests;
 
 public class ShellTests(Containers containers)
 {
-    private static readonly Dictionary<string, string?> Valid = new()
-    {
-        ["Fulfillment:Database"] = "Host=localhost;Database=unused",
-        ["Fulfillment:RabbitMq"] = "amqp://localhost:5672",
-        ["Fulfillment:Inventory"] = "http://localhost:8080",
-        ["Fulfillment:Shippo:ApiKey"] = "key",
-        ["Fulfillment:Shippo:WebhookSecret"] = "secret",
-        ["Fulfillment:Shippo:Carrier"] = "usps",
-        ["Fulfillment:Shippo:StandardToken"] = "usps_ground_advantage",
-        ["Fulfillment:Shippo:ExpressToken"] = "usps_priority",
-        ["Fulfillment:Warehouse:Name"] = "Bloom",
-        ["Fulfillment:Warehouse:Street1"] = "1 Way",
-        ["Fulfillment:Warehouse:City"] = "Reno",
-        ["Fulfillment:Warehouse:State"] = "NV",
-        ["Fulfillment:Warehouse:Zip"] = "89501",
-        ["Fulfillment:Warehouse:Phone"] = "+17755550100",
-        ["Fulfillment:Parcel:LengthIn"] = "10",
-        ["Fulfillment:Parcel:WidthIn"] = "8",
-        ["Fulfillment:Parcel:HeightIn"] = "4",
-        ["Fulfillment:Parcel:WeightOz"] = "32",
-    };
+    private static readonly Dictionary<string, string?> Valid = TestFulfillment.DefaultConfig("Host=localhost;Database=unused", "amqp://localhost:5672", "http://localhost:8080");
 
     private static WebApplication Build(string mode, Dictionary<string, string?>? overrides = null)
     {

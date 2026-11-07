@@ -22,7 +22,6 @@ public static class Seed
 
         internal string Option = "standard";
         internal long ShippingCents;
-        internal Guid AccountId = Guid.NewGuid();
 
         /// <summary>Adds the line, or replaces the default line with the same number.</summary>
         public ReadyBuilder Line(int lineNo, string kind = "product", bool serialized = false, int quantity = 1, int? parent = null, int? months = null, long paid = 1000, long tax = 80)
@@ -39,12 +38,6 @@ public static class Seed
             return this;
         }
 
-        public ReadyBuilder Account(Guid accountId)
-        {
-            AccountId = accountId;
-            return this;
-        }
-
         private static ReadyLineV1 Make(int lineNo, string kind, bool serialized = false, int quantity = 1, int? parent = null, int? months = null, long paid = 1000, long tax = 80) =>
             new(lineNo, kind, Guid.CreateVersion7(), Guid.CreateVersion7(), serialized, quantity, parent, months, paid, tax);
     }
@@ -56,7 +49,7 @@ public static class Seed
         configure?.Invoke(b);
         var lines = b.Lines.OrderBy(l => l.LineNo).ToList();
         return new OrderReadyToFulfillV1(
-            Guid.NewGuid(), b.AccountId, "BL-1001", new ShipToV1("Ann Lee", ["1 Main St", "Apt 2"], "Reno", "NV", "89501", "+17755550123"),
+            Guid.NewGuid(), Guid.NewGuid(), "BL-1001", new ShipToV1("Ann Lee", ["1 Main St", "Apt 2"], "Reno", "NV", "89501", "+17755550123"),
             b.Option, b.ShippingCents, lines.Sum(l => l.PaidCents) + b.ShippingCents, lines);
     }
 
@@ -68,6 +61,38 @@ public static class Seed
     {
         await using var db = t.NewDb();
         return await db.PackTasks.AsNoTracking().SingleOrDefaultAsync(p => p.RefId == orderId, TestContext.Current.CancellationToken);
+    }
+
+    public static async Task<Shipment> ShipmentAsync(TestFulfillment t, Guid id)
+    {
+        await using var db = t.NewDb();
+        return await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == id, TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>The shipment's delivery failure, or <c>null</c> when none was flagged.</summary>
+    public static async Task<DeliveryFailure?> FailureAsync(TestFulfillment t, Guid shipmentId)
+    {
+        await using var db = t.NewDb();
+        return await db.DeliveryFailures.AsNoTracking().SingleOrDefaultAsync(f => f.ShipmentId == shipmentId, TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>The order's warranty coverages by plan line.</summary>
+    public static async Task<List<WarrantyCoverage>> CoveragesAsync(TestFulfillment t, Guid orderId)
+    {
+        await using var db = t.NewDb();
+        return await db.WarrantyCoverages.AsNoTracking().Where(c => c.OrderId == orderId).OrderBy(c => c.PlanLineNo).ToListAsync(TestContext.Current.CancellationToken);
+    }
+
+    public static async Task<ReturnRequest> ReturnRequestAsync(TestFulfillment t, Guid returnId)
+    {
+        await using var db = t.NewDb();
+        return await db.ReturnRequests.AsNoTracking().SingleAsync(r => r.Id == returnId, TestContext.Current.CancellationToken);
+    }
+
+    public static async Task<List<ReturnUnit>> UnitsAsync(TestFulfillment t, Guid returnId)
+    {
+        await using var db = t.NewDb();
+        return await db.ReturnUnits.AsNoTracking().Where(u => u.ReturnId == returnId).OrderBy(u => u.UnitNo).ToListAsync(TestContext.Current.CancellationToken);
     }
 
     /// <summary>Starts packing, scans <paramref name="serials"/> onto the serialized product lines in line order (each up to its quantity), completes, all as <c>warehouse</c> over HTTP.</summary>

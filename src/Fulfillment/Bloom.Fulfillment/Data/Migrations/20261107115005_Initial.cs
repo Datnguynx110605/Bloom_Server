@@ -357,6 +357,11 @@ namespace Bloom.Fulfillment.Data.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "ix_pack_tasks_order_id",
+                table: "pack_tasks",
+                column: "order_id");
+
+            migrationBuilder.CreateIndex(
                 name: "ux_pack_tasks_ref_id",
                 table: "pack_tasks",
                 column: "ref_id",
@@ -388,6 +393,11 @@ namespace Bloom.Fulfillment.Data.Migrations
                 name: "ix_shipments_pack_task",
                 table: "shipments",
                 column: "pack_task_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_shipments_return_request_id",
+                table: "shipments",
+                column: "return_request_id");
 
             migrationBuilder.CreateIndex(
                 name: "ux_shipments_shippo_transaction_id",

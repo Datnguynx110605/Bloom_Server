@@ -40,7 +40,7 @@ public sealed class FulfillmentMetrics
     /// <param name="result"><c>applied</c>, <c>unchanged</c>, <c>unknown</c>, <c>bad_secret</c>, <c>invalid</c> or <c>error</c> (plan R16).</param>
     public void Webhook(string result) => _webhooks.Add(1, new KeyValuePair<string, object?>("result", result));
 
-    /// <summary>Replaces the gauges' samples (statuses absent from a dictionary drop out).</summary>
+    /// <summary>Replaces the gauges' samples (the caller lists every status, zeros included).</summary>
     public void SetGauges(IReadOnlyDictionary<string, long> packTasks, IReadOnlyDictionary<string, long> returns, long possiblyLostOpen)
     {
         _packTasks = packTasks;

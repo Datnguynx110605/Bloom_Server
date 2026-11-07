@@ -15,12 +15,6 @@ public class HandoverTests(Containers containers)
     private static Task<HttpResponseMessage> HandOverAsync(TestFulfillment t, object body, TestCaller? caller = null) =>
         t.SendAsync(HttpMethod.Post, Path, body, caller ?? Warehouse);
 
-    private static async Task<Shipment> ShipmentAsync(TestFulfillment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == id, Ct);
-    }
-
     private static async Task<string> TaskStatusAsync(TestFulfillment t, Guid taskId)
     {
         await using var db = t.NewDb();
@@ -43,14 +37,14 @@ public class HandoverTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         const string id = "X1";
         var (order, taskId, shipmentId) = await LabelReadyAsync(t, id);
-        var tracking = (await ShipmentAsync(t, shipmentId)).TrackingNumber!;
+        var tracking = (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!;
         t.Clock.Advance(TimeSpan.FromSeconds(90.5));
 
         using var response = await HandOverAsync(t, new { trackingNumber = tracking });
         var body = await response.OkJsonAsync();
 
         Assert.Equal((shipmentId.ToString(), "handed_over", tracking), (body.GetProperty("id").GetString(), body.GetProperty("status").GetString(), body.GetProperty("trackingNumber").GetString()));
-        var shipment = await ShipmentAsync(t, shipmentId);
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.HandedOver, shipment.Status);
         Assert.Equal(t.Clock.GetUtcNow(), shipment.HandedOverAt!.Value, TimeSpan.FromMilliseconds(1));
         Assert.Equal(TaskStatuses.HandedOver, await TaskStatusAsync(t, taskId));
@@ -74,7 +68,7 @@ public class HandoverTests(Containers containers)
         using var response = await HandOverAsync(t, new { shipmentId });
         await response.OkJsonAsync();
 
-        Assert.Equal(ShipmentStatuses.HandedOver, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Equal(TaskStatuses.HandedOver, await TaskStatusAsync(t, taskId));
     }
 
@@ -121,7 +115,7 @@ public class HandoverTests(Containers containers)
         await response.ExpectErrorAsync(400, "LABEL_NOT_READY");
 
         Assert.Equal(TaskStatuses.Packed, await TaskStatusAsync(t, taskId)); // rolled back
-        Assert.Equal(ShipmentStatuses.LabelPending, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.LabelPending, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Empty(await Outbox.PayloadsAsync<ShipmentShippedV1>(t, FulfillmentMessages.ShipmentShipped));
     }
 
@@ -164,7 +158,7 @@ public class HandoverTests(Containers containers)
             {
                 Assert.Equal("INVALID_STATE", handover.Result);
                 Assert.Equal(TaskStatuses.Cancelled, await TaskStatusAsync(t, taskId));
-                Assert.NotEqual(ShipmentStatuses.HandedOver, (await ShipmentAsync(t, shipmentId)).Status);
+                Assert.NotEqual(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, shipmentId)).Status);
             }
             else
             {
@@ -172,7 +166,7 @@ public class HandoverTests(Containers containers)
                 Assert.Equal("ALREADY_SHIPPED", cancel.Result);
                 Assert.Null(handover.Result);
                 Assert.Equal(TaskStatuses.HandedOver, await TaskStatusAsync(t, taskId));
-                Assert.Equal(ShipmentStatuses.HandedOver, (await ShipmentAsync(t, shipmentId)).Status);
+                Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, shipmentId)).Status);
             }
         }
         Assert.Equal(handovers, (await Outbox.PayloadsAsync<ShipmentShippedV1>(t, FulfillmentMessages.ShipmentShipped)).Count);
@@ -190,7 +184,7 @@ public class HandoverTests(Containers containers)
         using (var unknownId = await HandOverAsync(t, new { shipmentId = Guid.NewGuid() })) await unknownId.ExpectErrorAsync(404, "NOT_FOUND");
         using (var unknownTracking = await HandOverAsync(t, new { trackingNumber = "NOPE" })) await unknownTracking.ExpectErrorAsync(404, "NOT_FOUND");
         using (var support = await HandOverAsync(t, new { shipmentId }, TestCaller.Staff("support"))) await support.ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
-        Assert.Equal(ShipmentStatuses.LabelReady, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.LabelReady, (await Seed.ShipmentAsync(t, shipmentId)).Status);
     }
 
     private static async Task<Guid> SeedShipmentAsync(TestFulfillment t, string direction, string tracking)
@@ -215,7 +209,7 @@ public class HandoverTests(Containers containers)
         using var response = await HandOverAsync(t, new { trackingNumber = "SB1" });
         await response.OkJsonAsync();
 
-        Assert.Equal(ShipmentStatuses.HandedOver, (await ShipmentAsync(t, id)).Status);
+        Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, id)).Status);
         Assert.Empty(await Outbox.PayloadsAsync<ShipmentShippedV1>(t, FulfillmentMessages.ShipmentShipped));
         Assert.Equal("fulfillment.hand-over", (await Outbox.AuditAsync(t)).Last().Action);
     }
@@ -229,6 +223,6 @@ public class HandoverTests(Containers containers)
         using var response = await HandOverAsync(t, new { shipmentId = id });
         await response.ExpectErrorAsync(400, "INVALID_STATE");
 
-        Assert.Equal(ShipmentStatuses.LabelReady, (await ShipmentAsync(t, id)).Status);
+        Assert.Equal(ShipmentStatuses.LabelReady, (await Seed.ShipmentAsync(t, id)).Status);
     }
 }

@@ -260,6 +260,9 @@ namespace Bloom.Fulfillment.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("OrderId")
+                        .HasDatabaseName("ix_pack_tasks_order_id");
+
                     b.HasIndex("RefId")
                         .IsUnique()
                         .HasDatabaseName("ux_pack_tasks_ref_id");
@@ -538,6 +541,9 @@ namespace Bloom.Fulfillment.Data.Migrations
 
                     b.HasIndex("PackTaskId")
                         .HasDatabaseName("ix_shipments_pack_task");
+
+                    b.HasIndex("ReturnRequestId")
+                        .HasDatabaseName("ix_shipments_return_request_id");
 
                     b.HasIndex("ShippoTransactionId")
                         .IsUnique()

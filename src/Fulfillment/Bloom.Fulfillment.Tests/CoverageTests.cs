@@ -157,4 +157,22 @@ public class CoverageTests(Containers containers)
         Assert.Equal(2, metrics.Sum("labels_total", ("result", "voided")));
         Assert.Equal(2, t.Logs.Entries.Count(e => e.StartsWith("[Error]") && e.Contains("Orphan or duplicate Shippo label")));
     }
+
+    [Fact]
+    public async Task Daily_check_keeps_the_label_of_a_label_pending_shipment()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, _) = await PaidAsync(t);
+        var (_, shipmentId) = await Seed.PackedAsync(t, order, serials); // label_pending: the buy timed out, Shippo holds the label, the worker will reuse it (F-06)
+        var label = t.Shippo.AddLabel($"bloom:{shipmentId}");
+        var sweeps = ActivatorUtilities.CreateInstance<Sweeps>(t.Services);
+
+        t.Clock.Advance(TimeSpan.FromMinutes(11));
+        await sweeps.RunLabelCheckAsync(Ct);
+
+        Assert.Empty(t.Shippo.Refunds);
+        await Seed.RunLabelWorkerAsync(t);
+        await using var db = t.NewDb();
+        Assert.Equal(label.TransactionId, (await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == shipmentId, Ct)).ShippoTransactionId);
+    }
 }

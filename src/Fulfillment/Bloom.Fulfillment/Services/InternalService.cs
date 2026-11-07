@@ -20,6 +20,7 @@ public sealed class InternalService(FulfillmentDbContext db, TimeProvider clock)
         if (request.By is not ("customer" or "support"))
             throw FulfillmentErrors.Validation("by", "by must be 'customer' or 'support'.");
         var support = request.By == "support";
+        string[] cancellable = support ? [TaskStatuses.Pending, TaskStatuses.Packing, TaskStatuses.Packed] : [TaskStatuses.Pending]; // the customer can only cancel before packing starts
         var ct = context.CancellationToken;
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
@@ -27,15 +28,10 @@ public sealed class InternalService(FulfillmentDbContext db, TimeProvider clock)
         {
             var now = clock.GetUtcNow();
             // Lock order: pack_tasks, then shipments.
-            var cancelled = support
-                ? await db.Database.ExecuteSqlAsync($"""
-                    UPDATE pack_tasks SET status = {TaskStatuses.Cancelled}, version = version + 1, updated_at = {now}
-                    WHERE ref_id = {orderId} AND status IN ({TaskStatuses.Pending}, {TaskStatuses.Packing}, {TaskStatuses.Packed})
-                    """, ct)
-                : await db.Database.ExecuteSqlAsync($"""
-                    UPDATE pack_tasks SET status = {TaskStatuses.Cancelled}, version = version + 1, updated_at = {now}
-                    WHERE ref_id = {orderId} AND status = {TaskStatuses.Pending}
-                    """, ct);
+            var cancelled = await db.Database.ExecuteSqlAsync($"""
+                UPDATE pack_tasks SET status = {TaskStatuses.Cancelled}, version = version + 1, updated_at = {now}
+                WHERE ref_id = {orderId} AND status = ANY({cancellable})
+                """, ct);
             if (cancelled == 1)
             {
                 if (support)

@@ -34,6 +34,9 @@ public sealed class FakeShippo : HttpMessageHandler
     /// <summary>Shippo offers no rate of the requested service level.</summary>
     public bool NoMatchingRate { get; set; }
 
+    /// <summary>The next <c>POST transactions/</c> answers <c>SUCCESS</c> with an empty tracking number.</summary>
+    public bool EmptyTrackingNumberNextTransaction { get; set; }
+
     /// <summary>Runs inside <c>POST transactions/</c>, before the transaction is stored.</summary>
     public Action? BeforeTransaction { get; set; }
 
@@ -90,6 +93,11 @@ public sealed class FakeShippo : HttpMessageHandler
             lock (_gate)
             {
                 var label = Store(body!.Value.GetProperty("metadata").GetString()!, _ratesById[body.Value.GetProperty("rate").GetString()!]);
+                if (EmptyTrackingNumberNextTransaction)
+                {
+                    EmptyTrackingNumberNextTransaction = false;
+                    return Ok(Transaction(label with { TrackingNumber = "" }));
+                }
                 if (!TimeoutAfterStoringNextTransaction) return Ok(Transaction(label));
                 TimeoutAfterStoringNextTransaction = false;
             }

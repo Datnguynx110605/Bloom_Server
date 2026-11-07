@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using Bloom.Fulfillment.Contracts;
@@ -21,25 +22,7 @@ public class TrackingTests(Containers containers)
         await Seed.ReadyAsync(t, ready);
         var (_, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB", "SNA");
         using (var response = await t.SendAsync(HttpMethod.Post, "/api/admin/fulfillment/handover", new { shipmentId }, Warehouse)) await response.OkJsonAsync();
-        return (ready, shipmentId, (await ShipmentAsync(t, shipmentId)).TrackingNumber!);
-    }
-
-    private static async Task<Shipment> ShipmentAsync(TestFulfillment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == id, Ct);
-    }
-
-    private static async Task<DeliveryFailure?> FailureAsync(TestFulfillment t, Guid shipmentId)
-    {
-        await using var db = t.NewDb();
-        return await db.DeliveryFailures.AsNoTracking().SingleOrDefaultAsync(f => f.ShipmentId == shipmentId, Ct);
-    }
-
-    private static async Task<List<WarrantyCoverage>> CoveragesAsync(TestFulfillment t, Guid orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.WarrantyCoverages.AsNoTracking().Where(c => c.OrderId == orderId).ToListAsync(Ct);
+        return (ready, shipmentId, (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!);
     }
 
     private static Task<HttpResponseMessage> PostAsync(TestFulfillment t, string body, string secret = "secret-test") =>
@@ -69,6 +52,26 @@ public class TrackingTests(Containers containers)
     }
 
     [Fact]
+    public async Task Webhook_secret_stays_out_of_the_trace()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var paths = new List<string?>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "Microsoft.AspNetCore",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = a => { lock (paths) paths.Add((string?)a.GetTagItem("url.path")); },
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        using var response = await PostAsync(t, "{}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode); // the secret was right: the body has no tracking number
+        await Poll.UntilAsync(() => { lock (paths) return Task.FromResult(paths.Count > 0); }, 5, "the request span to stop"); // it stops just after the response is sent
+        lock (paths) Assert.Equal(["/webhooks/shippo/{secret}"], paths.Distinct());
+    }
+
+    [Fact]
     public async Task Transit_then_delivered()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
@@ -76,21 +79,21 @@ public class TrackingTests(Containers containers)
         var (order, shipmentId, tracking) = await HandedOverAsync(t);
 
         await EventAsync(t, tracking, "TRANSIT");
-        var transit = await ShipmentAsync(t, shipmentId);
+        var transit = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.InTransit, transit.Status);
         Assert.Equal(t.Clock.GetUtcNow(), transit.LastTrackingAt!.Value, TimeSpan.FromMilliseconds(1));
-        Assert.All(await CoveragesAsync(t, order.OrderId), c => Assert.Equal(CoverageStatuses.PendingDelivery, c.Status));
+        Assert.All(await Seed.CoveragesAsync(t, order.OrderId), c => Assert.Equal(CoverageStatuses.PendingDelivery, c.Status));
 
         t.Clock.Advance(TimeSpan.FromDays(2));
         await EventAsync(t, tracking, "DELIVERED");
 
         var now = t.Clock.GetUtcNow();
-        var delivered = await ShipmentAsync(t, shipmentId);
+        var delivered = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.Delivered, delivered.Status);
         Assert.Equal(now, delivered.DeliveredAt!.Value, TimeSpan.FromMilliseconds(1));
         await using (var db = t.NewDb())
             Assert.Equal(now, (await db.OrderAccounts.AsNoTracking().SingleAsync(a => a.OrderId == order.OrderId, Ct)).DeliveredAt!.Value, TimeSpan.FromMilliseconds(1));
-        var coverages = await CoveragesAsync(t, order.OrderId);
+        var coverages = await Seed.CoveragesAsync(t, order.OrderId);
         Assert.NotEmpty(coverages);
         Assert.All(coverages, c =>
         {
@@ -114,7 +117,7 @@ public class TrackingTests(Containers containers)
         using var response = await PostAsync(t, Body(tracking, "DELIVERED")); // the body lies
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        Assert.Equal(ShipmentStatuses.InTransit, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Empty(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
     }
 
@@ -126,12 +129,12 @@ public class TrackingTests(Containers containers)
         var (_, shipmentId, tracking) = await HandedOverAsync(t);
 
         await EventAsync(t, tracking, "DELIVERED");
-        var first = await ShipmentAsync(t, shipmentId);
+        var first = await Seed.ShipmentAsync(t, shipmentId);
         t.Clock.Advance(TimeSpan.FromHours(1));
         await EventAsync(t, tracking, "DELIVERED");
         await EventAsync(t, tracking, "TRANSIT");
 
-        var last = await ShipmentAsync(t, shipmentId);
+        var last = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal((ShipmentStatuses.Delivered, first.DeliveredAt, first.LastTrackingAt, first.Version), (last.Status, last.DeliveredAt, last.LastTrackingAt, last.Version));
         Assert.Single(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Warning]") && e.Contains(shipmentId.ToString()));
@@ -146,8 +149,8 @@ public class TrackingTests(Containers containers)
 
         await EventAsync(t, tracking, "RETURNED");
 
-        Assert.Equal(ShipmentStatuses.ReturnedToSender, (await ShipmentAsync(t, shipmentId)).Status);
-        var failure = (await FailureAsync(t, shipmentId))!;
+        Assert.Equal(ShipmentStatuses.ReturnedToSender, (await Seed.ShipmentAsync(t, shipmentId)).Status);
+        var failure = (await Seed.FailureAsync(t, shipmentId))!;
         Assert.Equal((FailureKinds.ReturnedToSender, FailureStatuses.Confirmed), (failure.Kind, failure.Status));
     }
 
@@ -160,8 +163,8 @@ public class TrackingTests(Containers containers)
 
         await EventAsync(t, tracking, "FAILURE");
 
-        Assert.Equal(ShipmentStatuses.PossiblyLost, (await ShipmentAsync(t, shipmentId)).Status);
-        var failure = (await FailureAsync(t, shipmentId))!;
+        Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
+        var failure = (await Seed.FailureAsync(t, shipmentId))!;
         Assert.Equal((FailureKinds.Lost, FailureStatuses.PossiblyLost, ShipmentStatuses.InTransit), (failure.Kind, failure.Status, failure.PreviousStatus));
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(shipmentId.ToString()));
     }
@@ -176,9 +179,9 @@ public class TrackingTests(Containers containers)
 
         await EventAsync(t, tracking, "DELIVERED");
 
-        var shipment = await ShipmentAsync(t, shipmentId);
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.Delivered, shipment.Status);
-        var failure = (await FailureAsync(t, shipmentId))!;
+        var failure = (await Seed.FailureAsync(t, shipmentId))!;
         Assert.Equal(FailureStatuses.Dismissed, failure.Status);
         Assert.Equal(t.Clock.GetUtcNow(), failure.DismissedAt!.Value, TimeSpan.FromMilliseconds(1));
         Assert.Single(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
@@ -190,12 +193,12 @@ public class TrackingTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (_, shipmentId, tracking) = await HandedOverAsync(t);
         await EventAsync(t, tracking, "FAILURE");
-        Assert.Equal(ShipmentStatuses.PossiblyLost, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
 
         await EventAsync(t, tracking, "TRANSIT");
 
-        Assert.Equal(ShipmentStatuses.InTransit, (await ShipmentAsync(t, shipmentId)).Status);
-        Assert.Equal(FailureStatuses.Dismissed, (await FailureAsync(t, shipmentId))!.Status);
+        Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(FailureStatuses.Dismissed, (await Seed.FailureAsync(t, shipmentId))!.Status);
     }
 
     [Fact]
@@ -206,14 +209,14 @@ public class TrackingTests(Containers containers)
 
         t.Clock.Advance(TimeSpan.FromDays(7) - TimeSpan.FromMinutes(1));
         await SweepAsync(t);
-        Assert.Equal(ShipmentStatuses.HandedOver, (await ShipmentAsync(t, shipmentId)).Status);
-        Assert.Null(await FailureAsync(t, shipmentId));
+        Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, shipmentId)).Status);
+        Assert.Null(await Seed.FailureAsync(t, shipmentId));
 
         t.Clock.Advance(TimeSpan.FromMinutes(3));
         await SweepAsync(t);
 
-        Assert.Equal(ShipmentStatuses.PossiblyLost, (await ShipmentAsync(t, shipmentId)).Status);
-        var failure = (await FailureAsync(t, shipmentId))!;
+        Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
+        var failure = (await Seed.FailureAsync(t, shipmentId))!;
         Assert.Equal((FailureKinds.Lost, FailureStatuses.PossiblyLost, ShipmentStatuses.HandedOver), (failure.Kind, failure.Status, failure.PreviousStatus));
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(shipmentId.ToString()));
     }
@@ -226,22 +229,22 @@ public class TrackingTests(Containers containers)
         await EventAsync(t, tracking, "TRANSIT");
         t.Clock.Advance(TimeSpan.FromDays(7) + TimeSpan.FromMinutes(1));
         await SweepAsync(t);
-        Assert.Equal(ShipmentStatuses.PossiblyLost, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
 
         t.Clock.Advance(TimeSpan.FromDays(1));
         await DismissAsync(t, shipmentId);
-        var dismissed = await ShipmentAsync(t, shipmentId);
+        var dismissed = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.InTransit, dismissed.Status);
-        Assert.Equal(FailureStatuses.Dismissed, (await FailureAsync(t, shipmentId))!.Status);
+        Assert.Equal(FailureStatuses.Dismissed, (await Seed.FailureAsync(t, shipmentId))!.Status);
 
         t.Clock.Advance(TimeSpan.FromDays(6)); // 6 days after the dismissal
         await SweepAsync(t);
-        Assert.Equal(ShipmentStatuses.InTransit, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, shipmentId)).Status);
 
         t.Clock.Advance(TimeSpan.FromDays(1) + TimeSpan.FromMinutes(1)); // 7 days + 1 min after the dismissal
         await SweepAsync(t);
 
-        Assert.Equal(ShipmentStatuses.PossiblyLost, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         await using var db = t.NewDb();
         var failure = await db.DeliveryFailures.AsNoTracking().SingleAsync(f => f.ShipmentId == shipmentId, Ct); // the same row
         Assert.Equal((FailureStatuses.PossiblyLost, ShipmentStatuses.InTransit), (failure.Status, failure.PreviousStatus));
@@ -263,7 +266,7 @@ public class TrackingTests(Containers containers)
         t.Shippo.FailNext(1);
         using (var failed = await PostAsync(t, Body(tracking, "TRANSIT"))) Assert.Equal(HttpStatusCode.InternalServerError, failed.StatusCode);
 
-        Assert.Equal(ShipmentStatuses.HandedOver, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Equal((1, 1, 3, 1), (
             metrics.Sum("tracking_webhooks_total", ("result", "bad_secret")), metrics.Sum("tracking_webhooks_total", ("result", "unknown")),
             metrics.Sum("tracking_webhooks_total", ("result", "invalid")), metrics.Sum("tracking_webhooks_total", ("result", "error"))));
@@ -286,14 +289,14 @@ public class TrackingTests(Containers containers)
         }
 
         await EventAsync(t, "SB1", "TRANSIT");
-        Assert.Equal(ShipmentStatuses.InTransit, (await ShipmentAsync(t, id)).Status);
+        Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, id)).Status);
         await EventAsync(t, "SB1", "FAILURE"); // nothing else applies
-        Assert.Equal(ShipmentStatuses.InTransit, (await ShipmentAsync(t, id)).Status);
+        Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, id)).Status);
         await EventAsync(t, "SB1", "DELIVERED");
 
-        Assert.Equal(ShipmentStatuses.Delivered, (await ShipmentAsync(t, id)).Status);
-        Assert.Null(await FailureAsync(t, id));
+        Assert.Equal(ShipmentStatuses.Delivered, (await Seed.ShipmentAsync(t, id)).Status);
+        Assert.Null(await Seed.FailureAsync(t, id));
         Assert.Empty(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
-        Assert.Empty(await CoveragesAsync(t, orderId));
+        Assert.Empty(await Seed.CoveragesAsync(t, orderId));
     }
 }

@@ -9,12 +9,6 @@ public class LabelTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private static async Task<Shipment> ShipmentAsync(TestFulfillment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == id, Ct);
-    }
-
     private static async Task<(Guid OrderId, Guid ShipmentId)> PackedAsync(TestFulfillment t, Action<Seed.ReadyBuilder>? configure = null)
     {
         var ready = Seed.Ready(configure);
@@ -34,7 +28,7 @@ public class LabelTests(Containers containers)
         await Seed.ReadyAsync(t, ready);
         var (_, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SN1", "SN2");
 
-        var shipment = await ShipmentAsync(t, shipmentId);
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.LabelReady, shipment.Status);
         var bought = t.Shippo.Transactions.Single();
         Assert.Equal(bought.TransactionId, shipment.ShippoTransactionId);
@@ -70,7 +64,7 @@ public class LabelTests(Containers containers)
         var (_, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SN1", "SN2");
 
         Assert.Equal(["usps_priority"], t.Shippo.BoughtTokens);
-        Assert.Equal(ShipmentStatuses.LabelReady, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.LabelReady, (await Seed.ShipmentAsync(t, shipmentId)).Status);
     }
 
     [Fact]
@@ -83,7 +77,7 @@ public class LabelTests(Containers containers)
 
         await Seed.RunLabelWorkerAsync(t);
 
-        var pending = await ShipmentAsync(t, shipmentId);
+        var pending = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.LabelPending, pending.Status);
         Assert.Equal(1, pending.LabelAttempts);
         Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), pending.NextAttemptAt, TimeSpan.FromMilliseconds(1));
@@ -92,7 +86,7 @@ public class LabelTests(Containers containers)
         t.Clock.Advance(TimeSpan.FromSeconds(1));
         await Seed.RunLabelWorkerAsync(t);
 
-        var ready = await ShipmentAsync(t, shipmentId);
+        var ready = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.LabelReady, ready.Status);
         Assert.Equal(t.Shippo.Transactions.Single().TransactionId, ready.ShippoTransactionId);
         Assert.Equal(0, ready.LabelAttempts);
@@ -116,7 +110,7 @@ public class LabelTests(Containers containers)
             var calls = t.Shippo.Calls("");
             await Seed.RunLabelWorkerAsync(t);
 
-            var shipment = await ShipmentAsync(t, shipmentId);
+            var shipment = await Seed.ShipmentAsync(t, shipmentId);
             Assert.Equal(ShipmentStatuses.LabelPending, shipment.Status);
             Assert.Equal(n, shipment.LabelAttempts);
             Assert.Equal(t.Clock.GetUtcNow() + delays[n - 1], shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1));
@@ -131,7 +125,7 @@ public class LabelTests(Containers containers)
         }
 
         await Seed.RunLabelWorkerAsync(t); // Shippo is back
-        var done = await ShipmentAsync(t, shipmentId);
+        var done = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.LabelReady, done.Status);
         Assert.Equal(0, done.LabelAttempts);
         Assert.Equal(1, metrics.Sum("labels_total", ("result", "bought")));
@@ -147,10 +141,10 @@ public class LabelTests(Containers containers)
         var (_, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SN1", "SN2");
 
         await CancelAsync(t, ready.OrderId);
-        Assert.Equal(ShipmentStatuses.VoidPending, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.VoidPending, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         await Seed.RunLabelWorkerAsync(t);
 
-        Assert.Equal(ShipmentStatuses.Voided, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.Voided, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Equal([t.Shippo.Transactions.Single().TransactionId], t.Shippo.Refunds);
         Assert.Equal(1, metrics.Sum("labels_total", ("result", "voided")));
     }
@@ -164,7 +158,7 @@ public class LabelTests(Containers containers)
         await CancelAsync(t, orderId);
         await Seed.RunLabelWorkerAsync(t);
 
-        Assert.Equal(ShipmentStatuses.Voided, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.Voided, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Empty(t.Shippo.Transactions);
         Assert.Equal(0, t.Shippo.Calls(""));
     }
@@ -187,7 +181,7 @@ public class LabelTests(Containers containers)
 
         Assert.True(cancelStarted);
         await cancel; // ok
-        var shipment = await ShipmentAsync(t, shipmentId);
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Single(t.Shippo.Transactions);
         var transactionId = t.Shippo.Transactions[0].TransactionId;
         Assert.Equal(transactionId, shipment.ShippoTransactionId);
@@ -199,9 +193,54 @@ public class LabelTests(Containers containers)
         t.Shippo.BeforeTransaction = null;
         await Seed.RunLabelWorkerAsync(t);
 
-        Assert.Equal(ShipmentStatuses.Voided, (await ShipmentAsync(t, shipmentId)).Status);
+        Assert.Equal(ShipmentStatuses.Voided, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Equal([transactionId], t.Shippo.Refunds); // voided exactly once
         Assert.Single(t.Shippo.Transactions);
+    }
+
+    [Fact]
+    public async Task Poisoned_row_backs_off_and_does_not_stall_other_labels_or_voids()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var voidable = Seed.Ready();
+        await Seed.ReadyAsync(t, voidable);
+        var (_, voidId) = await Seed.LabelReadyAsync(t, voidable, "SN1", "SN2");
+        await CancelAsync(t, voidable.OrderId); // void_pending
+
+        var poisoned = Seed.Ready();
+        await Seed.ReadyAsync(t, poisoned);
+        var poisonedId = (await Seed.PackedAsync(t, poisoned, "SN3", "SN4")).ShipmentId;
+        await using (var db = t.NewDb())
+            await db.PackTasks.Where(p => p.OrderId == poisoned.OrderId).ExecuteUpdateAsync(p => p.SetProperty(x => x.ShipTo, "{}"), Ct); // an address that can't be read
+        t.Clock.Advance(TimeSpan.FromSeconds(1)); // the good row is due later: the poisoned one is served first
+        var good = Seed.Ready();
+        await Seed.ReadyAsync(t, good);
+        var goodId = (await Seed.PackedAsync(t, good, "SN5", "SN6")).ShipmentId;
+
+        await Seed.RunLabelWorkerAsync(t);
+
+        var bad = await Seed.ShipmentAsync(t, poisonedId);
+        Assert.Equal(ShipmentStatuses.LabelPending, bad.Status);
+        Assert.Equal(1, bad.LabelAttempts);
+        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), bad.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.Equal(ShipmentStatuses.LabelReady, (await Seed.ShipmentAsync(t, goodId)).Status);
+        Assert.Equal(ShipmentStatuses.Voided, (await Seed.ShipmentAsync(t, voidId)).Status);
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Warning]") && e.Contains(poisonedId.ToString()));
+    }
+
+    [Fact]
+    public async Task Shippo_label_without_a_tracking_number_fails_the_attempt()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, shipmentId) = await PackedAsync(t);
+        t.Shippo.EmptyTrackingNumberNextTransaction = true;
+
+        await Seed.RunLabelWorkerAsync(t);
+
+        var pending = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal(ShipmentStatuses.LabelPending, pending.Status);
+        Assert.Equal(1, pending.LabelAttempts);
+        Assert.Null(pending.TrackingNumber);
     }
 
     /// <summary>Blocks (synchronously: it runs inside the fake's handler) until some session waits for a lock, so the test really exercises the row-lock wait.</summary>

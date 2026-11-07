@@ -160,7 +160,8 @@ public class WorkerTests(Containers containers)
         var (_, shipmentId) = await Seed.DeliveredAsync(api, delivered, $"MNA{id}", $"MNB{id}");
         await Seed.ReturnAsync(api, delivered.OrderId, TestCaller.Customer(delivered.AccountId), (1, 1));
         await Seed.RunLabelWorkerAsync(api); // the return label comes from the API host's Shippo double; the worker host's own label worker has nothing due
-        await Seed.ReadyAsync(api, Seed.Ready()); // a second, pending task
+        var pending = Seed.Ready();
+        await Seed.ReadyAsync(api, pending); // a second, pending task
         var now = worker.Clock.GetUtcNow();
         var saga = new FulfillmentSaga { RefId = Guid.NewGuid(), Type = SagaTypes.ReturnRefund, PendingSteps = ["refund"], RefundId = Guid.NewGuid(), StartedAt = now.AddMinutes(-29) };
         await using (var db = api.NewDb())
@@ -175,7 +176,14 @@ public class WorkerTests(Containers containers)
         Assert.Equal(1, metrics.Latest("pack_tasks_by_status", ("status", "handed_over")));
         Assert.Equal(1, metrics.Latest("returns_by_status", ("status", "label_issued")));
         Assert.Equal(1, metrics.Latest("possibly_lost_open"));
+        Assert.Equal(0, metrics.Latest("pack_tasks_by_status", ("status", "packing"))); // a status without rows is reported as 0
+        Assert.Equal(0, metrics.Latest("returns_by_status", ("status", "requested")));
         Assert.DoesNotContain(worker.Logs.Entries, e => e.StartsWith("[Error]"));
+
+        await Seed.SetTaskStatusAsync(api, pending.OrderId, TaskStatuses.Cancelled);
+        await monitor.RunOnceAsync(Ct);
+        Assert.Equal(0, metrics.Latest("pack_tasks_by_status", ("status", "pending"))); // emptied: 0, not the last sample
+        Assert.Equal(1, metrics.Latest("pack_tasks_by_status", ("status", "cancelled")));
 
         await using (var db = api.NewDb())
             await db.FulfillmentSagas.ExecuteUpdateAsync(s => s.SetProperty(x => x.StartedAt, now.AddMinutes(-31)), Ct); // the clock stays put: moving it would also tick the hosted loops

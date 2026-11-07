@@ -64,18 +64,6 @@ public class RefundTests(Containers containers)
         return await db.OrderLineAccounts.AsNoTracking().SingleAsync(l => l.OrderId == orderId && l.LineNo == lineNo, Ct);
     }
 
-    private static async Task<List<ReturnUnit>> UnitsAsync(TestFulfillment t, Guid returnId)
-    {
-        await using var db = t.NewDb();
-        return await db.ReturnUnits.AsNoTracking().Where(u => u.ReturnId == returnId).OrderBy(u => u.UnitNo).ToListAsync(Ct);
-    }
-
-    private static async Task<ReturnRequest> ReturnAsync(TestFulfillment t, Guid returnId)
-    {
-        await using var db = t.NewDb();
-        return await db.ReturnRequests.AsNoTracking().SingleAsync(r => r.Id == returnId, Ct);
-    }
-
     private static async Task<List<FulfillmentSaga>> SagasAsync(TestFulfillment t, Guid orderId)
     {
         await using var db = t.NewDb();
@@ -147,12 +135,12 @@ public class RefundTests(Containers containers)
 
         var body = await DecidedAsync(t, returnId, Partial(1, 300));
 
-        var unit = Assert.Single(await UnitsAsync(t, returnId));
+        var unit = Assert.Single(await Seed.UnitsAsync(t, returnId));
         Assert.Equal((Decisions.Partial, 300L, 24L), (unit.Decision, unit.RefundCents, unit.RefundTaxCents));
         Assert.Equal(300, Cents(body));
         var line = await LineAsync(t, order.OrderId, 1);
         Assert.Equal((1, 300L), (line.RefundedUnits, line.RefundedCents));
-        Assert.Equal(ReturnStatuses.Decided, (await ReturnAsync(t, returnId)).Status);
+        Assert.Equal(ReturnStatuses.Decided, (await Seed.ReturnRequestAsync(t, returnId)).Status);
     }
 
     [Fact]
@@ -166,8 +154,8 @@ public class RefundTests(Containers containers)
         using (var over = await DecideAsync(t, returnId, [Partial(1, 1001)], key)) await over.ExpectErrorAsync(400, "PARTIAL_EXCEEDS_SHARE");
         using (var replay = await DecideAsync(t, returnId, [Partial(1, 1001)], key)) await replay.ExpectErrorAsync(400, "PARTIAL_EXCEEDS_SHARE"); // the key stores the rejection
 
-        Assert.Equal(ReturnStatuses.Inspected, (await ReturnAsync(t, returnId)).Status);
-        Assert.Null(Assert.Single(await UnitsAsync(t, returnId)).Decision);
+        Assert.Equal(ReturnStatuses.Inspected, (await Seed.ReturnRequestAsync(t, returnId)).Status);
+        Assert.Null(Assert.Single(await Seed.UnitsAsync(t, returnId)).Decision);
         Assert.Equal((0, 0L), ((await LineAsync(t, order.OrderId, 1)).RefundedUnits, (await LineAsync(t, order.OrderId, 1)).RefundedCents));
         Assert.Empty(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment));
         Assert.Empty(await SagasAsync(t, order.OrderId));
@@ -217,7 +205,7 @@ public class RefundTests(Containers containers)
         Assert.Equal(CoverageStatuses.Cancelled, (await CoverageAsync(t, serials[0])).Status);
         var plan = await LineAsync(t, order.OrderId, 2);
         Assert.Equal((1, 9900L), (plan.RefundedUnits, plan.RefundedCents));
-        var units = await UnitsAsync(t, returnId);
+        var units = await Seed.UnitsAsync(t, returnId);
         Assert.Equal([1, 2], units.Select(u => u.UnitNo));
         Assert.Equal((2, Decisions.Full, 9900L, 800L, (string?)null), (units[1].LineNo, units[1].Decision, units[1].RefundCents, units[1].RefundTaxCents, units[1].ReceivedSerial));
         var decided = Assert.Single(await Outbox.PayloadsAsync<ReturnDecidedV1>(t, FulfillmentMessages.ReturnDecided));
@@ -231,7 +219,7 @@ public class RefundTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (order, serials, customer) = await DeliveredAsync(t);
         var returnId = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], "FOREIGN" + serials[0]);
-        Assert.Equal(InspectionResults.WrongItem, Assert.Single(await UnitsAsync(t, returnId)).InspectionResult);
+        Assert.Equal(InspectionResults.WrongItem, Assert.Single(await Seed.UnitsAsync(t, returnId)).InspectionResult);
 
         var body = await DecidedAsync(t, returnId, Reject(1));
 
@@ -245,7 +233,7 @@ public class RefundTests(Containers containers)
         Assert.Equal((0L, 0), (decided.RefundCents, decided.Accepted.Count));
         Assert.Empty(await Outbox.PayloadsAsync<ReceiveCustomerReturnV1>(t, FulfillmentMessages.ReceiveCustomerReturn));
         Assert.NotEqual(CoverageStatuses.Cancelled, (await CoverageAsync(t, serials[0])).Status);
-        Assert.Equal(Decisions.Reject, Assert.Single(await UnitsAsync(t, returnId)).Decision);
+        Assert.Equal(Decisions.Reject, Assert.Single(await Seed.UnitsAsync(t, returnId)).Decision);
     }
 
     [Fact]
@@ -491,7 +479,7 @@ public class RefundTests(Containers containers)
             using (var denied = await DecideAsync(t, returnId, [Full(1), Full(2)], caller: caller)) await denied.ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
         using (var unknown = await DecideAsync(t, Guid.NewGuid(), [Full(1)])) await unknown.ExpectErrorAsync(404, "NOT_FOUND");
         using (var noKey = await t.SendAsync(HttpMethod.Post, $"{Admin}/{returnId}/decision", new { units = new[] { Full(1), Full(2) } }, Support)) await noKey.ExpectErrorAsync(400, "IDEMPOTENCY_KEY_REQUIRED");
-        Assert.Equal(ReturnStatuses.Inspected, (await ReturnAsync(t, returnId)).Status);
+        Assert.Equal(ReturnStatuses.Inspected, (await Seed.ReturnRequestAsync(t, returnId)).Status);
 
         var (other, _, otherCustomer) = await DeliveredAsync(t);
         var requested = await Seed.ReturnAsync(t, other.OrderId, otherCustomer, (1, 1));

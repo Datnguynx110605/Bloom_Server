@@ -35,6 +35,7 @@ public sealed partial class FulfillmentDbContext(DbContextOptions<FulfillmentDbC
             });
             e.Property(x => x.ShipTo).HasColumnType("jsonb");
             e.HasIndex(x => x.RefId).IsUnique().HasDatabaseName("ux_pack_tasks_ref_id");
+            e.HasIndex(x => x.OrderId).HasDatabaseName("ix_pack_tasks_order_id");
         });
 
         mb.Entity<PackTaskLine>(e =>
@@ -64,6 +65,7 @@ public sealed partial class FulfillmentDbContext(DbContextOptions<FulfillmentDbC
             e.HasIndex(x => x.TrackingNumber).IsUnique().HasDatabaseName("ux_shipments_tracking_number");
             e.HasIndex(x => x.NextAttemptAt).HasFilter("status = 'label_pending'").HasDatabaseName("ix_shipments_label_due");
             e.HasIndex(x => x.PackTaskId).HasDatabaseName("ix_shipments_pack_task");
+            e.HasIndex(x => x.ReturnRequestId).HasDatabaseName("ix_shipments_return_request_id");
         });
 
         mb.Entity<OrderAccount>(e =>

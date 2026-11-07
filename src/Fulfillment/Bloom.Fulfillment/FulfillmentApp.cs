@@ -12,6 +12,7 @@ using Google.Protobuf.Reflection;
 using Google.Rpc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using OpenTelemetry.Instrumentation.AspNetCore;
 
 namespace Bloom.Fulfillment;
 
@@ -32,6 +33,11 @@ public static class FulfillmentApp
 
         builder.AddBloomTelemetry(api ? "fulfillment-api" : "fulfillment-worker");
         builder.Services.AddOpenTelemetry().WithMetrics(m => m.AddMeter(FulfillmentMetrics.MeterName));
+        builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(o => // the webhook URL carries a secret
+        {
+            o.EnrichWithHttpRequest = ShippoWebhook.HideSecret;
+            o.EnrichWithHttpResponse = (activity, response) => ShippoWebhook.HideSecret(activity, response.HttpContext.Request);
+        });
 
         builder.Services.AddSingleton(options);
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)

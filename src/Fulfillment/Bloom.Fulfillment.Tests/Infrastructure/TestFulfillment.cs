@@ -18,9 +18,6 @@ public sealed class TestFulfillmentOptions
 
     /// <summary>Reuses this database (for example an API host and a worker host on one database) instead of creating one.</summary>
     public string? ConnectionString { get; set; }
-
-    /// <summary>Configuration overrides, applied on top of the defaults below (every key of plan R4).</summary>
-    public Dictionary<string, string?> Config { get; } = [];
 }
 
 /// <summary>The fulfillment app built through <see cref="FulfillmentApp.Build"/> on <c>TestServer</c> (plan R1), on its own database (plan R23).</summary>
@@ -69,29 +66,8 @@ public sealed class TestFulfillment : IAsyncDisposable
         var inventory = await FakeInventory.StartAsync();
         var shippo = new FakeShippo();
 
-        var config = new Dictionary<string, string?>
-        {
-            ["Fulfillment:Mode"] = options.Mode,
-            ["Fulfillment:Database"] = connectionString,
-            ["Fulfillment:RabbitMq"] = containers.RabbitMqUri,
-            ["Fulfillment:Inventory"] = inventory.Address.ToString(),
-            ["Fulfillment:Shippo:ApiKey"] = "key-test",
-            ["Fulfillment:Shippo:WebhookSecret"] = "secret-test",
-            ["Fulfillment:Shippo:Carrier"] = "usps",
-            ["Fulfillment:Shippo:StandardToken"] = "usps_ground_advantage",
-            ["Fulfillment:Shippo:ExpressToken"] = "usps_priority",
-            ["Fulfillment:Warehouse:Name"] = "Bloom Warehouse",
-            ["Fulfillment:Warehouse:Street1"] = "1 Warehouse Way",
-            ["Fulfillment:Warehouse:City"] = "Reno",
-            ["Fulfillment:Warehouse:State"] = "NV",
-            ["Fulfillment:Warehouse:Zip"] = "89501",
-            ["Fulfillment:Warehouse:Phone"] = "+17755550100",
-            ["Fulfillment:Parcel:LengthIn"] = "10",
-            ["Fulfillment:Parcel:WidthIn"] = "8",
-            ["Fulfillment:Parcel:HeightIn"] = "4",
-            ["Fulfillment:Parcel:WeightOz"] = "32",
-        };
-        foreach (var (key, value) in options.Config) config[key] = value;
+        var config = DefaultConfig(connectionString, containers.RabbitMqUri, inventory.Address.ToString());
+        config["Fulfillment:Mode"] = options.Mode;
 
         var app = FulfillmentApp.Build([], b =>
         {
@@ -118,6 +94,29 @@ public sealed class TestFulfillment : IAsyncDisposable
             ConnectionString = connectionString,
         };
     }
+
+    /// <summary>Every key of plan R4 except <c>Mode</c>, with valid values.</summary>
+    internal static Dictionary<string, string?> DefaultConfig(string database, string rabbitMq, string inventory) => new()
+    {
+        ["Fulfillment:Database"] = database,
+        ["Fulfillment:RabbitMq"] = rabbitMq,
+        ["Fulfillment:Inventory"] = inventory,
+        ["Fulfillment:Shippo:ApiKey"] = "key-test",
+        ["Fulfillment:Shippo:WebhookSecret"] = "secret-test",
+        ["Fulfillment:Shippo:Carrier"] = "usps",
+        ["Fulfillment:Shippo:StandardToken"] = "usps_ground_advantage",
+        ["Fulfillment:Shippo:ExpressToken"] = "usps_priority",
+        ["Fulfillment:Warehouse:Name"] = "Bloom Warehouse",
+        ["Fulfillment:Warehouse:Street1"] = "1 Warehouse Way",
+        ["Fulfillment:Warehouse:City"] = "Reno",
+        ["Fulfillment:Warehouse:State"] = "NV",
+        ["Fulfillment:Warehouse:Zip"] = "89501",
+        ["Fulfillment:Warehouse:Phone"] = "+17755550100",
+        ["Fulfillment:Parcel:LengthIn"] = "10",
+        ["Fulfillment:Parcel:WidthIn"] = "8",
+        ["Fulfillment:Parcel:HeightIn"] = "4",
+        ["Fulfillment:Parcel:WeightOz"] = "32",
+    };
 
     /// <summary>A test-side context on the same database.</summary>
     public FulfillmentDbContext NewDb() => NewDb(ConnectionString);

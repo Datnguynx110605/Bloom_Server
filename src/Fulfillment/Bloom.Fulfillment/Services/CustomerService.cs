@@ -82,7 +82,7 @@ public sealed class CustomerService(FulfillmentDbContext db, OutboxWriter outbox
 
     /// <summary>
     /// WAR-R06 (spec §7): every plan unit is refunded at its share (<c>full</c>, no tax rounding) and the coverage on the <b>last</b> device serial by <c>seq</c> that is still open ends.
-    /// Fills in the decision and money of the new units, then sends the refund and publishes <c>return-decided</c> and <c>return-closed</c>.
+    /// Fills in the decision and money of the new units, then settles the refund (<see cref="RefundEngine.SettleReturnAsync"/>).
     /// Lock order after the order lock: order_line_accounts (ascending), then warranty_coverages.
     /// </summary>
     private async Task DecidePlansAsync(OrderAccount account, Guid returnId, Dictionary<int, OrderLineAccount> lines, List<ReturnUnit> units, CancellationToken ct)
@@ -105,15 +105,7 @@ public sealed class CustomerService(FulfillmentDbContext db, OutboxWriter outbox
                 orderby s.Seq descending
                 select c.Id).Take(count).ToListAsync(ct));
 
-        await refunds.ApplyAsync(account.OrderId, perLine, ct);
-        var shipping = await refunds.ShippingIfCompleteAsync(account, ct);
-        foreach (var id in cancelled) await refunds.CancelCoverageAsync(id, ct);
-
-        var total = perLine.Values.Sum(v => v.Cents) + shipping;
-        refunds.Send(account.OrderId, returnId, SagaTypes.ReturnRefund, "return", total, RefundEngine.Lines(perLine));
-        outbox.PublishEvent(FulfillmentMessages.ReturnDecided, new ReturnDecidedV1(
-            account.OrderId, returnId, perLine.OrderBy(p => p.Key).Select(p => new AcceptedLineV1(p.Key, p.Value.Units)).ToList(), total));
-        outbox.PublishEvent(FulfillmentMessages.ReturnClosed, new ReturnClosedV1(account.OrderId, returnId, "decided"));
+        await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, ct);
     }
 
     /// <summary>The caller's returns, newest first.</summary>
