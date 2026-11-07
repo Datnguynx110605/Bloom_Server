@@ -21,14 +21,14 @@ public sealed class InventoryCalls(InventoryPacking.InventoryPackingClient packi
     public async Task ReplaceAsync(Guid refId, string oldSerial, string newSerial, ServerCallContext ctx) =>
         await packing.ReplaceSerialAsync(new() { RefId = refId.ToString(), OldSerial = oldSerial, NewSerial = newSerial }, Options(ctx));
 
-    /// <summary>No caller context: it runs inside the idempotency guard's provider (spec §7). <c>SOLD_OUT</c> becomes <c>RESHIP_NO_STOCK</c>.</summary>
-    public async Task CommitForReshipAsync(Guid reshipId, Guid orderId, IEnumerable<(Guid SkuId, int Quantity)> lines, CancellationToken ct)
+    /// <summary>Runs inside the idempotency guard's provider (spec §7), which closes over the staff call. <c>SOLD_OUT</c> becomes <c>RESHIP_NO_STOCK</c>.</summary>
+    public async Task CommitForReshipAsync(Guid reshipId, Guid orderId, IEnumerable<(Guid SkuId, int Quantity)> lines, ServerCallContext ctx)
     {
         var request = new CommitForReshipRequest { ReshipId = reshipId.ToString(), OrderId = orderId.ToString() };
         request.Lines.AddRange(lines.Select(l => new StockLine { SkuId = l.SkuId.ToString(), Quantity = l.Quantity }));
         try
         {
-            await stock.CommitForReshipAsync(request, deadline: DateTime.UtcNow + Deadline, cancellationToken: ct);
+            await stock.CommitForReshipAsync(request, Options(ctx));
         }
         catch (RpcException e) when (e.GetRpcStatus()?.Details.Any(d => d.Is(Google.Rpc.ErrorInfo.Descriptor) && d.Unpack<Google.Rpc.ErrorInfo>().Reason == "SOLD_OUT") == true)
         {

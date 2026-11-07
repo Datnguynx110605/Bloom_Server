@@ -249,6 +249,22 @@ public class RefundTests(Containers containers)
     }
 
     [Fact]
+    public async Task Non_serialized_units_reach_the_inventory_command_with_a_null_serial()   // the outbox writes with BloomJson, which drops nulls unless the property says otherwise
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, _, customer) = await DeliveredAsync(t, b => { NoPlan(b); b.Line(1, quantity: 2, paid: 2000, tax: 0); });
+        var returnId = await InspectedAsync(t, order.OrderId, customer, [(1, 2)], "", "");
+
+        await DecidedAsync(t, returnId, Full(1), Full(2));
+
+        var command = Assert.Single(await Outbox.PayloadsAsync<ReceiveCustomerReturnV1>(t, FulfillmentMessages.ReceiveCustomerReturn));
+        Assert.Equal((order.Lines[0].SkuId, (string?)null, 2), Assert.Single(command.Units) is var u ? (u.SkuId, u.Serial, u.Quantity) : default);
+        await using var db = t.NewDb();
+        var payload = await db.Database.SqlQuery<string>($"SELECT payload AS \"Value\" FROM outbox_messages WHERE message_type = {FulfillmentMessages.ReceiveCustomerReturn}").SingleAsync(Ct);
+        Assert.Contains("\"serial\": null", payload); // jsonb prints ": "
+    }
+
+    [Fact]
     public async Task Accepted_wrong_item_is_left_out_of_the_inventory_command()
     {
         await using var t = await TestFulfillment.StartAsync(containers);

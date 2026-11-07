@@ -189,7 +189,7 @@ public sealed class SupportService(
         return request.Resolution switch
         {
             "refund" => await guard.ExecuteAsync(request, context, ct => ConfirmLostRefundAsync(caller, shipmentId, ct)),
-            "reship" => await guard.ExecuteWithProviderAsync(request, context, (_, ct) => CommitReshipAsync(shipmentId, ct), (reshipId, ct) => ReshipAsync(caller, shipmentId, reshipId, ct)),
+            "reship" => await guard.ExecuteWithProviderAsync(request, context, (_, ct) => CommitReshipAsync(shipmentId, context, ct), (reshipId, ct) => ReshipAsync(caller, shipmentId, reshipId, ct)),
             _ => throw FulfillmentErrors.Validation("resolution", "The resolution is refund or reship."),
         };
     }
@@ -205,13 +205,13 @@ public sealed class SupportService(
     }
 
     /// <summary>The guard's provider step: no locks. It only rejects what is plainly not a lost shipment; <see cref="ReshipAsync"/> decides under lock, because the state can change during this call.</summary>
-    private async Task<Guid> CommitReshipAsync(Guid shipmentId, CancellationToken ct)
+    private async Task<Guid> CommitReshipAsync(Guid shipmentId, ServerCallContext context, CancellationToken ct)
     {
         var shipment = await db.Shipments.AsNoTracking().SingleOrDefaultAsync(s => s.Id == shipmentId, ct) ?? throw FulfillmentErrors.NotFound("The shipment");
         RequireLost(await db.DeliveryFailures.AsNoTracking().SingleOrDefaultAsync(f => f.ShipmentId == shipmentId, ct));
         var lines = await db.PackTaskLines.AsNoTracking().Where(l => l.TaskId == shipment.PackTaskId && l.Kind == LineKinds.Product).ToListAsync(ct);
         var reshipId = Ids.ReshipId(shipmentId);
-        await inventory.CommitForReshipAsync(reshipId, shipment.OrderId, lines.GroupBy(l => l.SkuId).Select(g => (g.Key, g.Sum(l => l.Quantity))), ct);
+        await inventory.CommitForReshipAsync(reshipId, shipment.OrderId, lines.GroupBy(l => l.SkuId).Select(g => (g.Key, g.Sum(l => l.Quantity))), context);
         return reshipId;
     }
 

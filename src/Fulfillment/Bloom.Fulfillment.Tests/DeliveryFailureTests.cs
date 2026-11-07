@@ -209,6 +209,8 @@ public class DeliveryFailureTests(Containers containers)
         var units2 = Assert.Single(await Outbox.PayloadsAsync<ReceiveReturnedToSenderV1>(t, FulfillmentMessages.ReceiveReturnedToSender)).Units;
         Assert.Equal((loose, null, 2, "sealed"), units2.Where(u => u.Serial is null).Select(u => (u.SkuId, u.Serial, u.Quantity, u.Outcome)).Single()); // grouped by (sku, outcome)
         Assert.Equal(2, units2.Count(u => u.Serial is not null));
+        await using var db = t.NewDb();
+        Assert.Contains("\"serial\": null", await db.Database.SqlQuery<string>($"SELECT payload AS \"Value\" FROM outbox_messages WHERE message_type = {FulfillmentMessages.ReceiveReturnedToSender}").SingleAsync(Ct));
     }
 
     [Fact]
@@ -276,7 +278,9 @@ public class DeliveryFailureTests(Containers containers)
         var body = await LostOkAsync(t, f.ShipmentId, "reship");
 
         Assert.Equal(("lost", "resolved_reship", reshipId.ToString()), (body.GetProperty("kind").GetString(), body.GetProperty("status").GetString(), body.GetProperty("reshipId").GetString()));
-        var commit = Assert.IsType<CommitForReshipRequest>(Assert.Single(t.Inventory.Calls, c => c.Method == "CommitForReship").Request);
+        var call = Assert.Single(t.Inventory.Calls, c => c.Method == "CommitForReship");
+        Assert.Equal(Support.Id.ToString(), call.UserId); // R11: the staff caller's headers reach inventory through the guard's provider
+        var commit = Assert.IsType<CommitForReshipRequest>(call.Request);
         Assert.Equal((reshipId.ToString(), f.Order.OrderId.ToString()), (commit.ReshipId, commit.OrderId));
         var device = f.Order.Lines.Single(l => l.LineNo == 1);
         var line = Assert.Single(commit.Lines); // product lines only
