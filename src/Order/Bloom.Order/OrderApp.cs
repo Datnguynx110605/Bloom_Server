@@ -55,6 +55,8 @@ public static class OrderApp
         bloom.AddConsumer<PaymentSucceededConsumer>("payment-succeeded", PaymentSucceededConsumer.Bindings); // both modes, for the DLQ catalog (plan R6)
         bloom.AddConsumer<PaymentFailedConsumer>("payment-failed", PaymentFailedConsumer.Bindings);
         bloom.AddConsumer<ReservationReleasedConsumer>("inventory-reservation-released", ReservationReleasedConsumer.Bindings);
+        bloom.AddConsumer<StockAllocatedConsumer>("inventory-stock-allocated", StockAllocatedConsumer.Bindings);
+        bloom.AddConsumer<LaunchStageChangedConsumer>("launch-stage-changed", LaunchStageChangedConsumer.Bindings);
         builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddGrpcClient<LaunchInternal.LaunchInternalClient>(o => o.Address = new Uri(options.Launch));

@@ -49,8 +49,7 @@ public sealed class PaymentSucceededConsumer(OrderDbContext db, Transitions tran
             [.. lines.Where(l => l.Kind == LineKinds.Product).Select(l => new OrderPaidLineV1(l.SkuId, l.Quantity))]));
         if (!regular) return true; // a pre-order waits for its stock (Task 11)
 
-        outbox.PublishEvent(OrderMessages.ReadyToFulfill, new OrderReadyToFulfillV1(order.Id, order.AccountId, order.Number, order.ShipTo, order.ShippingOption, order.ShippingCents, order.TotalCents,
-            [.. lines.Select(l => new ReadyLineV1(l.LineNo, l.Kind, l.SkuId, l.ProductId, l.Serialized, l.Quantity, l.ParentLineNo, l.CoverageMonths, l.PaidCents, l.TaxCents))]));
+        outbox.PublishEvent(OrderMessages.ReadyToFulfill, Transitions.ReadyToFulfill(order, lines));
         await RemoveFromCartAsync(order.AccountId, lines, ct);
         return true;
     }

@@ -1,5 +1,7 @@
+using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Shared.Errors;
+using Bloom.Shared.Messaging;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Query;
@@ -13,7 +15,7 @@ public sealed record Actor(string Type, Guid? Id)
 }
 
 /// <summary>The one place an order's status changes (plan R8, spec §7): a guarded update and its history row (ORD-R04) in the caller's transaction.</summary>
-public sealed class Transitions(OrderDbContext db, TimeProvider clock)
+public sealed class Transitions(OrderDbContext db, TimeProvider clock, OutboxWriter outbox)
 {
     internal sealed class Current
     {
@@ -54,4 +56,22 @@ public sealed class Transitions(OrderDbContext db, TimeProvider clock)
             """, ct);
         return true;
     }
+
+    /// <summary>
+    /// 03-order §6.5 (OR-07): <c>awaiting_stock</c> → <c>paid</c> once both <c>stock_allocated</c> and <c>launch_released</c> are true, handing the order to fulfillment with one
+    /// <c>order.ready-to-fulfill.v1</c>. Both flags only ever turn true, so a read of true holds; the guarded move still decides on the status. Returns false when the order is not ready.
+    /// </summary>
+    public async Task<bool> PromoteIfReadyAsync(Guid orderId, CancellationToken ct)
+    {
+        var order = await db.Orders.AsNoTracking().SingleOrDefaultAsync(o => o.Id == orderId && o.StockAllocated && o.LaunchReleased, ct);
+        if (order is null || !await MoveAsync(orderId, [OrderStatuses.AwaitingStock], OrderStatuses.Paid, Actor.System, null, null, s => s.SetProperty(o => o.HandedToFulfillment, true), ct)) return false;
+
+        var lines = await db.OrderLines.AsNoTracking().Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToListAsync(ct);
+        outbox.PublishEvent(OrderMessages.ReadyToFulfill, ReadyToFulfill(order, lines));
+        return true;
+    }
+
+    internal static OrderReadyToFulfillV1 ReadyToFulfill(OrderRow order, IEnumerable<OrderLine> lines) =>
+        new(order.Id, order.AccountId, order.Number, order.ShipTo, order.ShippingOption, order.ShippingCents, order.TotalCents,
+            [.. lines.Select(l => new ReadyLineV1(l.LineNo, l.Kind, l.SkuId, l.ProductId, l.Serialized, l.Quantity, l.ParentLineNo, l.CoverageMonths, l.PaidCents, l.TaxCents))]);
 }
