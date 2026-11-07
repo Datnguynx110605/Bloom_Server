@@ -1,17 +1,23 @@
 using Bloom.Fulfillment.Contracts;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Domain;
+using Bloom.Fulfillment.Observability;
+using Bloom.Fulfillment.Shippo;
 using Bloom.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Fulfillment.Worker;
 
-/// <summary>Hourly sweeps (05-fulfillment §6.3, §6.4, spec §7). A later task adds the daily label-check pass to the same loop.</summary>
-public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, ILogger<Sweeps> logger) : BackgroundService
+/// <summary>Hourly sweeps (05-fulfillment §6.3, §6.4, spec §7) and the daily Shippo label check (FR-05), each on its own timer.</summary>
+public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, FulfillmentMetrics metrics, ILogger<Sweeps> logger) : BackgroundService
 {
     private static readonly TimeSpan Silence = TimeSpan.FromDays(7);
+    private static readonly TimeSpan LabelLookback = TimeSpan.FromHours(48);
+    private static readonly TimeSpan LabelGrace = TimeSpan.FromMinutes(10); // a label this young may still be on its way into its shipment row
 
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override Task ExecuteAsync(CancellationToken ct) => Task.WhenAll(HourlyAsync(ct), DailyAsync(ct));
+
+    private async Task HourlyAsync(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromHours(1), clock);
         do
@@ -19,6 +25,13 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, ILog
             await PassAsync("Possibly-lost", RunPossiblyLostAsync, ct);
             await PassAsync("Return-expiry", RunReturnExpiryAsync, ct);
         }
+        while (await timer.WaitForNextTickAsync(ct));
+    }
+
+    private async Task DailyAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromHours(24), clock);
+        do await PassAsync("Label-check", RunLabelCheckAsync, ct);
         while (await timer.WaitForNextTickAsync(ct));
     }
 
@@ -31,7 +44,7 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, ILog
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            logger.LogError(ex, "{Sweep} sweep failed; retrying in 1 h", name);
+            logger.LogError(ex, "{Sweep} sweep failed; it runs again on its next tick", name);
         }
     }
 
@@ -112,6 +125,36 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, ILog
             if (shipment is null) continue; // moved on since the scan
             await scope.ServiceProvider.GetRequiredService<Failures>().FlagAsync(shipment, ct);
             await tx.CommitAsync(ct);
+        }
+    }
+
+    /// <summary>
+    /// FR-05: Shippo's <c>bloom:</c> labels of the last 48 h older than 10 minutes. A label stays only if the shipment named in its metadata holds exactly its transaction id;
+    /// any other (an unknown shipment, a second label for a shipment, a label bought just before a timeout and then forgotten) is voided with an error log, the "duplicate label" alert.
+    /// A failed void is logged and retried by the next daily run.
+    /// </summary>
+    internal async Task RunLabelCheckAsync(CancellationToken ct)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
+        var shippo = scope.ServiceProvider.GetRequiredService<IShippo>();
+        var now = clock.GetUtcNow();
+        foreach (var label in await shippo.ListLabelsAsync(now - LabelLookback, ct))
+        {
+            if (label.CreatedAt > now - LabelGrace) continue;
+            var shipmentId = Guid.TryParse(label.Metadata["bloom:".Length..], out var id) ? id : Guid.Empty; // ListLabelsAsync only returns "bloom:" labels
+            if (await db.Shipments.AnyAsync(s => s.Id == shipmentId && s.ShippoTransactionId == label.TransactionId, ct)) continue;
+
+            logger.LogError("Orphan or duplicate Shippo label {TransactionId} ({Metadata}); voiding it", label.TransactionId, label.Metadata);
+            try
+            {
+                await shippo.VoidLabelAsync(label.TransactionId, ct);
+                metrics.Label("voided");
+            }
+            catch (ShippoException ex)
+            {
+                logger.LogWarning(ex, "Voiding Shippo label {TransactionId} failed; the next daily check retries", label.TransactionId);
+            }
         }
     }
 }

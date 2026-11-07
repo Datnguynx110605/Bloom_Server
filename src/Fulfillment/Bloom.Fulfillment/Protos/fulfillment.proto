@@ -75,6 +75,11 @@ service FulfillmentCustomer {
   rpc ListMyReturns(ListMyReturnsRequest) returns (ListMyReturnsResponse) {
     option (google.api.http) = { get: "/api/returns" };
   }
+
+  // The warranty coverage of one of the caller's serials; anyone else's serial is NOT_FOUND like an unknown one.
+  rpc GetCoverage(GetCoverageRequest) returns (Coverage) {
+    option (google.api.http) = { get: "/api/warranty/{serial}" };
+  }
 }
 
 // 05-fulfillment §5.1, Support API: staff only (support, admin), transcoded to JSON under /api/admin/fulfillment (spec §6).
@@ -98,6 +103,25 @@ service FulfillmentSupport {
   rpc ListDeliveryFailures(ListDeliveryFailuresRequest) returns (ListDeliveryFailuresResponse) {
     option (google.api.http) = { get: "/api/admin/fulfillment/failures" };
   }
+
+  // The coverage of any serial.
+  rpc GetCoverage(GetCoverageRequest) returns (Coverage) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/warranty/{serial}" };
+  }
+}
+
+message GetCoverageRequest {
+  string serial = 1;
+}
+
+// The active | pending_delivery coverage of the serial, else its newest cancelled one. `starts_at` and `ends_at` are set once the order is delivered.
+message Coverage {
+  string serial = 1;
+  string order_id = 2;
+  string status = 3;
+  int32 coverage_months = 4;
+  google.protobuf.Timestamp starts_at = 5;
+  google.protobuf.Timestamp ends_at = 6;
 }
 
 // Every unit that shipped exactly once: a serialized unit by `serial`, any other unit by `sku_id` (one entry per unit).

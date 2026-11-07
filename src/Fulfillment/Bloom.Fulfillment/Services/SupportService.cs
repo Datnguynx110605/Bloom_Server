@@ -264,4 +264,11 @@ public sealed class SupportService(
         outbox.SendCommand("inventory", FulfillmentMessages.MarkLostInTransit, new MarkLostInTransitV1(task.RefId));
         return task;
     }
+
+    /// <summary>The coverage of any serial (spec §7).</summary>
+    public override async Task<Coverage> GetCoverage(GetCoverageRequest request, ServerCallContext context)
+    {
+        Caller.From(context).RequireStaff(Caller.Deciders);
+        return await Views.CoverageAsync(db, Inputs.Serial(request.Serial, "serial"), null, context.CancellationToken);
+    }
 }

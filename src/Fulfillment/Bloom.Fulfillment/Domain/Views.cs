@@ -84,4 +84,21 @@ public static class Views
 
     public static async Task<V1.DeliveryFailure> FailureAsync(FulfillmentDbContext db, Guid shipmentId, CancellationToken ct) =>
         (await FailuresAsync(db, await db.DeliveryFailures.AsNoTracking().Where(f => f.ShipmentId == shipmentId).ToListAsync(ct), ct)).Single();
+
+    /// <summary>
+    /// The open coverage of the serial, else its newest cancelled one. With <paramref name="accountId"/> the coverage's order must be that account's; a miss and a foreign serial
+    /// give the same <c>NOT_FOUND</c> (Review Focus 4).
+    /// </summary>
+    public static async Task<V1.Coverage> CoverageAsync(FulfillmentDbContext db, string serial, Guid? accountId, CancellationToken ct)
+    {
+        var c = await db.WarrantyCoverages.AsNoTracking().Where(c => c.Serial == serial)
+            .OrderBy(c => c.Status == CoverageStatuses.Cancelled ? 1 : 0).ThenByDescending(c => c.Id).FirstOrDefaultAsync(ct);
+        if (c is null || (accountId is { } id && !await db.OrderAccounts.AnyAsync(a => a.OrderId == c.OrderId && a.AccountId == id, ct)))
+            throw Errors.FulfillmentErrors.NotFound("The coverage");
+        return new V1.Coverage
+        {
+            Serial = c.Serial, OrderId = c.OrderId.ToString(), Status = c.Status, CoverageMonths = c.CoverageMonths,
+            StartsAt = c.StartsAt is { } s ? Timestamp.FromDateTimeOffset(s) : null, EndsAt = c.EndsAt is { } e ? Timestamp.FromDateTimeOffset(e) : null,
+        };
+    }
 }

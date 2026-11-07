@@ -125,4 +125,11 @@ public sealed class CustomerService(FulfillmentDbContext db, OutboxWriter outbox
             .OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id).Skip(skip).Take(take).ToListAsync(context.CancellationToken);
         return new ListMyReturnsResponse { Items = { await Views.ReturnsAsync(db, page, context.CancellationToken) } };
     }
+
+    /// <summary>The coverage of a serial on one of the caller's orders (spec §7).</summary>
+    public override async Task<Coverage> GetCoverage(GetCoverageRequest request, ServerCallContext context)
+    {
+        var caller = Caller.From(context).RequireCustomer();
+        return await Views.CoverageAsync(db, Inputs.Serial(request.Serial, "serial"), caller.UserId, context.CancellationToken);
+    }
 }

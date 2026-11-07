@@ -46,6 +46,7 @@ public static class FulfillmentApp
         bloom.AddConsumer<ReadyToFulfillConsumer>("ready-to-fulfill", ReadyToFulfillConsumer.Bindings);
         bloom.AddConsumer<RefundCompletedConsumer>("refund-completed", RefundCompletedConsumer.Bindings);
         bloom.AddConsumer<RefundFailedConsumer>("refund-failed", RefundFailedConsumer.Bindings);
+        bloom.AddConsumer<AccountDeletedConsumer>("account-deleted", AccountDeletedConsumer.Bindings);
         builder.Services.AddGrpcClient<InventoryPacking.InventoryPackingClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddScoped<Audit>();
         builder.Services.AddScoped<InventoryCalls>();
@@ -72,6 +73,7 @@ public static class FulfillmentApp
             bloom.AddWorker(); // worker only (plan R6)
             builder.Services.AddHostedService<LabelWorker>();
             builder.Services.AddHostedService<Sweeps>();
+            builder.Services.AddHostedService<FulfillmentMonitor>();
         }
 
         var app = builder.Build();
