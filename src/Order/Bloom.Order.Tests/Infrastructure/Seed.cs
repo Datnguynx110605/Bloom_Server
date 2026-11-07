@@ -1,6 +1,10 @@
 using Bloom.Catalog.Contracts;
+using Bloom.Order.Api;
 using Bloom.Order.Data;
+using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
+using Cart = Bloom.Order.Data.Cart;
+using CartLine = Bloom.Order.Data.CartLine;
 
 namespace Bloom.Order.Tests;
 
@@ -52,5 +56,26 @@ public static class Seed
             AccountId = account, LineNo = i + 1, Kind = l.Sku.Kind, SkuId = Guid.Parse(l.Sku.SkuId), ParentLineNo = l.Parent, Quantity = l.Qty,
         }));
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>A valid regular checkout request: the caller's cart, a US address, standard shipping.</summary>
+    public static StartCheckoutRequest CheckoutRequest(Action<StartCheckoutRequest>? configure = null)
+    {
+        var request = new StartCheckoutRequest
+        {
+            Cart = new CartSource(),
+            ShipTo = new ShipTo { Name = "Ada Lovelace", Lines = { "1 Main St" }, City = "Reno", State = "NV", Zip = "89501", Phone = "+17755550100" },
+            ShippingOption = "standard",
+        };
+        configure?.Invoke(request);
+        return request;
+    }
+
+    /// <summary>Calls <c>StartCheckout</c> as the customer with an <c>Idempotency-Key</c> (a new one when <paramref name="key"/> is null). Await it for the response.</summary>
+    public static AsyncUnaryCall<StartCheckoutResponse> CheckoutAsync(TestOrder t, Guid account, Guid? key = null, Action<StartCheckoutRequest>? configure = null)
+    {
+        var options = TestCaller.Customer(account).Call();
+        options.Headers!.Add("idempotency-key", (key ?? Guid.NewGuid()).ToString("D"));
+        return t.Rpc.Checkout.StartCheckoutAsync(CheckoutRequest(configure), options);
     }
 }

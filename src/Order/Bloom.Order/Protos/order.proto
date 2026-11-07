@@ -177,3 +177,49 @@ message SetExpressFeeRequest {
   int64 express_fee_cents = 1;
   int64 version = 2;
 }
+
+// 03-order §5.1, Checkout API: customers only, transcoded to JSON under /api/checkout (spec §6). The `Idempotency-Key` header is required.
+service OrderCheckout {
+  // Prices the cart (or the launch lines), holds the stock, locks the prices and opens the payment. A retry with the same key resumes the same order.
+  rpc StartCheckout(StartCheckoutRequest) returns (StartCheckoutResponse) {
+    option (google.api.http) = { post: "/api/checkout" body: "*" };
+  }
+}
+
+message StartCheckoutRequest {
+  oneof source {
+    CartSource cart = 1;
+    LaunchSource launch = 2;
+  }
+  ShipTo ship_to = 3;
+  string shipping_option = 4; // standard | express
+  optional string coupon_code = 5;
+}
+
+// The caller's own cart.
+message CartSource {}
+
+message LaunchSource {
+  string launch_id = 1;
+  string pass_token = 2;
+  repeated CheckoutLine lines = 3;
+}
+
+message CheckoutLine {
+  string kind = 1; // product | warranty_plan
+  string sku_id = 2;
+  int32 quantity = 3;
+  optional int32 parent_line_no = 4; // plans only: the 1-based position of the device in `lines`
+}
+
+message StartCheckoutResponse {
+  string order_id = 1;
+  string number = 2;
+  int64 subtotal_cents = 3;
+  int64 discount_cents = 4;
+  int64 tax_cents = 5;
+  int64 shipping_cents = 6;
+  int64 total_cents = 7;
+  string payment_url = 8;
+  google.protobuf.Timestamp deadline_at = 9;
+}

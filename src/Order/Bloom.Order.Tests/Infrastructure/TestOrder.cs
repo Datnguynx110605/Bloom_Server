@@ -45,6 +45,8 @@ public sealed class TestOrder : IAsyncDisposable
         public OrderCart.OrderCartClient Cart { get; } = new(channel);
 
         public OrderStaff.OrderStaffClient Staff { get; } = new(channel);
+
+        public OrderCheckout.OrderCheckoutClient Checkout { get; } = new(channel);
     }
 
     public RpcClients Rpc { get; }
