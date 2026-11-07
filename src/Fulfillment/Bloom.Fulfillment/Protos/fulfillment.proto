@@ -72,6 +72,40 @@ service FulfillmentCustomer {
   }
 }
 
+// 05-fulfillment §5.1, Support API: staff only (support, admin), transcoded to JSON under /api/admin/fulfillment (spec §6).
+service FulfillmentSupport {
+  // inspected -> decided in one transaction (§6.4.1): the refund command and its saga, the line accounts, the inventory command and the events. Needs an Idempotency-Key.
+  rpc DecideReturn(DecideReturnRequest) returns (DecideReturnResponse) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/decision" body: "*" };
+  }
+}
+
+// Every unit of the return exactly once.
+message DecideReturnRequest {
+  string return_id = 1;
+  repeated UnitDecision units = 2;
+}
+
+// `decision` is full | partial | reject. `partial_cents` is above 0 for partial and 0 otherwise.
+message UnitDecision {
+  int32 unit_no = 1;
+  string decision = 2;
+  int64 partial_cents = 3;
+}
+
+// `refund_id` is empty and `amount_cents` 0 when nothing is refunded. `lines` is what the refund command carries; shipping is in `amount_cents` only.
+message DecideReturnResponse {
+  string return_id = 1;
+  string refund_id = 2;
+  int64 amount_cents = 3;
+  repeated RefundLine lines = 4;
+}
+
+message RefundLine {
+  int32 line_no = 1;
+  int64 amount_cents = 2;
+}
+
 // `status` is a return status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
 message ListReturnsRequest {
   optional string status = 1;

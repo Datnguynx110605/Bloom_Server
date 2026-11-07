@@ -44,10 +44,13 @@ public static class FulfillmentApp
         });
         bloom.SendsCommandsTo("inventory", "payment");
         bloom.AddConsumer<ReadyToFulfillConsumer>("ready-to-fulfill", ReadyToFulfillConsumer.Bindings);
+        bloom.AddConsumer<RefundCompletedConsumer>("refund-completed", RefundCompletedConsumer.Bindings);
+        bloom.AddConsumer<RefundFailedConsumer>("refund-failed", RefundFailedConsumer.Bindings);
         builder.Services.AddGrpcClient<InventoryPacking.InventoryPackingClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddScoped<Audit>();
         builder.Services.AddScoped<InventoryCalls>();
         builder.Services.AddScoped<Failures>();
+        builder.Services.AddScoped<RefundEngine>();
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddHttpClient<IShippo, ShippoClient>(c =>
         {
@@ -76,6 +79,7 @@ public static class FulfillmentApp
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<WarehouseService>();
+            app.MapGrpcService<SupportService>();
             app.MapGrpcService<CustomerService>();
             app.MapShippoWebhook();
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7

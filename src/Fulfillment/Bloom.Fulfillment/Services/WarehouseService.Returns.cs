@@ -42,7 +42,7 @@ public sealed partial class WarehouseService
             WHERE id = {returnId} AND status IN ({ReturnStatuses.LabelIssued}, {ReturnStatuses.InTransit})
             RETURNING order_id AS "Value"
             """).ToListAsync(ct);
-        if (updated.Count == 0) throw await WrongReturnStateAsync(returnId, "label_issued or in_transit", ct);
+        if (updated.Count == 0) throw await WrongReturnStateAsync(db, returnId, "label_issued or in_transit", ct);
 
         outbox.PublishEvent(FulfillmentMessages.ReturnReceived, new ReturnReceivedV1(updated[0], returnId));
         audit.Record(caller.UserId, caller.Role!, "fulfillment.receive-return", "return_request", returnId.ToString(), new { orderId = updated[0] });
@@ -92,7 +92,7 @@ public sealed partial class WarehouseService
             UPDATE return_requests SET status = {ReturnStatuses.Inspected}, version = version + 1, updated_at = {now}
             WHERE id = {returnId} AND status = {ReturnStatuses.Received}
             """, ct) != 1)
-            throw await WrongReturnStateAsync(returnId, "received", ct);
+            throw await WrongReturnStateAsync(db, returnId, "received", ct);
 
         // Lock order: return_requests → order_accounts. Two returns of one order can't both take a serial.
         await db.Database.ExecuteSqlAsync($"SELECT 1 FROM order_accounts WHERE order_id = {orderId} FOR UPDATE", ct);
@@ -115,7 +115,7 @@ public sealed partial class WarehouseService
     }
 
     /// <summary>R9: a guarded update affected no row, so the row's presence says <c>NOT_FOUND</c> or <c>INVALID_RETURN_STATE</c>.</summary>
-    private async Task<RpcException> WrongReturnStateAsync(Guid returnId, string needs, CancellationToken ct)
+    internal static async Task<RpcException> WrongReturnStateAsync(FulfillmentDbContext db, Guid returnId, string needs, CancellationToken ct)
     {
         var status = await db.ReturnRequests.AsNoTracking().Where(r => r.Id == returnId).Select(r => r.Status).SingleOrDefaultAsync(ct);
         return status is null
