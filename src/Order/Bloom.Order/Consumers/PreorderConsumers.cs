@@ -47,7 +47,9 @@ public sealed class LaunchStageChangedConsumer(IServiceScopeFactory scopes) : IM
         if (stage.LaunchId == Guid.Empty) throw new PermanentFailureException("launch.stage-changed.v1 needs a launch id.");
         if (stage.Stage != "released") return;
 
-        while (await BatchAsync(stage.LaunchId, ct) == BatchSize) { }
+        // Until an empty batch, not a short one: a batch that waited on a concurrent writer skips rows that no longer match and returns fewer than BatchSize with candidates left.
+        // It ends because every returned row leaves the candidate set.
+        while (await BatchAsync(stage.LaunchId, ct) > 0) { }
     }
 
     private async Task<int> BatchAsync(Guid launchId, CancellationToken ct)

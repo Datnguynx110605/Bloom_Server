@@ -172,6 +172,31 @@ public class PreorderTests(Containers containers)
     }
 
     [Fact]
+    public async Task Release_survives_an_order_cancelled_while_its_batch_waits()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var template = await LaunchOrderAsync(t, Guid.NewGuid(), paid: true);
+        var launchId = Guid.NewGuid();
+        await CloneAsync(t, template, launchId, 1001, OrderStatuses.AwaitingStock, allocated: true);
+        await using var locker = t.NewDb();
+        await using var tx = await locker.Database.BeginTransactionAsync(Ct);
+        // The first row of the first batch is locked, then cancelled before the batch gets it: the batch must skip it and still flag the rest (this Postgres plan refills the LIMIT; the loop does not rely on that).
+        var first = await locker.Database.SqlQuery<Guid>($"SELECT id AS \"Value\" FROM orders WHERE launch_id = {launchId} ORDER BY id LIMIT 1 FOR UPDATE").SingleAsync(Ct);
+        var release = ReleaseAsync(t, launchId);
+        await using (var probe = t.NewDb())
+            await Poll.UntilAsync(async () => await probe.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM pg_stat_activity WHERE wait_event_type = 'Lock'").SingleAsync(Ct) > 0, 10, "the first batch waiting on the locked order");
+        await locker.Database.ExecuteSqlAsync($"UPDATE orders SET status = 'cancelled', cancel_reason = 'customer' WHERE id = {first}", Ct);
+        await tx.CommitAsync(Ct);
+
+        await release;
+
+        Assert.Equal(new Dictionary<string, int> { [OrderStatuses.Paid] = 1000, [OrderStatuses.Cancelled] = 1 }, await CountsAsync(t, launchId));
+        Assert.Equal((1000, 1), await PerOrderAsync(t, OrderMessages.ReadyToFulfill));
+        await ReleaseAsync(t, launchId); // redelivered: an empty batch, nothing more
+        Assert.Equal((1000, 1), await PerOrderAsync(t, OrderMessages.ReadyToFulfill));
+    }
+
+    [Fact]
     public async Task Release_flags_open_checkouts_of_the_launch()
     {
         await using var t = await TestOrder.StartAsync(containers);
