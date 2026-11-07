@@ -60,7 +60,10 @@ public class TrackingTests(Containers containers)
         {
             ShouldListenTo = source => source.Name == "Microsoft.AspNetCore",
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = a => { lock (paths) paths.Add((string?)a.GetTagItem("url.path")); },
+            ActivityStopped = a => // the listener sees every test class's requests: keep only webhook ones
+            {
+                if (a.GetTagItem("url.path") is string path && path.StartsWith("/webhooks/shippo/")) lock (paths) paths.Add(path);
+            },
         };
         ActivitySource.AddActivityListener(listener);
 
