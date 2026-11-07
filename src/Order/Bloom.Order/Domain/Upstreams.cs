@@ -1,12 +1,14 @@
 using Bloom.Catalog.Contracts;
 using Bloom.Inventory.Contracts;
+using Bloom.Launch.Contracts;
+using Bloom.Order.Context;
 using Bloom.Payment.Contracts;
 using Grpc.Core;
 
 namespace Bloom.Order.Domain;
 
 /// <summary>Calls to the services order depends on (plan R10, 03-order §5.2): 5 s deadline each. The checkout calls join as their tasks arrive.</summary>
-public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, InventoryStock.InventoryStockClient inventory, PaymentInternal.PaymentInternalClient payment)
+public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, InventoryStock.InventoryStockClient inventory, LaunchInternal.LaunchInternalClient launch, PaymentInternal.PaymentInternalClient payment)
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
 
@@ -53,6 +55,26 @@ public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, Inv
         catch (RpcException e) when (IsRejection(e) && !IsBloom(e))
         {
             throw new RpcException(new Status(StatusCode.Unavailable, "Inventory failed."));
+        }
+    }
+
+    /// <summary>
+    /// Launch's <c>HoldAllocation</c> (idempotent by order), with the customer's <c>x-bloom-*</c> headers: launch checks the pass against that identity (plan R10). Rejections pass through
+    /// as in <see cref="ReserveAsync"/>.
+    /// </summary>
+    public async Task HoldAsync(Guid orderId, string passToken, IEnumerable<(Guid SkuId, int Quantity)> lines, Caller caller, CancellationToken ct)
+    {
+        var request = new HoldAllocationRequest { OrderId = orderId.ToString("D"), PassToken = passToken };
+        request.Lines.AddRange(lines.Select(l => new HoldLine { SkuId = l.SkuId.ToString("D"), Quantity = l.Quantity }));
+        var headers = new Metadata { { "x-bloom-user-id", caller.UserId.ToString("D") }, { "x-bloom-user-type", caller.UserType } };
+        if (caller.Role is not null) headers.Add("x-bloom-role", caller.Role);
+        try
+        {
+            await launch.HoldAllocationAsync(request, headers, DateTime.UtcNow + Deadline, ct);
+        }
+        catch (RpcException e) when (IsRejection(e) && !IsBloom(e))
+        {
+            throw new RpcException(new Status(StatusCode.Unavailable, "Launch failed."));
         }
     }
 

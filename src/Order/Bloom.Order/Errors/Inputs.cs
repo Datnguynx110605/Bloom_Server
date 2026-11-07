@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Bloom.Order.Api;
 using Bloom.Order.Contracts;
+using Bloom.Order.Data;
 
 namespace Bloom.Order.Errors;
 
@@ -52,6 +53,23 @@ public static partial class Inputs
 
         static string Text(string value, string field) =>
             value.Trim() is { Length: >= 1 and <= 100 } t ? t : throw OrderErrors.Address(field, $"{field} must be 1 to 100 characters.");
+    }
+
+    /// <summary>The launch source of 03-order §6.2 step 3, no I/O: a launch id, and lines that are non-empty, with quantity at least 1, at least one product, no duplicate (kind, sku, parent).</summary>
+    public static Guid LaunchLines(LaunchSource source)
+    {
+        var launchId = Id(source.LaunchId, "launch_id");
+        if (source.Lines.Count == 0) throw OrderErrors.Validation("lines", "lines must not be empty.");
+        foreach (var l in source.Lines)
+        {
+            if (l.Kind is not (LineKinds.Product or LineKinds.WarrantyPlan)) throw OrderErrors.Validation("lines", "A line kind must be product or warranty_plan.");
+            Id(l.SkuId, "lines");
+            if (l.Quantity < 1) throw OrderErrors.Validation("lines", "A line quantity must be at least 1.");
+        }
+        if (!source.Lines.Any(l => l.Kind == LineKinds.Product)) throw OrderErrors.Validation("lines", "A launch order needs at least one product line.");
+        if (source.Lines.GroupBy(l => (l.Kind, l.SkuId, l.HasParentLineNo ? l.ParentLineNo : (int?)null)).Any(g => g.Count() > 1))
+            throw OrderErrors.Validation("lines", "A line must not repeat.");
+        return launchId;
     }
 
     /// <summary>Trimmed, 3 to 32 characters of <c>A-Za-z0-9-</c>. <c>Normalized</c> is upper case (what is stored and compared), <c>Display</c> keeps the case the customer typed.</summary>

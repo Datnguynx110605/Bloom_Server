@@ -18,7 +18,7 @@ using CartLine = Bloom.Order.Data.CartLine;
 namespace Bloom.Order.Services;
 
 /// <summary>
-/// 03-order §6.2 <c>StartCheckout</c>, regular orders. Tx 1 (the guard's claim and the hook below) commits the <c>creating</c> order before any hold exists (OR-02); the steps then
+/// 03-order §6.2 <c>StartCheckout</c>, regular and launch orders. Tx 1 (the guard's claim and the hook below) commits the <c>creating</c> order before any hold exists (OR-02); the steps then
 /// resume from the order's status, so a retry with the same key continues the same order. A rejection is thrown with its transaction still open: the guard saves it and stores
 /// the answer in that transaction.
 /// </summary>
@@ -34,10 +34,11 @@ public sealed class CheckoutService(
 
     public override async Task<StartCheckoutResponse> StartCheckout(StartCheckoutRequest request, ServerCallContext context)
     {
-        Caller.From(context).RequireCustomer(); // the account id is the guard's claim: the gateway's x-bloom-user-id
-        // R9, no I/O. The launch source arrives with the launch checkout.
-        if (request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch) throw new RpcException(new Status(StatusCode.Unimplemented, "Launch checkout is not available yet."));
-        if (request.SourceCase != StartCheckoutRequest.SourceOneofCase.Cart) throw OrderErrors.Validation("source", "source must be cart or launch.");
+        var caller = Caller.From(context).RequireCustomer(); // the account id is the guard's claim: the gateway's x-bloom-user-id
+        // R9, no I/O.
+        var launch = request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch;
+        if (launch) Inputs.LaunchLines(request.Launch);
+        else if (request.SourceCase != StartCheckoutRequest.SourceOneofCase.Cart) throw OrderErrors.Validation("source", "source must be cart or launch.");
         var shipTo = Inputs.ShipTo(request.ShipTo ?? new ShipTo());
         if (!ShippingOptions.All.Contains(request.ShippingOption)) throw OrderErrors.Validation("shipping_option", "shipping_option must be standard or express.");
         if (request.HasCouponCode) Inputs.CouponCode(request.CouponCode, "coupon_code");
@@ -47,11 +48,11 @@ public sealed class CheckoutService(
         {
             return await guard.ExecuteMultiStepAsync(request, context,
                 (claim, ct) => ClaimAsync(claim, request, shipTo, ct),
-                (claim, state, ct) => RunAsync(claim.UserId, request, state, ct));
+                (claim, state, ct) => RunAsync(caller, request, state, ct));
         }
         finally
         {
-            metrics.CheckoutStarted(OrderKinds.Regular, Stopwatch.GetElapsedTime(started).TotalSeconds);
+            metrics.CheckoutStarted(launch ? OrderKinds.Launch : OrderKinds.Regular, Stopwatch.GetElapsedTime(started).TotalSeconds);
         }
     }
 
@@ -63,9 +64,10 @@ public sealed class CheckoutService(
         if (existing is { } orderId) return (orderId, true);
 
         var now = clock.GetUtcNow();
+        var isLaunch = request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch;
         var order = new OrderRow
         {
-            Id = Guid.CreateVersion7(), Number = "", AccountId = claim.UserId, Kind = OrderKinds.Regular, Status = OrderStatuses.Creating, DeadlineAt = now + CreatingWindow,
+            Id = Guid.CreateVersion7(), Number = "", AccountId = claim.UserId, Kind = isLaunch ? OrderKinds.Launch : OrderKinds.Regular, LaunchId = isLaunch ? Guid.Parse(request.Launch.LaunchId) : null, Status = OrderStatuses.Creating, DeadlineAt = now + CreatingWindow,
             ShippingOption = request.ShippingOption, ShipTo = shipTo, Currency = "USD", CreatedAt = now, UpdatedAt = now,
         };
         await OrderNumbers.InsertAsync(db, order, ct); // before the key row, which points at it
@@ -74,7 +76,7 @@ public sealed class CheckoutService(
         return (order.Id, false);
     }
 
-    private async Task<StartCheckoutResponse> RunAsync(Guid accountId, StartCheckoutRequest request, (Guid OrderId, bool Existed) state, CancellationToken ct)
+    private async Task<StartCheckoutResponse> RunAsync(Caller caller, StartCheckoutRequest request, (Guid OrderId, bool Existed) state, CancellationToken ct)
     {
         db.ChangeTracker.Clear(); // a takeover runs this again on a context that still tracks what the lost run saved
         try
@@ -82,21 +84,21 @@ public sealed class CheckoutService(
             var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == state.OrderId, ct);
             if (order.Status == OrderStatuses.Cancelled) // swept while the key was released (owner item 1)
                 throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
-            if (order.Status == OrderStatuses.Creating) await PlaceAsync(order, request, state.Existed, ct);
+            if (order.Status == OrderStatuses.Creating) await PlaceAsync(order, request, caller, state.Existed, ct);
 
             var response = await PayAsync(state.OrderId, ct);
-            metrics.Checkout(OrderKinds.Regular, "ok");
+            metrics.Checkout(order.Kind, "ok");
             return response;
         }
         catch (RpcException e) when (Upstreams.IsRejection(e)) // a stored outcome (once per outcome, not per transient failure)
         {
-            metrics.Checkout(OrderKinds.Regular, e.GetRpcStatus()?.Details.FirstOrDefault(d => d.Is(Google.Rpc.ErrorInfo.Descriptor))?.Unpack<Google.Rpc.ErrorInfo>().Reason ?? "");
+            metrics.Checkout(request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch ? OrderKinds.Launch : OrderKinds.Regular, e.GetRpcStatus()?.Details.FirstOrDefault(d => d.Is(Google.Rpc.ErrorInfo.Descriptor))?.Unpack<Google.Rpc.ErrorInfo>().Reason ?? "");
             throw;
         }
     }
 
     /// <summary>Steps 3 to 6 of §6.2: price and validate, hold the stock, then Tx 2.</summary>
-    private async Task PlaceAsync(OrderRow order, StartCheckoutRequest request, bool existed, CancellationToken ct)
+    private async Task PlaceAsync(OrderRow order, StartCheckoutRequest request, Caller caller, bool existed, CancellationToken ct)
     {
         Placement placement;
         try
@@ -112,7 +114,9 @@ public sealed class CheckoutService(
 
         try
         {
-            await upstreams.ReserveAsync(order.Id, placement.Lines.Where(l => l.Kind == LineKinds.Product).Select(l => (l.SkuId, l.Quantity)), ct);
+            var products = placement.Lines.Where(l => l.Kind == LineKinds.Product).Select(l => (l.SkuId, l.Quantity));
+            if (order.Kind == OrderKinds.Launch) await upstreams.HoldAsync(order.Id, request.Launch.PassToken, products, caller, ct);
+            else await upstreams.ReserveAsync(order.Id, products, ct);
         }
         catch (RpcException e) when (Upstreams.IsRejection(e))
         {
@@ -124,11 +128,21 @@ public sealed class CheckoutService(
         await CommitPlacementAsync(order, placement, ct);
     }
 
-    /// <summary>Cart lines to order lines, the validation of §6.2 step 3, the coupon pre-check and the totals.</summary>
+    /// <summary>Cart lines (or the launch source's lines, numbered by position) to order lines, the validation of §6.2 step 3, the coupon pre-check and the totals.</summary>
     private async Task<Placement> PriceAsync(OrderRow order, StartCheckoutRequest request, CancellationToken ct)
     {
-        var cart = await db.CartLines.AsNoTracking().Where(l => l.AccountId == order.AccountId).OrderBy(l => l.LineNo).ToListAsync(ct);
-        if (cart.Count == 0) throw OrderErrors.Error(OrderErrors.CartEmpty, "The cart is empty.");
+        var launch = order.Kind == OrderKinds.Launch;
+        List<CartLine> cart;
+        if (launch)
+            cart = request.Launch.Lines.Select((l, i) => new CartLine
+            {
+                AccountId = order.AccountId, LineNo = i + 1, Kind = l.Kind, SkuId = Guid.Parse(l.SkuId), ParentLineNo = l.HasParentLineNo ? l.ParentLineNo : null, Quantity = l.Quantity,
+            }).ToList();
+        else
+        {
+            cart = await db.CartLines.AsNoTracking().Where(l => l.AccountId == order.AccountId).OrderBy(l => l.LineNo).ToListAsync(ct);
+            if (cart.Count == 0) throw OrderErrors.Error(OrderErrors.CartEmpty, "The cart is empty.");
+        }
         var pricing = await upstreams.PricingAsync(cart.Select(l => l.SkuId), ct);
 
         // Products keep their cart order; the plans follow, grouped under their device, and point at its new number.
@@ -148,17 +162,26 @@ public sealed class CheckoutService(
         CouponTerms? terms = null;
         if (request.HasCouponCode)
         {
+            if (launch) throw OrderErrors.Error(OrderErrors.CouponNotApplicable, "A coupon does not apply to a launch order (LCH-R14)."); // after the lines, which are checked first
             var (id, checkedTerms) = await coupons.CheckAsync(Inputs.CouponCode(request.CouponCode, "coupon_code").Normalized, order.AccountId, ct);
             (couponId, terms) = (id, checkedTerms);
         }
         var shipping = request.ShippingOption == ShippingOptions.Express ? await db.CheckoutSettings.AsNoTracking().Select(s => s.ExpressFeeCents).SingleAsync(ct) : 0;
-        return new Placement(lines, Pricing.Compute(lines, terms, launchOrder: false, options.TaxRateBasisPoints!.Value, shipping), couponId);
+        return new Placement(lines, Pricing.Compute(lines, terms, launchOrder: launch, options.TaxRateBasisPoints!.Value, shipping), couponId);
 
         PricedLine Line(CartLine l, int no, int? parentNo)
         {
-            if (!pricing.TryGetValue(l.SkuId, out var sku) || !sku.Buyable || !sku.HasPriceCents || sku.Kind != l.Kind || sku.Launch is { Stage: not "released" })
-                throw OrderErrors.Error(OrderErrors.SkuNotBuyable, "An item in the cart cannot be bought any more.");
-            if (l.Kind == LineKinds.Product && l.Quantity > MaxQuantity)
+            if (!pricing.TryGetValue(l.SkuId, out var sku) || !sku.Buyable || !sku.HasPriceCents || sku.Kind != l.Kind)
+                throw OrderErrors.Error(OrderErrors.SkuNotBuyable, "An item cannot be bought any more.");
+            if (launch && l.Kind == LineKinds.Product)
+            {
+                if (sku.Launch is not { } info || Guid.Parse(info.LaunchId) != order.LaunchId)
+                    throw OrderErrors.Error(OrderErrors.MixedLaunchOrder, "A launch order holds only SKUs of its launch.");
+                if (info.Stage != "preorder_open") throw OrderErrors.Error(OrderErrors.SkuNotBuyable, "The launch is not open for pre-orders.");
+            }
+            else if (!launch && sku.Launch is { Stage: not "released" })
+                throw OrderErrors.Error(OrderErrors.SkuNotBuyable, "An item cannot be bought any more.");
+            if (!launch && l.Kind == LineKinds.Product && l.Quantity > MaxQuantity)
                 throw OrderErrors.Error(OrderErrors.QuantityLimit, $"A product line holds at most {MaxQuantity}.");
             return new PricedLine(no, l.Kind, l.SkuId, Guid.Parse(sku.ProductId), Guid.Parse(sku.CategoryId), sku.Name, sku.Serialized, l.Quantity, parentNo,
                 l.Kind == LineKinds.WarrantyPlan ? sku.CoverageMonths : null, sku.PriceCents);
