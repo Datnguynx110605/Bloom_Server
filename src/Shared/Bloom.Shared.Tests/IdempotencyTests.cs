@@ -84,6 +84,43 @@ public class IdempotencyTests(Containers containers)
             });
     }
 
+    private sealed class Steps { public int Hook; public int Run; public bool? HookResumed; public bool? RunResumed; }
+
+    /// <summary>Multi-step call in its own scope. The hook stages a "hook" effect (the guard commits it); the default run saves and commits a "run" effect itself.</summary>
+    private static async Task<ChargeResponse> MultiStep(IHost host, FakeServerCallContext ctx, Steps steps,
+        Func<TestDbContext, Task>? run = null, Func<TestDbContext, Task>? failHook = null)
+    {
+        using var scope = host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TestDbContext>();
+        return await scope.ServiceProvider.GetRequiredService<IdempotencyGuard>().ExecuteMultiStepAsync(Req, ctx,
+            async (claim, _) =>
+            {
+                Interlocked.Increment(ref steps.Hook);
+                steps.HookResumed = claim.Resumed;
+                db.Effects.Add(new Effect { Consumer = "hook", MessageId = Guid.NewGuid() });
+                if (failHook is not null) await failHook(db);
+                return claim.Key;
+            },
+            async (claim, key, _) =>
+            {
+                Interlocked.Increment(ref steps.Run);
+                steps.RunResumed = claim.Resumed;
+                if (run is not null) await run(db);
+                else
+                {
+                    db.Effects.Add(new Effect { Consumer = "run", MessageId = Guid.NewGuid() });
+                    await db.SaveChangesAsync();
+                }
+                return new ChargeResponse { ChargeId = key };
+            });
+    }
+
+    private static async Task<int> CountEffects(IHost host, string consumer, CancellationToken ct)
+    {
+        using var scope = host.Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<TestDbContext>().Effects.CountAsync(e => e.Consumer == consumer, ct);
+    }
+
     private static async Task<int> Count<T>(IHost host, CancellationToken ct) where T : class
     {
         using var scope = host.Services.CreateScope();
@@ -441,6 +478,224 @@ public class IdempotencyTests(Containers containers)
         Assert.NotEmpty(response.ChargeId);
         Assert.Equal("completed", (await OnlyKey(host, ct)).Status);
         Assert.Equal(1, provider.Effects);
+    }
+
+    [Fact]
+    public async Task Multi_step_new_key_runs_hook_then_steps_and_completes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        using var capture = new MetricCapture(ServiceOf(host));
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var steps = new Steps();
+        var hookEffectsSeenByRun = -1;
+
+        var response = await MultiStep(host, Ctx(user, key), steps, run: async db =>
+        {
+            hookEffectsSeenByRun = await CountEffects(host, "hook", ct); // another scope: only committed rows are visible
+            db.Effects.Add(new Effect { Consumer = "run", MessageId = Guid.NewGuid() });
+            await db.SaveChangesAsync(ct);
+        });
+
+        Assert.Equal(1, hookEffectsSeenByRun);
+        Assert.Equal(key, response.ChargeId);
+        Assert.Equal((1, 1), (steps.Hook, steps.Run));
+        Assert.False(steps.HookResumed);
+        Assert.False(steps.RunResumed);
+        Assert.Equal(1, await CountEffects(host, "run", ct));
+        var row = await OnlyKey(host, ct);
+        Assert.Equal("completed", row.Status);
+        Assert.Equal(0, row.ResponseStatus);
+        Assert.Equal(response.ToByteArray(), row.ResponseBody);
+        Assert.Equal(1, capture.Sum("idempotency_requests_total", "result", "new"));
+    }
+
+    [Fact]
+    public async Task Multi_step_same_key_replays_without_hook_or_steps()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var steps = new Steps();
+
+        var first = await MultiStep(host, Ctx(user, key), steps);
+        var second = await MultiStep(host, Ctx(user, key), steps);
+
+        Assert.Equal(first.ChargeId, second.ChargeId);
+        Assert.Equal((1, 1), (steps.Hook, steps.Run));
+        Assert.Equal(1, await CountEffects(host, "hook", ct));
+        Assert.Equal(1, await CountEffects(host, "run", ct));
+    }
+
+    [Fact]
+    public async Task Multi_step_rejection_in_open_transaction_commits_with_the_stored_outcome()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var steps = new Steps();
+
+        await Fails(MultiStep(host, Ctx(user, key), steps, run: async db =>
+        {
+            await db.Database.BeginTransactionAsync(ct);
+            db.Effects.Add(new Effect { Consumer = "run", MessageId = Guid.NewGuid() });
+            throw BloomErrors.FailedPrecondition("SOLD_OUT", "No stock.");
+        }), StatusCode.FailedPrecondition, "SOLD_OUT");
+        await Fails(MultiStep(host, Ctx(user, key), steps), StatusCode.FailedPrecondition, "SOLD_OUT");
+
+        Assert.Equal((1, 1), (steps.Hook, steps.Run));
+        Assert.Equal(1, await CountEffects(host, "run", ct)); // committed with the outcome
+        var row = await OnlyKey(host, ct);
+        Assert.Equal("completed", row.Status);
+        Assert.Equal((int)StatusCode.FailedPrecondition, row.ResponseStatus);
+    }
+
+    [Fact]
+    public async Task Multi_step_rejection_without_a_transaction_is_stored()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var steps = new Steps();
+
+        await Fails(MultiStep(host, Ctx(user, key), steps, run: _ => throw BloomErrors.FailedPrecondition("SOLD_OUT", "No stock.")),
+            StatusCode.FailedPrecondition, "SOLD_OUT");
+        await Fails(MultiStep(host, Ctx(user, key), steps), StatusCode.FailedPrecondition, "SOLD_OUT");
+
+        Assert.Equal((1, 1), (steps.Hook, steps.Run));
+        var row = await OnlyKey(host, ct);
+        Assert.Equal("completed", row.Status);
+        Assert.Equal((int)StatusCode.FailedPrecondition, row.ResponseStatus);
+    }
+
+    [Fact]
+    public async Task Multi_step_success_in_open_transaction_commits_both()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+
+        var response = await MultiStep(host, Ctx(user, key), new Steps(), run: async db =>
+        {
+            await db.Database.BeginTransactionAsync(ct);
+            db.Effects.Add(new Effect { Consumer = "run", MessageId = Guid.NewGuid() });
+        });
+
+        Assert.Equal(1, await CountEffects(host, "run", ct));
+        var row = await OnlyKey(host, ct);
+        Assert.Equal("completed", row.Status);
+        Assert.Equal(response.ToByteArray(), row.ResponseBody);
+    }
+
+    [Fact]
+    public async Task Multi_step_transient_failure_rolls_back_the_open_transaction_and_releases_the_key()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var unavailable = new RpcException(new Grpc.Core.Status(StatusCode.Unavailable, "down"));
+
+        var thrown = await Assert.ThrowsAsync<RpcException>(() => MultiStep(host, Ctx(user, key), new Steps(), run: async db =>
+        {
+            await db.Database.BeginTransactionAsync(ct);
+            db.Effects.Add(new Effect { Consumer = "run", MessageId = Guid.NewGuid() });
+            await db.SaveChangesAsync(ct);
+            throw unavailable;
+        }));
+
+        Assert.Same(unavailable, thrown);
+        Assert.Equal(0, await CountEffects(host, "run", ct));
+        Assert.Equal(1, await CountEffects(host, "hook", ct)); // the hook's transaction had committed
+        Assert.Equal(0, await Count<IdempotencyKey>(host, ct));
+
+        var retry = new Steps();
+        await MultiStep(host, Ctx(user, key), retry);
+        Assert.Equal((1, 1), (retry.Hook, retry.Run));
+        Assert.False(retry.HookResumed);
+        Assert.Equal("completed", (await OnlyKey(host, ct)).Status);
+    }
+
+    [Fact]
+    public async Task Multi_step_takeover_of_a_stale_key_sets_resumed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        using var capture = new MetricCapture(ServiceOf(host));
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var steps = new Steps();
+        await InsertInProgress(host, user, key, Req, -1, ct);
+
+        await MultiStep(host, Ctx(user, key), steps);
+
+        Assert.True(steps.HookResumed);
+        Assert.True(steps.RunResumed);
+        Assert.Equal("completed", (await OnlyKey(host, ct)).Status);
+        Assert.Equal(1, capture.Sum("idempotency_requests_total", "result", "takeover"));
+    }
+
+    [Fact]
+    public async Task Multi_step_request_that_lost_its_lock_does_not_complete_the_key()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var user = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var originalSteps = new Steps();
+        var takerSteps = new Steps();
+        var parked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The original request parks in its run step with a transaction open ...
+        var original = MultiStep(host, Ctx(user, key), originalSteps, run: async db =>
+        {
+            await db.Database.BeginTransactionAsync(ct);
+            db.Effects.Add(new Effect { Consumer = "run", MessageId = Guid.NewGuid() });
+            await db.SaveChangesAsync(ct);
+            parked.SetResult();
+            await resume.Task;
+        });
+        await parked.Task.WaitAsync(ct);
+        // ... its lock expires, and a retry takes the key over and completes it.
+        using (var scope = host.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<TestDbContext>().Database
+                .ExecuteSqlAsync($"UPDATE idempotency_keys SET locked_until = now() - interval '1 second'", ct);
+        var taker = await MultiStep(host, Ctx(user, key), takerSteps);
+
+        // The original resumes: its transaction is rolled back, it must not overwrite the outcome, and it gets the replay.
+        resume.SetResult();
+        var replayed = await original;
+
+        Assert.Equal(taker.ChargeId, replayed.ChargeId);
+        Assert.Equal((1, 1), (takerSteps.Hook, takerSteps.Run));
+        Assert.Equal((1, 1), (originalSteps.Hook, originalSteps.Run)); // the replay runs neither again
+        Assert.Equal(1, await CountEffects(host, "run", ct));          // only the taker's
+        var row = await OnlyKey(host, ct);
+        Assert.Equal("completed", row.Status);
+        Assert.Equal(taker.ToByteArray(), row.ResponseBody);
+    }
+
+    [Fact]
+    public async Task Multi_step_hook_failure_leaves_no_key()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var steps = new Steps();
+        var boom = new InvalidOperationException("boom");
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MultiStep(host, Ctx(Guid.NewGuid(), Guid.NewGuid().ToString()), steps, failHook: db => Throw(db, boom)));
+
+        Assert.Same(boom, thrown);
+        Assert.Equal((1, 0), (steps.Hook, steps.Run));
+        Assert.Equal(0, await Count<IdempotencyKey>(host, ct));
+        Assert.Equal(0, await CountEffects(host, "hook", ct));
     }
 
     [Fact]
