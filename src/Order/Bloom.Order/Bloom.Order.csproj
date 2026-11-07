@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IncludeGoogleApiCommonProtos>true</IncludeGoogleApiCommonProtos>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Protobuf Include="Protos\*.proto" GrpcServices="Server" />
+    <InternalsVisibleTo Include="Bloom.Order.Tests" />
+    <ProjectReference Include="..\..\Shared\Bloom.Shared\Bloom.Shared.csproj" />
+    <ProjectReference Include="..\..\Catalog\Bloom.Catalog.Contracts\Bloom.Catalog.Contracts.csproj" />
+    <ProjectReference Include="..\..\Fulfillment\Bloom.Fulfillment.Contracts\Bloom.Fulfillment.Contracts.csproj" />
+    <ProjectReference Include="..\..\Identity\Bloom.Identity.Contracts\Bloom.Identity.Contracts.csproj" />
+    <ProjectReference Include="..\..\Inventory\Bloom.Inventory.Contracts\Bloom.Inventory.Contracts.csproj" />
+    <ProjectReference Include="..\..\Launch\Bloom.Launch.Contracts\Bloom.Launch.Contracts.csproj" />
+    <ProjectReference Include="..\..\Payment\Bloom.Payment.Contracts\Bloom.Payment.Contracts.csproj" />
+    <ProjectReference Include="..\Bloom.Order.Contracts\Bloom.Order.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Api.CommonProtos" />
+    <PackageReference Include="Grpc.AspNetCore" />
+    <PackageReference Include="Grpc.Tools">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.AspNetCore.Grpc.JsonTranscoding" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+  </ItemGroup>
+
+</Project>

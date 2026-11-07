@@ -1,0 +1,72 @@
+using Bloom.Catalog.Contracts;
+using Bloom.Fulfillment.Contracts;
+using Bloom.Inventory.Contracts;
+using Bloom.Launch.Contracts;
+using Bloom.Order.Data;
+using Bloom.Order.Domain;
+using Bloom.Order.Observability;
+using Bloom.Order.Services;
+using Bloom.Payment.Contracts;
+using Bloom.Shared;
+using Bloom.Shared.Observability;
+using Google.Protobuf.Reflection;
+using Google.Rpc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
+namespace Bloom.Order;
+
+public static class OrderApp
+{
+    /// <summary>Builds the order API (<c>Order:Mode = api</c>) or the order worker (<c>worker</c>); both are this one app (HLD-ADR-014).</summary>
+    /// <param name="configure">Runs right after the default configuration, so tests can override any key.</param>
+    public static WebApplication Build(string[] args, Action<WebApplicationBuilder>? configure = null)
+    {
+        // Content root = the app's own folder, so appsettings.json is found wherever the process starts.
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = AppContext.BaseDirectory });
+        configure?.Invoke(builder);
+
+        var options = new OrderOptions();
+        builder.Configuration.GetSection("Order").Bind(options);
+        options.Validate();
+        var api = options.IsApi;
+
+        builder.AddBloomTelemetry(api ? "order-api" : "order-worker");
+        builder.Services.AddOpenTelemetry().WithMetrics(m => m.AddMeter(OrderMetrics.MeterName));
+
+        builder.Services.AddSingleton(options);
+        builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)
+        builder.Services.AddSingleton<OrderMetrics>();
+        builder.Services.AddDbContext<OrderDbContext>(o => o.UseNpgsql(options.Database));
+        var bloom = builder.Services.AddBloom<OrderDbContext>(o =>
+        {
+            o.ServiceName = "order";
+            o.RabbitMqUri = options.RabbitMq;
+        });
+        bloom.SendsCommandsTo("inventory", "launch", "payment");
+        builder.Services.AddScoped<Audit>();
+        builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
+        builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
+        builder.Services.AddGrpcClient<LaunchInternal.LaunchInternalClient>(o => o.Address = new Uri(options.Launch));
+        builder.Services.AddGrpcClient<PaymentInternal.PaymentInternalClient>(o => o.Address = new Uri(options.Payment));
+        builder.Services.AddGrpcClient<FulfillmentInternal.FulfillmentInternalClient>(o => o.Address = new Uri(options.Fulfillment));
+
+        if (api)
+        {
+            builder.Services.AddGrpc().AddJsonTranscoding(o =>
+            {
+                o.TypeRegistry = TypeRegistry.FromMessages(ErrorInfo.Descriptor, BadRequest.Descriptor); // error details are Any(ErrorInfo) and Any(BadRequest)
+                o.JsonSettings.WriteInt64sAsStrings = true; // proto3 JSON: int64 is a string
+            });
+        }
+        else
+        {
+            bloom.AddWorker(); // worker only (plan R6)
+        }
+
+        var app = builder.Build();
+        if (api)
+            app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
+        return app;
+    }
+}

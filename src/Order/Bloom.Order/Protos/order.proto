@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package bloom.order.v1;
+
+option csharp_namespace = "Bloom.Order.Api";
+
+// 03-order §9: the address of a checkout. The services of 03-order §5.1 join this file in their own tasks.
+message ShipTo {
+  string name = 1;
+  repeated string lines = 2;
+  string city = 3;
+  string state = 4;
+  string zip = 5;
+  string phone = 6;
+}

@@ -29,6 +29,8 @@
   </Folder>
   <Folder Name="/src/Order/">
     <Project Path="src/Order/Bloom.Order.Contracts/Bloom.Order.Contracts.csproj" />
+    <Project Path="src/Order/Bloom.Order.Tests/Bloom.Order.Tests.csproj" />
+    <Project Path="src/Order/Bloom.Order/Bloom.Order.csproj" />
   </Folder>
   <Folder Name="/src/Payment/">
     <Project Path="src/Payment/Bloom.Payment.Contracts/Bloom.Payment.Contracts.csproj" />
