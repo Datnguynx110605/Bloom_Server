@@ -13,6 +13,14 @@ public sealed record TestCaller(Guid Id, string Type, string? Role)
 
     public static TestCaller Customer(Guid? id = null) => new(id ?? Guid.NewGuid(), "customer", null);
 
+    /// <summary>The same headers as gRPC call options, with the test's cancellation token.</summary>
+    public CallOptions Call()
+    {
+        var headers = new Metadata { { "x-bloom-user-id", Id.ToString("D") }, { "x-bloom-user-type", Type } };
+        if (Role is not null) headers.Add("x-bloom-role", Role);
+        return new CallOptions(headers, cancellationToken: TestContext.Current.CancellationToken);
+    }
+
     internal void Apply(HttpRequestMessage request)
     {
         request.Headers.Add("x-bloom-user-id", Id.ToString("D"));

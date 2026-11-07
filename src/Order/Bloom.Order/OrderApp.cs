@@ -70,6 +70,7 @@ public static class OrderApp
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<CartService>();
+            app.MapGrpcService<StaffService>();
         }
         return app;
     }

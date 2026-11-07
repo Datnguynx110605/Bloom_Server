@@ -1,9 +1,10 @@
 using Bloom.Order.Data;
+using Google.Protobuf.WellKnownTypes;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Order.Domain;
 
-/// <summary>Entity to proto mapping for the Cart API.</summary>
+/// <summary>Entity to proto mapping for the Cart and staff APIs.</summary>
 public static class Views
 {
     /// <summary>
@@ -32,4 +33,25 @@ public static class Views
         }));
         return view;
     }
+
+    public static Api.Coupon CouponView(Data.Coupon c, IEnumerable<CouponScopeItem> items)
+    {
+        var view = new Api.Coupon
+        {
+            Id = c.Id.ToString("D"), Code = c.CodeDisplay, Type = c.Type, Value = c.Value, Scope = c.Scope, UsesCount = c.UsesCount, Active = c.Active, Version = c.Version,
+            CreatedAt = Timestamp.FromDateTimeOffset(c.CreatedAt),
+            StartsAt = c.StartsAt is { } starts ? Timestamp.FromDateTimeOffset(starts) : null,
+            ExpiresAt = c.ExpiresAt is { } expires ? Timestamp.FromDateTimeOffset(expires) : null,
+        };
+        view.ScopeItems.AddRange(items.Select(i => new Api.ScopeItem { TargetType = i.TargetType, TargetId = i.TargetId.ToString("D") }));
+        if (c.MinSpendCents is { } min) view.MinSpendCents = min; // optional fields have no nullable property
+        if (c.TotalLimit is { } total) view.TotalLimit = total;
+        if (c.PerCustomerLimit is { } perCustomer) view.PerCustomerLimit = perCustomer;
+        return view;
+    }
+
+    public static Api.CheckoutSettings SettingsView(Data.CheckoutSettings s) => new()
+    {
+        ExpressFeeCents = s.ExpressFeeCents, Version = s.Version, UpdatedBy = s.UpdatedBy?.ToString("D") ?? "", UpdatedAt = Timestamp.FromDateTimeOffset(s.UpdatedAt),
+    };
 }

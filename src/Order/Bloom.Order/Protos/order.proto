@@ -3,6 +3,7 @@ syntax = "proto3";
 package bloom.order.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 
 option csharp_namespace = "Bloom.Order.Api";
 
@@ -64,4 +65,115 @@ message CartLine {
   optional int64 price_cents = 7; // current catalog price
   bool available = 8; // catalog `buyable`
   optional bool out_of_stock = 9; // product lines only; absent when inventory is unreachable
+}
+
+// 03-order §5.1, staff API: coupons (catalog manager, admin) under /api/admin/coupons and checkout settings (admin) under /api/admin/settings (spec §6).
+service OrderStaff {
+  // Newest first; `active` filters. `page` from 1 (0 is 1), `page_size` 1-100 (0 is 50).
+  rpc ListCoupons(ListCouponsRequest) returns (ListCouponsResponse) {
+    option (google.api.http) = { get: "/api/admin/coupons" };
+  }
+
+  // A code that exists ignoring case is COUPON_CODE_TAKEN.
+  rpc CreateCoupon(CreateCouponRequest) returns (Coupon) {
+    option (google.api.http) = { post: "/api/admin/coupons" body: "*" };
+  }
+
+  // Replaces every field but the code, and the scope items. Versioned; inactive coupons stay inactive.
+  rpc UpdateCoupon(UpdateCouponRequest) returns (Coupon) {
+    option (google.api.http) = { put: "/api/admin/coupons/{coupon_id}" body: "*" };
+  }
+
+  // Versioned (PRM-R13). An inactive coupon stays inactive.
+  rpc DeactivateCoupon(DeactivateCouponRequest) returns (Coupon) {
+    option (google.api.http) = { post: "/api/admin/coupons/{coupon_id}/deactivate" body: "*" };
+  }
+
+  rpc GetCheckoutSettings(GetCheckoutSettingsRequest) returns (CheckoutSettings) {
+    option (google.api.http) = { get: "/api/admin/settings/checkout" };
+  }
+
+  // Versioned; `version` is the settings' (0 until the first change).
+  rpc SetExpressFee(SetExpressFeeRequest) returns (CheckoutSettings) {
+    option (google.api.http) = { put: "/api/admin/settings/checkout/express-fee" body: "*" };
+  }
+}
+
+message ScopeItem {
+  string target_type = 1; // product | category
+  string target_id = 2;
+}
+
+message Coupon {
+  string id = 1;
+  string code = 2; // as entered
+  string type = 3; // percent | fixed
+  int32 value = 4; // percent 1-100, fixed cents > 0
+  string scope = 5; // order | selected
+  repeated ScopeItem scope_items = 6;
+  optional int64 min_spend_cents = 7;
+  google.protobuf.Timestamp starts_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  optional int32 total_limit = 10;
+  optional int32 per_customer_limit = 11;
+  int32 uses_count = 12;
+  bool active = 13;
+  int64 version = 14;
+  google.protobuf.Timestamp created_at = 15;
+}
+
+message CreateCouponRequest {
+  string code = 1;
+  string type = 2;
+  int32 value = 3;
+  string scope = 4;
+  repeated ScopeItem scope_items = 5;
+  optional int64 min_spend_cents = 6;
+  google.protobuf.Timestamp starts_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  optional int32 total_limit = 9;
+  optional int32 per_customer_limit = 10;
+}
+
+message UpdateCouponRequest {
+  string coupon_id = 1;
+  int64 version = 2;
+  string type = 3;
+  int32 value = 4;
+  string scope = 5;
+  repeated ScopeItem scope_items = 6;
+  optional int64 min_spend_cents = 7;
+  google.protobuf.Timestamp starts_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  optional int32 total_limit = 10;
+  optional int32 per_customer_limit = 11;
+}
+
+message DeactivateCouponRequest {
+  string coupon_id = 1;
+  int64 version = 2;
+}
+
+message ListCouponsRequest {
+  optional bool active = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListCouponsResponse {
+  repeated Coupon items = 1;
+}
+
+message CheckoutSettings {
+  int64 express_fee_cents = 1;
+  int64 version = 2;
+  string updated_by = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message GetCheckoutSettingsRequest {}
+
+message SetExpressFeeRequest {
+  int64 express_fee_cents = 1;
+  int64 version = 2;
 }
