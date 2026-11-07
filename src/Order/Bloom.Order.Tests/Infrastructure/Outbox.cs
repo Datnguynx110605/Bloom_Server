@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Bloom.Identity.Contracts;
 using Bloom.Shared.DeadLetters;
 using Bloom.Shared.Messaging;
@@ -13,11 +14,18 @@ public static class Outbox
     public static Task<IReadOnlyList<StaffActionRecorded>> AuditAsync(TestOrder t) => PayloadsAsync<StaffActionRecorded>(t, IdentityMessages.StaffActionRecorded);
 
     /// <summary>The payloads of every outbox message of <paramref name="messageType"/>, oldest first.</summary>
-    public static async Task<IReadOnlyList<T>> PayloadsAsync<T>(TestOrder t, string messageType)
+    public static async Task<IReadOnlyList<T>> PayloadsAsync<T>(TestOrder t, string messageType) =>
+        (await EnvelopesAsync(t, messageType)).Select(e => e.GetPayload<T>()).ToList();
+
+    /// <summary>The payloads as they went on the wire, for a field that must be absent.</summary>
+    public static async Task<IReadOnlyList<JsonElement>> JsonAsync(TestOrder t, string messageType) =>
+        (await EnvelopesAsync(t, messageType)).Select(e => e.Payload).ToList();
+
+    private static async Task<List<Envelope>> EnvelopesAsync(TestOrder t, string messageType)
     {
         await using var db = t.NewDb();
         var rows = await db.Set<OutboxMessage>().Where(m => m.MessageType == messageType).OrderBy(m => m.Id)
             .Select(m => m.Payload).ToListAsync(TestContext.Current.CancellationToken);
-        return rows.Select(p => Envelope.Parse(Encoding.UTF8.GetBytes(p)).GetPayload<T>()).ToList();
+        return rows.Select(p => Envelope.Parse(Encoding.UTF8.GetBytes(p))).ToList();
     }
 }

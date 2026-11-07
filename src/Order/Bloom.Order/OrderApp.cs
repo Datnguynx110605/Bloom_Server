@@ -2,10 +2,12 @@ using Bloom.Catalog.Contracts;
 using Bloom.Fulfillment.Contracts;
 using Bloom.Inventory.Contracts;
 using Bloom.Launch.Contracts;
+using Bloom.Order.Consumers;
 using Bloom.Order.Data;
 using Bloom.Order.Domain;
 using Bloom.Order.Observability;
 using Bloom.Order.Services;
+using Bloom.Order.Worker;
 using Bloom.Payment.Contracts;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
@@ -49,6 +51,10 @@ public static class OrderApp
         builder.Services.AddScoped<Transitions>();
         builder.Services.AddScoped<Sagas>();
         builder.Services.AddScoped<Coupons>();
+        builder.Services.AddScoped<CheckoutFailures>();
+        bloom.AddConsumer<PaymentSucceededConsumer>("payment-succeeded", PaymentSucceededConsumer.Bindings); // both modes, for the DLQ catalog (plan R6)
+        bloom.AddConsumer<PaymentFailedConsumer>("payment-failed", PaymentFailedConsumer.Bindings);
+        bloom.AddConsumer<ReservationReleasedConsumer>("inventory-reservation-released", ReservationReleasedConsumer.Bindings);
         builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddGrpcClient<LaunchInternal.LaunchInternalClient>(o => o.Address = new Uri(options.Launch));
@@ -66,6 +72,7 @@ public static class OrderApp
         else
         {
             bloom.AddWorker(); // worker only (plan R6)
+            builder.Services.AddHostedService<Sweeps>();
         }
 
         var app = builder.Build();

@@ -9,7 +9,6 @@ using Bloom.Order.Errors;
 using Bloom.Order.Observability;
 using Bloom.Payment.Contracts;
 using Bloom.Shared.Idempotency;
-using Bloom.Shared.Messaging;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +22,7 @@ namespace Bloom.Order.Services;
 /// the answer in that transaction.
 /// </summary>
 public sealed class CheckoutService(
-    OrderDbContext db, IdempotencyGuard guard, Upstreams upstreams, Transitions transitions, Sagas sagas, Coupons coupons, OutboxWriter outbox,
+    OrderDbContext db, IdempotencyGuard guard, Upstreams upstreams, Transitions transitions, CheckoutFailures failures, Coupons coupons,
     OrderMetrics metrics, OrderOptions options, TimeProvider clock, ILogger<CheckoutService> logger) : OrderCheckout.OrderCheckoutBase
 {
     private const int MaxQuantity = 10;
@@ -212,7 +211,7 @@ public sealed class CheckoutService(
             }
             catch (RpcException e) when (Upstreams.IsRejection(e))
             {
-                await CancelInTransactionAsync(order, compensate: true, ct); // the stock is held
+                await failures.CancelAsync(order, compensate: true, ct); // the stock is held
                 throw;
             }
         }
@@ -269,16 +268,6 @@ public sealed class CheckoutService(
     private async Task CancelAsync(OrderRow order, bool compensate, CancellationToken ct)
     {
         _ = await db.Database.BeginTransactionAsync(ct);
-        await CancelInTransactionAsync(order, compensate, ct);
-    }
-
-    /// <summary><c>creating → cancelled</c> (<c>checkout_failed</c>) with <c>order.cancelled.v1</c> (owner item 6) and, when something may be held, the compensation saga. Already moved by a sweep: nothing more to do.</summary>
-    private async Task CancelInTransactionAsync(OrderRow order, bool compensate, CancellationToken ct)
-    {
-        var moved = await transitions.MoveAsync(order.Id, [OrderStatuses.Creating], OrderStatuses.Cancelled, Actor.System, CancelReasons.CheckoutFailed, null,
-            s => s.SetProperty(o => o.CancelReason, CancelReasons.CheckoutFailed), ct);
-        if (!moved) return;
-        outbox.PublishEvent(OrderMessages.Cancelled, new OrderCancelledV1(order.Id, order.Number, order.AccountId, CancelReasons.CheckoutFailed));
-        if (compensate) await sagas.StartAsync(order.Id, SagaTypes.CheckoutCompensation, order.Kind, afterPayment: false, CancelReasons.CheckoutFailed, ct);
+        await failures.CancelAsync(order, compensate, ct);
     }
 }
