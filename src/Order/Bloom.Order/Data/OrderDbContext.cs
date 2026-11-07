@@ -40,6 +40,11 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
                     "subtotal_cents >= 0 AND discount_cents >= 0 AND tax_cents >= 0 AND shipping_cents >= 0 AND total_cents >= 0");
                 t.HasCheckConstraint("ck_orders_open_returns_non_negative", "open_returns >= 0");
             });
+            e.Property(x => x.StockAllocated).HasDefaultValue(false);
+            e.Property(x => x.LaunchReleased).HasDefaultValue(false);
+            e.Property(x => x.HandedToFulfillment).HasDefaultValue(false);
+            e.Property(x => x.OpenReturns).HasDefaultValue(0);
+            e.Property(x => x.Version).HasDefaultValue(0L);
             e.Property(x => x.ShipTo).HasColumnType("jsonb").HasConversion(
                 v => JsonSerializer.Serialize(v, JsonSerializerOptions.Web),
                 s => JsonSerializer.Deserialize<ShipToV1>(s, JsonSerializerOptions.Web)!);
@@ -60,6 +65,8 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
                 t.HasCheckConstraint("ck_order_lines_refunded_non_negative", "refunded_cents >= 0");
             });
             e.HasKey(x => new { x.OrderId, x.LineNo });
+            e.Property(x => x.ReturnedQty).HasDefaultValue(0);
+            e.Property(x => x.RefundedCents).HasDefaultValue(0L);
             e.HasOne<OrderRow>().WithMany().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -98,6 +105,7 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
         {
             e.ToTable("carts");
             e.HasKey(x => x.AccountId);
+            e.Property(x => x.Version).HasDefaultValue(0L);
         });
 
         mb.Entity<CartLine>(e =>
@@ -122,6 +130,8 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
                 t.HasCheckConstraint("ck_coupons_uses_le_total_limit", "total_limit IS NULL OR uses_count <= total_limit");
                 t.HasCheckConstraint("ck_coupons_uses_non_negative", "uses_count >= 0");
             });
+            e.Property(x => x.UsesCount).HasDefaultValue(0);
+            e.Property(x => x.Version).HasDefaultValue(0L);
             e.HasIndex(x => x.CodeNormalized).IsUnique().HasDatabaseName("ux_coupons_code_normalized");
         });
 
@@ -136,6 +146,7 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
         {
             e.ToTable("coupon_customer_usage", t => t.HasCheckConstraint("ck_coupon_customer_usage_uses_non_negative", "uses_count >= 0"));
             e.HasKey(x => new { x.CouponId, x.AccountId });
+            e.Property(x => x.UsesCount).HasDefaultValue(0);
             e.HasOne<Coupon>().WithMany().HasForeignKey(x => x.CouponId).OnDelete(DeleteBehavior.Restrict);
         });
 

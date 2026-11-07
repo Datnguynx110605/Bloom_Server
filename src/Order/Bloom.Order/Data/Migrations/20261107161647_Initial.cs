@@ -17,7 +17,7 @@ namespace Bloom.Order.Data.Migrations
                 columns: table => new
                 {
                     account_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    version = table.Column<long>(type: "bigint", nullable: false),
+                    version = table.Column<long>(type: "bigint", nullable: false, defaultValue: 0L),
                     updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
@@ -57,9 +57,9 @@ namespace Bloom.Order.Data.Migrations
                     expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     total_limit = table.Column<int>(type: "integer", nullable: true),
                     per_customer_limit = table.Column<int>(type: "integer", nullable: true),
-                    uses_count = table.Column<int>(type: "integer", nullable: false),
+                    uses_count = table.Column<int>(type: "integer", nullable: false, defaultValue: 0),
                     active = table.Column<bool>(type: "boolean", nullable: false),
-                    version = table.Column<long>(type: "bigint", nullable: false),
+                    version = table.Column<long>(type: "bigint", nullable: false, defaultValue: 0L),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
                 },
@@ -119,10 +119,10 @@ namespace Bloom.Order.Data.Migrations
                     launch_id = table.Column<Guid>(type: "uuid", nullable: true),
                     status = table.Column<string>(type: "text", nullable: false),
                     cancel_reason = table.Column<string>(type: "text", nullable: true),
-                    stock_allocated = table.Column<bool>(type: "boolean", nullable: false),
-                    launch_released = table.Column<bool>(type: "boolean", nullable: false),
-                    handed_to_fulfillment = table.Column<bool>(type: "boolean", nullable: false),
-                    open_returns = table.Column<int>(type: "integer", nullable: false),
+                    stock_allocated = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
+                    launch_released = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
+                    handed_to_fulfillment = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
+                    open_returns = table.Column<int>(type: "integer", nullable: false, defaultValue: 0),
                     deadline_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     shipping_option = table.Column<string>(type: "text", nullable: false),
                     ship_to = table.Column<string>(type: "jsonb", nullable: false),
@@ -135,7 +135,7 @@ namespace Bloom.Order.Data.Migrations
                     tax_rate_bp = table.Column<int>(type: "integer", nullable: false),
                     payment_id = table.Column<Guid>(type: "uuid", nullable: true),
                     delivered_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
-                    version = table.Column<long>(type: "bigint", nullable: false),
+                    version = table.Column<long>(type: "bigint", nullable: false, defaultValue: 0L),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
                 },
@@ -204,7 +204,7 @@ namespace Bloom.Order.Data.Migrations
                 {
                     coupon_id = table.Column<Guid>(type: "uuid", nullable: false),
                     account_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    uses_count = table.Column<int>(type: "integer", nullable: false)
+                    uses_count = table.Column<int>(type: "integer", nullable: false, defaultValue: 0)
                 },
                 constraints: table =>
                 {
@@ -305,8 +305,8 @@ namespace Bloom.Order.Data.Migrations
                     discount_cents = table.Column<long>(type: "bigint", nullable: false),
                     tax_cents = table.Column<long>(type: "bigint", nullable: false),
                     paid_cents = table.Column<long>(type: "bigint", nullable: false),
-                    returned_qty = table.Column<int>(type: "integer", nullable: false),
-                    refunded_cents = table.Column<long>(type: "bigint", nullable: false)
+                    returned_qty = table.Column<int>(type: "integer", nullable: false, defaultValue: 0),
+                    refunded_cents = table.Column<long>(type: "bigint", nullable: false, defaultValue: 0L)
                 },
                 constraints: table =>
                 {

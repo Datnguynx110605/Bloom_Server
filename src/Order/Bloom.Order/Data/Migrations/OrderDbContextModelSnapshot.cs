@@ -34,7 +34,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("updated_at");
 
                     b.Property<long>("Version")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
                         .HasColumnName("version");
 
                     b.HasKey("AccountId");
@@ -202,7 +204,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("updated_at");
 
                     b.Property<int>("UsesCount")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
+                        .HasDefaultValue(0)
                         .HasColumnName("uses_count");
 
                     b.Property<int>("Value")
@@ -210,7 +214,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("value");
 
                     b.Property<long>("Version")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
                         .HasColumnName("version");
 
                     b.HasKey("Id");
@@ -244,7 +250,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("account_id");
 
                     b.Property<int>("UsesCount")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
+                        .HasDefaultValue(0)
                         .HasColumnName("uses_count");
 
                     b.HasKey("CouponId", "AccountId");
@@ -363,11 +371,15 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("quantity");
 
                     b.Property<long>("RefundedCents")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
                         .HasColumnName("refunded_cents");
 
                     b.Property<int>("ReturnedQty")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
+                        .HasDefaultValue(0)
                         .HasColumnName("returned_qty");
 
                     b.Property<bool>("Serialized")
@@ -438,7 +450,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("discount_cents");
 
                     b.Property<bool>("HandedToFulfillment")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
+                        .HasDefaultValue(false)
                         .HasColumnName("handed_to_fulfillment");
 
                     b.Property<string>("Kind")
@@ -451,7 +465,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("launch_id");
 
                     b.Property<bool>("LaunchReleased")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
+                        .HasDefaultValue(false)
                         .HasColumnName("launch_released");
 
                     b.Property<string>("Number")
@@ -460,7 +476,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("number");
 
                     b.Property<int>("OpenReturns")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
+                        .HasDefaultValue(0)
                         .HasColumnName("open_returns");
 
                     b.Property<Guid?>("PaymentId")
@@ -487,7 +505,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("status");
 
                     b.Property<bool>("StockAllocated")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
+                        .HasDefaultValue(false)
                         .HasColumnName("stock_allocated");
 
                     b.Property<long>("SubtotalCents")
@@ -511,7 +531,9 @@ namespace Bloom.Order.Data.Migrations
                         .HasColumnName("updated_at");
 
                     b.Property<long>("Version")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
                         .HasColumnName("version");
 
                     b.HasKey("Id");

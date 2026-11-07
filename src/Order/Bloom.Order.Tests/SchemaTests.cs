@@ -106,6 +106,22 @@ public class SchemaTests(Containers containers)
         var order = await InsertAsync(db, NewOrder());
         await InsertAsync(db, NewLine(order.Id));
 
+        // Raw SQL that omits the columns with a §4 default gets those defaults.
+        var raw = Id();
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO orders (id, number, account_id, kind, status, shipping_option, ship_to, currency, subtotal_cents, discount_cents, tax_cents, shipping_cents, total_cents, tax_rate_bp, created_at, updated_at)
+            VALUES ({raw}, {Number()}, {Id()}, 'regular', 'creating', 'standard', {"{}"}::jsonb, 'USD', 0, 0, 0, 0, 0, 825, now(), now())
+            """, Ct);
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO order_lines (order_id, line_no, kind, sku_id, product_id, category_id, name, serialized, quantity, unit_price_cents, discount_cents, tax_cents, paid_cents)
+            VALUES ({raw}, 1, 'product', {Id()}, {Id()}, {Id()}, 'x', false, 1, 0, 0, 0, 0)
+            """, Ct);
+        var defaults = await db.Database.SqlQuery<string>($"""
+            SELECT concat_ws(',', o.stock_allocated, o.launch_released, o.handed_to_fulfillment, o.open_returns, o.version, l.returned_qty, l.refunded_cents) AS "Value"
+            FROM orders o JOIN order_lines l ON l.order_id = o.id WHERE o.id = {raw}
+            """).SingleAsync(Ct);
+        Assert.Equal("f,f,f,0,0,0,0", defaults);
+
         var e = await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
             db.Database.ExecuteSqlAsync($"UPDATE order_lines SET refunded_cents = paid_cents + 1 WHERE order_id = {order.Id}", Ct));
         Assert.Equal("23514", e.SqlState);
@@ -118,6 +134,19 @@ public class SchemaTests(Containers containers)
         await using var t = await TestOrder.StartAsync(containers);
         await using var db = t.NewDb();
         var coupon = await InsertAsync(db, NewCoupon());
+
+        // Raw SQL that omits the counters gets 0 (the §6.8 usage upsert relies on it).
+        var raw = Id();
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO coupons (id, code_normalized, code_display, type, value, scope, active, created_at, updated_at)
+            VALUES ({raw}, {"RAW" + Id().ToString("N")[..8]}, 'raw', 'fixed', 100, 'order', true, now(), now())
+            """, Ct);
+        await db.Database.ExecuteSqlAsync($"INSERT INTO coupon_customer_usage (coupon_id, account_id) VALUES ({raw}, {Id()})", Ct);
+        var counters = await db.Database.SqlQuery<string>($"""
+            SELECT concat_ws(',', c.uses_count, c.version, u.uses_count) AS "Value"
+            FROM coupons c JOIN coupon_customer_usage u ON u.coupon_id = c.id WHERE c.id = {raw}
+            """).SingleAsync(Ct);
+        Assert.Equal("0,0,0", counters);
 
         var e = await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
             db.Database.ExecuteSqlAsync($"UPDATE coupons SET uses_count = total_limit + 1 WHERE id = {coupon.Id}", Ct));
