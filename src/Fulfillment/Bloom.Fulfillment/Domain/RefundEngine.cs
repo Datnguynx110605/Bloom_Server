@@ -1,3 +1,4 @@
+using Bloom.Fulfillment.Contracts;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Errors;
 using Bloom.Fulfillment.Observability;
@@ -66,6 +67,41 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
             WHERE order_id = {a.OrderId} AND NOT shipping_refunded
               AND NOT EXISTS (SELECT 1 FROM order_line_accounts WHERE order_id = {a.OrderId} AND kind = {LineKinds.Product} AND refunded_units < quantity)
             """, ct) == 1 ? a.ShippingCents : 0;
+
+    /// <summary>
+    /// The refund of a delivery failure (ORD-R17, spec §7): every line with a remainder becomes fully refunded and the shipping is added when not yet refunded, so the amount is
+    /// <c>total − Σ refunded − (shipping if refunded)</c>. Lines in the command are the <c>paid − refunded</c> of the lines with cents left. <paramref name="a"/> comes from <see cref="LockOrderAsync"/>.
+    /// </summary>
+    public async Task<(long Amount, IReadOnlyList<RefundLineV1> Lines)> RefundRemainingAsync(OrderAccount a, CancellationToken ct)
+    {
+        var perLine = (await db.OrderLineAccounts.AsNoTracking().Where(l => l.OrderId == a.OrderId && (l.RefundedUnits < l.Quantity || l.RefundedCents < l.PaidCents)).ToListAsync(ct))
+            .ToDictionary(l => l.LineNo, l => (Units: l.Quantity - l.RefundedUnits, Cents: l.PaidCents - l.RefundedCents));
+        await ApplyAsync(a.OrderId, perLine, ct);
+        var shipping = await ShippingIfCompleteAsync(a, ct);
+        return (perLine.Values.Sum(v => v.Cents) + shipping, Lines(perLine.Where(p => p.Value.Cents > 0).ToDictionary()));
+    }
+
+    /// <summary>
+    /// A delivery failure resolved by refund, in the caller's transaction (which holds the shipment's and the failure's row locks): the order's remainder refunded and its saga (R19), the
+    /// order's coverages cancelled, <c>delivery-failed</c>, and the failure → <c>resolved_refund</c>. Lock order: order_accounts → order_line_accounts → warranty_coverages.
+    /// </summary>
+    /// <param name="rtsOutcomes">The returned-to-sender units as JSON; null for a lost shipment.</param>
+    public async Task ResolveFailureAsync(Guid orderId, Guid shipmentId, string kind, Guid decidedBy, string? rtsOutcomes, CancellationToken ct)
+    {
+        var (amount, lines) = await RefundRemainingAsync(await LockOrderAsync(orderId, ct), ct);
+        Send(orderId, shipmentId, SagaTypes.DeliveryFailure, "delivery_failure", amount, lines);
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE warranty_coverages SET status = {CoverageStatuses.Cancelled}
+            WHERE order_id = {orderId} AND status IN ({CoverageStatuses.Active}, {CoverageStatuses.PendingDelivery})
+            """, ct);
+        outbox.PublishEvent(FulfillmentMessages.DeliveryFailed, new DeliveryFailedV1(orderId, kind));
+        if (await db.Database.ExecuteSqlAsync($"""
+            UPDATE delivery_failures
+            SET status = {FailureStatuses.ResolvedRefund}, rts_outcomes = {rtsOutcomes}::jsonb, decided_by = {decidedBy}, updated_at = {clock.GetUtcNow()}
+            WHERE shipment_id = {shipmentId} AND kind = {kind} AND status IN ({FailureStatuses.PossiblyLost}, {FailureStatuses.Confirmed})
+            """, ct) != 1)
+            throw new InvalidOperationException($"Failure of shipment {shipmentId} is not open; the caller must hold its lock.");
+    }
 
     /// <summary>A plan's coverage ends with its refund (WAR-R05, WAR-R06). Guarded: it must still be open.</summary>
     public async Task CancelCoverageAsync(Guid coverageId, CancellationToken ct)

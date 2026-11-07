@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Bloom.Fulfillment.Contracts;
 
 /// <summary>Published by fulfillment when the shipment is handed over (05-fulfillment §5); consumed by inventory.</summary>
@@ -13,8 +15,10 @@ public sealed record ReturnedUnitV1(Guid SkuId, string? Serial, int Quantity);
 /// <summary>Command from fulfillment: units back from a failed delivery (02-inventory §5.3).</summary>
 public sealed record ReceiveReturnedToSenderV1(Guid RefId, IReadOnlyList<ReturnedToSenderUnitV1> Units);
 
-/// <summary><c>Outcome</c> is <c>sealed</c> or <c>failed</c>.</summary>
-public sealed record ReturnedToSenderUnitV1(Guid SkuId, string? Serial, int Quantity, string Outcome);
+/// <summary>
+/// <c>Outcome</c> is <c>sealed</c> or <c>failed</c>. A non-serialized unit has no <c>Serial</c>: it is written as <c>null</c> (not left out), because the consumers' options require every constructor parameter.
+/// </summary>
+public sealed record ReturnedToSenderUnitV1(Guid SkuId, [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Serial, int Quantity, string Outcome);
 
 /// <summary>Command from fulfillment: the carrier lost the shipment (02-inventory §5.3).</summary>
 public sealed record MarkLostInTransitV1(Guid RefId);

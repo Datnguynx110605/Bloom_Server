@@ -69,4 +69,19 @@ public static class Views
 
     public static async Task<V1.ReturnRequest> ReturnAsync(FulfillmentDbContext db, Guid returnId, CancellationToken ct) =>
         (await ReturnsAsync(db, await db.ReturnRequests.AsNoTracking().Where(r => r.Id == returnId).ToListAsync(ct), ct)).Single();
+
+    /// <summary>The failures with the order of their shipment, in the order given; one extra query for the page.</summary>
+    public static async Task<List<V1.DeliveryFailure>> FailuresAsync(FulfillmentDbContext db, IReadOnlyList<Data.DeliveryFailure> failures, CancellationToken ct)
+    {
+        var ids = failures.Select(f => f.ShipmentId).ToList();
+        var orders = await db.Shipments.AsNoTracking().Where(s => ids.Contains(s.Id)).ToDictionaryAsync(s => s.Id, s => s.OrderId, ct);
+        return failures.Select(f => new V1.DeliveryFailure
+        {
+            ShipmentId = f.ShipmentId.ToString(), OrderId = orders[f.ShipmentId].ToString(), Kind = f.Kind, Status = f.Status, PreviousStatus = f.PreviousStatus ?? "",
+            ReshipId = f.ReshipId?.ToString() ?? "", CreatedAt = Timestamp.FromDateTimeOffset(f.CreatedAt),
+        }).ToList();
+    }
+
+    public static async Task<V1.DeliveryFailure> FailureAsync(FulfillmentDbContext db, Guid shipmentId, CancellationToken ct) =>
+        (await FailuresAsync(db, await db.DeliveryFailures.AsNoTracking().Where(f => f.ShipmentId == shipmentId).ToListAsync(ct), ct)).Single();
 }

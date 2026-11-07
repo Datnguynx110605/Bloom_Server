@@ -57,6 +57,11 @@ service FulfillmentWarehouse {
   rpc RecordInspection(RecordInspectionRequest) returns (ReturnRequest) {
     option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/inspection" body: "*" };
   }
+
+  // A confirmed returned-to-sender failure -> resolved_refund: the units back, the rest of the order refunded. Needs an Idempotency-Key.
+  rpc RecordReturnedToSender(RecordReturnedToSenderRequest) returns (DeliveryFailure) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/shipments/{shipment_id}/returned-to-sender" body: "*" };
+  }
 }
 
 // 05-fulfillment §5.1, Customer API: customers only, transcoded to JSON under /api/returns (spec §6).
@@ -78,6 +83,67 @@ service FulfillmentSupport {
   rpc DecideReturn(DecideReturnRequest) returns (DecideReturnResponse) {
     option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/decision" body: "*" };
   }
+
+  // possibly_lost | confirmed lost -> resolved_refund or resolved_reship. Needs an Idempotency-Key.
+  rpc ConfirmLost(ConfirmLostRequest) returns (DeliveryFailure) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/shipments/{shipment_id}/lost" body: "*" };
+  }
+
+  // possibly_lost -> dismissed: the shipment goes back to its previous status.
+  rpc DismissPossiblyLost(DismissPossiblyLostRequest) returns (DeliveryFailure) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/shipments/{shipment_id}/dismiss" body: "*" };
+  }
+
+  // Oldest first by (created_at, shipment_id).
+  rpc ListDeliveryFailures(ListDeliveryFailuresRequest) returns (ListDeliveryFailuresResponse) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/failures" };
+  }
+}
+
+// Every unit that shipped exactly once: a serialized unit by `serial`, any other unit by `sku_id` (one entry per unit).
+message RecordReturnedToSenderRequest {
+  string shipment_id = 1;
+  repeated RtsUnit units = 2;
+}
+
+// `outcome` is sealed | failed. `sku_id` is only read when `serial` is empty.
+message RtsUnit {
+  string serial = 1;
+  string sku_id = 2;
+  string outcome = 3;
+}
+
+// `resolution` is refund | reship.
+message ConfirmLostRequest {
+  string shipment_id = 1;
+  string resolution = 2;
+}
+
+message DismissPossiblyLostRequest {
+  string shipment_id = 1;
+}
+
+// `status` is a delivery failure status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
+message ListDeliveryFailuresRequest {
+  optional string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListDeliveryFailuresResponse {
+  repeated DeliveryFailure items = 1;
+}
+
+// `kind` is lost | returned_to_sender; `status` is possibly_lost | confirmed | resolved_refund | resolved_reship | dismissed.
+// `previous_status` (the shipment's status before it was flagged) and `reship_id` are empty when not set.
+message DeliveryFailure {
+  string shipment_id = 1;
+  string order_id = 2;
+  string kind = 3;
+  string status = 4;
+  string previous_status = 5;
+  string reship_id = 6;
+  google.protobuf.Timestamp created_at = 7;
 }
 
 // Every unit of the return exactly once.

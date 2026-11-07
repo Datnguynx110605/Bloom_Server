@@ -1,4 +1,5 @@
 using Bloom.Fulfillment.Data;
+using Bloom.Fulfillment.Errors;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Fulfillment.Domain;
@@ -9,6 +10,18 @@ namespace Bloom.Fulfillment.Domain;
 /// </summary>
 public sealed class Failures(FulfillmentDbContext db, TimeProvider clock, ILogger<Failures> logger)
 {
+    /// <summary>
+    /// The shipment's and then its failure's row locks (lock order: shipments → delivery_failures), for the staff methods that read the failure's status before acting on it.
+    /// <c>NOT_FOUND</c> for an unknown shipment; the failure is null when it has none.
+    /// </summary>
+    public async Task<(Shipment Shipment, DeliveryFailure? Failure)> LockAsync(Guid shipmentId, CancellationToken ct)
+    {
+        var shipment = (await db.Shipments.FromSql($"SELECT * FROM shipments WHERE id = {shipmentId} FOR UPDATE").AsNoTracking().ToListAsync(ct)).SingleOrDefault()
+            ?? throw FulfillmentErrors.NotFound("The shipment");
+        var failure = (await db.DeliveryFailures.FromSql($"SELECT * FROM delivery_failures WHERE shipment_id = {shipmentId} FOR UPDATE").AsNoTracking().ToListAsync(ct)).SingleOrDefault();
+        return (shipment, failure);
+    }
+
     /// <summary>Shipment → <c>possibly_lost</c> and failure upsert (<c>kind = lost</c>, <c>previous_status</c> = the shipment's status); an existing <c>dismissed</c> row is reused.</summary>
     public async Task FlagAsync(Shipment s, CancellationToken ct)
     {

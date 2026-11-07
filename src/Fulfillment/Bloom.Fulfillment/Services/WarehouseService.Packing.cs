@@ -6,6 +6,7 @@ using Bloom.Fulfillment.Errors;
 using Bloom.Fulfillment.Observability;
 using Bloom.Fulfillment.V1;
 using Bloom.Shared.Concurrency;
+using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -17,7 +18,8 @@ namespace Bloom.Fulfillment.Services;
 
 /// <summary>05-fulfillment §3 component <c>Warehouse API</c>, packing (§6.2). Role first (plan R7), then validation (R10), then state (R9). Scans call inventory first, outside any transaction (spec §7).</summary>
 public sealed partial class WarehouseService(
-    FulfillmentDbContext db, ConcurrentUpdates updates, InventoryCalls inventory, Audit audit, OutboxWriter outbox, FulfillmentMetrics metrics, TimeProvider clock) : FulfillmentWarehouse.FulfillmentWarehouseBase
+    FulfillmentDbContext db, ConcurrentUpdates updates, InventoryCalls inventory, Audit audit, OutboxWriter outbox, FulfillmentMetrics metrics, TimeProvider clock,
+    IdempotencyGuard guard, RefundEngine refunds, Failures failures) : FulfillmentWarehouse.FulfillmentWarehouseBase
 {
     public override async Task<ListPackTasksResponse> ListPackTasks(ListPackTasksRequest request, ServerCallContext context)
     {
@@ -146,7 +148,9 @@ public sealed partial class WarehouseService(
             Status = ShipmentStatuses.LabelPending, NextAttemptAt = now, CreatedAt = now,
         };
         db.Shipments.Add(shipment);
-        if (task.Kind == TaskKinds.Order) // reship tasks move the original coverages instead (Task 10)
+        if (task.Kind == TaskKinds.Reship)
+            await MoveCoveragesAsync(task.OrderId, taskId, scanned, ct);
+        else
             foreach (var plan in lines.Where(l => l.Kind == LineKinds.WarrantyPlan))
                 foreach (var covered in scanned.Where(s => s.LineNo == plan.ParentLineNo).OrderBy(s => s.Seq).Take(plan.Quantity))
                     db.WarrantyCoverages.Add(new WarrantyCoverage
@@ -158,6 +162,24 @@ public sealed partial class WarehouseService(
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return new CompletePackingResponse { Task = await Views.PackTaskAsync(db, taskId, ct), Shipment = Views.Shipment(shipment) };
+    }
+
+    /// <summary>
+    /// A reship adds no coverage (§6.5, spec §7): each <c>pending_delivery</c> coverage of the order moves to the reship's serial of the same rank (<c>seq</c> order) on the same device line, as the
+    /// serial held it in the earlier task of the order. A coverage cancelled meanwhile is left alone (the guarded update finds no row). Lock order: pack_tasks → … → warranty_coverages.
+    /// </summary>
+    private async Task MoveCoveragesAsync(Guid orderId, Guid taskId, IReadOnlyList<PackTaskSerial> scanned, CancellationToken ct)
+    {
+        var coverages = await db.WarrantyCoverages.AsNoTracking().Where(c => c.OrderId == orderId && c.Status == CoverageStatuses.PendingDelivery).ToListAsync(ct);
+        if (coverages.Count == 0) return;
+        var earlier = await db.PackTaskSerials.AsNoTracking().Where(s => db.PackTasks.Any(p => p.Id == s.TaskId && p.OrderId == orderId && p.Id != taskId)).ToListAsync(ct);
+        foreach (var coverage in coverages)
+        {
+            var held = earlier.Single(s => s.Serial == coverage.Serial);
+            var rank = earlier.Count(s => s.TaskId == held.TaskId && s.LineNo == held.LineNo && s.Seq < held.Seq);
+            var serial = scanned.Where(s => s.LineNo == held.LineNo).OrderBy(s => s.Seq).ElementAt(rank).Serial;
+            await db.Database.ExecuteSqlAsync($"UPDATE warranty_coverages SET serial = {serial} WHERE id = {coverage.Id} AND status = {CoverageStatuses.PendingDelivery}", ct);
+        }
     }
 
     /// <summary>The task, which must be in <paramref name="status"/> (<c>INVALID_STATE</c> otherwise). <paramref name="forUpdate"/> takes its row lock first in the lock order (pack_tasks → shipments → …).</summary>
