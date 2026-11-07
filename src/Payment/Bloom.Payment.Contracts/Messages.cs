@@ -10,3 +10,12 @@ public sealed record RefundCompletedV1(Guid OrderId, Guid RefundId, long AmountC
 
 /// <summary>Published by payment when the refund could not be made.</summary>
 public sealed record RefundFailedV1(Guid OrderId, Guid RefundId, string FailureReason);
+
+/// <summary>Published by payment when the order's payment succeeded (04-payment §5.2).</summary>
+public sealed record PaymentSucceededV1(Guid OrderId, Guid PaymentId, long AmountCents, DateTimeOffset SucceededAt);
+
+/// <summary>Published by payment when the order's payment failed (04-payment §5.2).</summary>
+public sealed record PaymentFailedV1(Guid OrderId, Guid PaymentId, string FailureCode);
+
+/// <summary>Command to payment: cancel the order's open payment session (04-payment §5.2).</summary>
+public sealed record CancelPaymentV1(Guid OrderId);
