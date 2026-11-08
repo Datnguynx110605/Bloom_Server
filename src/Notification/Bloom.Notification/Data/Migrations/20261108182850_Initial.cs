@@ -35,7 +35,7 @@ namespace Bloom.Notification.Data.Migrations
                     template = table.Column<string>(type: "text", nullable: false),
                     data = table.Column<string>(type: "jsonb", nullable: false),
                     status = table.Column<string>(type: "text", nullable: false),
-                    attempts = table.Column<int>(type: "integer", nullable: false, defaultValue: 0),
+                    attempts = table.Column<int>(type: "integer", nullable: false),
                     next_attempt_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     provider_message_id = table.Column<string>(type: "text", nullable: true),
                     last_error = table.Column<string>(type: "text", nullable: true),

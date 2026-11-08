@@ -15,8 +15,6 @@ public sealed partial class NotificationDbContext(DbContextOptions<NotificationD
     /// <summary>Work that must run only after the transaction commits (pushes, disconnects, metrics); dropped on a rollback (plan N7).</summary>
     public List<Func<Task>> AfterCommit { get; } = [];
 
-    private static string In(IEnumerable<string> values) => string.Join(", ", values.Select(v => $"'{v}'"));
-
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.AddBloomReliabilityTables();
@@ -45,11 +43,10 @@ public sealed partial class NotificationDbContext(DbContextOptions<NotificationD
         {
             e.ToTable("email_jobs", t =>
             {
-                t.HasCheckConstraint("ck_email_jobs_status", $"status IN ({In(EmailStatuses.All)})");
+                t.HasCheckConstraint("ck_email_jobs_status", $"status IN ({string.Join(", ", EmailStatuses.All.Select(s => $"'{s}'"))})");
                 t.HasCheckConstraint("ck_email_jobs_attempts_non_negative", "attempts >= 0");
             });
             e.Property(x => x.Data).HasColumnType("jsonb");
-            e.Property(x => x.Attempts).HasDefaultValue(0);
             e.HasIndex(x => new { x.SourceMessageId, x.Template }).IsUnique().HasDatabaseName("ux_email_jobs_source_message_id_template");
             e.HasIndex(x => new { x.Status, x.NextAttemptAt }).HasDatabaseName("ix_email_jobs_status_next_attempt_at");
         });

@@ -59,9 +59,7 @@ namespace Bloom.Notification.Data.Migrations
                         .HasColumnName("account_id");
 
                     b.Property<int>("Attempts")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
-                        .HasDefaultValue(0)
                         .HasColumnName("attempts");
 
                     b.Property<DateTimeOffset>("CreatedAt")

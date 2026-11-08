@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Bloom.Notification.Data.Migrations
 {
     [DbContext(typeof(NotificationDbContext))]
-    [Migration("20261108165303_Initial")]
+    [Migration("20261108182850_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -62,9 +62,7 @@ namespace Bloom.Notification.Data.Migrations
                         .HasColumnName("account_id");
 
                     b.Property<int>("Attempts")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
-                        .HasDefaultValue(0)
                         .HasColumnName("attempts");
 
                     b.Property<DateTimeOffset>("CreatedAt")
