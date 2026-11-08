@@ -68,6 +68,7 @@ public static class OrderApp
         bloom.AddConsumer<ReturnRequestedConsumer>("fulfillment-return-requested", ReturnRequestedConsumer.Bindings);
         bloom.AddConsumer<ReturnClosedConsumer>("fulfillment-return-closed", ReturnClosedConsumer.Bindings);
         bloom.AddConsumer<ReturnDecidedConsumer>("fulfillment-return-decided", ReturnDecidedConsumer.Bindings);
+        bloom.AddConsumer<AccountDeletedConsumer>("identity-account-deleted", AccountDeletedConsumer.Bindings);
         builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddGrpcClient<LaunchInternal.LaunchInternalClient>(o => o.Address = new Uri(options.Launch));
@@ -86,6 +87,7 @@ public static class OrderApp
         {
             bloom.AddWorker(); // worker only (plan R6)
             builder.Services.AddHostedService<Sweeps>();
+            builder.Services.AddHostedService<OrderMonitor>();
         }
 
         var app = builder.Build();
@@ -96,6 +98,7 @@ public static class OrderApp
             app.MapGrpcService<CheckoutService>();
             app.MapGrpcService<CustomerService>();
             app.MapGrpcService<StaffService>();
+            app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;
     }
