@@ -2,7 +2,6 @@ using Bloom.Payment.Consumers;
 using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
 using Bloom.Payment.Stripe;
-using Bloom.Payment.Worker;
 using Bloom.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,25 +21,10 @@ public class RefundTests(Containers containers)
     private static Task Send(TestPayment t, RefundPaymentV1 command) =>
         Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, command);
 
-    private static Task RunExecutor(TestPayment t) =>
-        ActivatorUtilities.CreateInstance<ProviderExecutor>(t.Services).RunOnceAsync(Ct);
-
-    private static async Task<RefundRow> RefundAsync(TestPayment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Refunds.AsNoTracking().SingleAsync(r => r.Id == id, Ct);
-    }
-
     private static async Task<int> RefundCountAsync(TestPayment t)
     {
         await using var db = t.NewDb();
         return await db.Refunds.CountAsync(Ct);
-    }
-
-    private static async Task<PaymentRow> PaymentAsync(TestPayment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Payments.AsNoTracking().SingleAsync(p => p.Id == id, Ct);
     }
 
     private static Task<IReadOnlyList<RefundCompletedV1>> Completed(TestPayment t) => Outbox.PayloadsAsync<RefundCompletedV1>(t, PaymentMessages.RefundCompleted);
@@ -52,8 +36,6 @@ public class RefundTests(Containers containers)
     private static Task<HttpResponseMessage> Post(TestPayment t, string stripeRefundId, string status, Guid? refundId, string? failureReason = null, string? eventId = null) =>
         StripeEvents.PostAsync(t, StripeEvents.Json("refund.updated", StripeEvents.Refund(stripeRefundId, status, refundId, failureReason), t.Clock.GetUtcNow(), eventId));
 
-    private static int ErrorLogs(TestPayment t) => t.Logs.Entries.Count(e => e.StartsWith("[Error]", StringComparison.Ordinal));
-
     [Fact]
     public async Task Refund_command_records_intent_and_executor_completes_it()
     {
@@ -64,31 +46,31 @@ public class RefundTests(Containers containers)
 
         await Send(t, command);
 
-        var pending = await RefundAsync(t, command.RefundId);
+        var pending = await t.RefundAsync(command.RefundId);
         Assert.Equal(RefundStatuses.Pending, pending.Status);
         Assert.Equal((paymentId, orderId, 400L, "return", 0), (pending.PaymentId, pending.OrderId, pending.AmountCents, pending.Reason, pending.Attempts));
         Assert.Equal(t.Clock.GetUtcNow(), pending.NextAttemptAt!.Value, TimeSpan.FromMilliseconds(1));
         Assert.Equal(command.Lines, pending.Lines);
-        Assert.Equal(400, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Empty(Creates(t));
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
         var request = Assert.Single(Creates(t));
         Assert.Equal($"bloom:refund:{command.RefundId:D}", request.IdempotencyKey);
         Assert.Equal("400", request.Form.Single(p => p.Key == "amount").Value);
         Assert.Equal(piId, request.Form.Single(p => p.Key == "payment_intent").Value);
-        var done = await RefundAsync(t, command.RefundId);
+        var done = await t.RefundAsync(command.RefundId);
         Assert.Equal(RefundStatuses.Succeeded, done.Status);
         Assert.Equal("re_test_1", done.StripeRefundId);
         var sent = Assert.Single(await Completed(t));
         Assert.Equal((orderId, command.RefundId, 400L), (sent.OrderId, sent.RefundId, sent.AmountCents));
         Assert.Equal(command.Lines, sent.Lines);
         Assert.Empty(await Failed(t));
-        Assert.Equal(400, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Equal(1, metrics.Sum("refunds_total", ("status", "succeeded")));
         Assert.Equal(0, metrics.Sum("refunds_total", ("status", "submitted")));
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
     }
 
     [Fact]
@@ -100,11 +82,11 @@ public class RefundTests(Containers containers)
 
         await Send(t, command);
         await Send(t, command);
-        await RunExecutor(t);
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
+        await t.RunExecutorAsync();
 
         Assert.Equal(1, await RefundCountAsync(t));
-        Assert.Equal(400, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Single(Creates(t));
         Assert.Single(await Completed(t));
     }
@@ -121,7 +103,7 @@ public class RefundTests(Containers containers)
 
         await using var db = t.NewDb();
         Assert.False(await db.Refunds.AnyAsync(r => r.Id == over.RefundId, Ct));
-        Assert.Equal(700, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(700, (await t.PaymentAsync(paymentId)).RefundedCents);
         var error = Assert.Single(t.Logs.Entries, e => e.StartsWith("[Error]", StringComparison.Ordinal));
         Assert.True(error.IndexOf(orderId.ToString("D"), StringComparison.Ordinal) < error.IndexOf(over.RefundId.ToString("D"), StringComparison.Ordinal));
     }
@@ -148,8 +130,8 @@ public class RefundTests(Containers containers)
         Assert.Equal(2, results.Count(r => r is PermanentFailureException));
         Assert.Equal(3, results.Count(r => r is null));
         Assert.Equal(3, await RefundCountAsync(t));
-        Assert.Equal(900, (await PaymentAsync(t, paymentId)).RefundedCents);
-        await RunExecutor(t);
+        Assert.Equal(900, (await t.PaymentAsync(paymentId)).RefundedCents);
+        await t.RunExecutorAsync();
         Assert.Equal(3, Creates(t).Count());
     }
 
@@ -165,7 +147,7 @@ public class RefundTests(Containers containers)
         Assert.Equal(0, await RefundCountAsync(t));
         await using var db = t.NewDb();
         Assert.Equal(0, await db.Payments.CountAsync(p => p.RefundedCents != 0, Ct));
-        Assert.Equal(2, ErrorLogs(t));
+        Assert.Equal(2, t.ErrorLogs);
     }
 
     [Fact]
@@ -180,7 +162,7 @@ public class RefundTests(Containers containers)
         await Assert.ThrowsAsync<PermanentFailureException>(() => Send(t, Command(orderId, 100, lines: [new(1, 150), new(2, -50)])));
 
         Assert.Equal(0, await RefundCountAsync(t));
-        Assert.Equal(0, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
     }
 
     [Fact]
@@ -192,24 +174,24 @@ public class RefundTests(Containers containers)
         t.Stripe.NextRefundStatus = "pending";
         var command = Command(orderId, 400);
         await Send(t, command);
-        await RunExecutor(t);
-        var submitted = await RefundAsync(t, command.RefundId);
+        await t.RunExecutorAsync();
+        var submitted = await t.RefundAsync(command.RefundId);
         Assert.Equal(RefundStatuses.Submitted, submitted.Status);
         Assert.Equal("re_test_1", submitted.StripeRefundId);
         Assert.Equal(1, metrics.Sum("refunds_total", ("status", "submitted")));
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
 
         using var posted = await Post(t, "re_test_1", "failed", command.RefundId, "expired_or_canceled_card");
 
         Assert.Equal(System.Net.HttpStatusCode.OK, posted.StatusCode);
-        var failed = await RefundAsync(t, command.RefundId);
+        var failed = await t.RefundAsync(command.RefundId);
         Assert.Equal(RefundStatuses.Failed, failed.Status);
         Assert.Equal("expired_or_canceled_card", failed.FailureReason);
-        Assert.Equal(0, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Equal(new RefundFailedV1(orderId, command.RefundId, "expired_or_canceled_card"), Assert.Single(await Failed(t)));
         Assert.Empty(await Completed(t));
         Assert.Equal(1, metrics.Sum("refunds_total", ("status", "failed")));
-        Assert.Equal(1, ErrorLogs(t));
+        Assert.Equal(1, t.ErrorLogs);
     }
 
     [Fact]
@@ -221,13 +203,13 @@ public class RefundTests(Containers containers)
         var command = Command(orderId, 400);
         await Send(t, command);
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
-        var failed = await RefundAsync(t, command.RefundId);
+        var failed = await t.RefundAsync(command.RefundId);
         Assert.Equal(RefundStatuses.Failed, failed.Status);
         Assert.Equal("re_test_1", failed.StripeRefundId);
         Assert.Equal("failed", failed.FailureReason); // Stripe gave no reason: the status itself (owner item 5)
-        Assert.Equal(0, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Equal(new RefundFailedV1(orderId, command.RefundId, "failed"), Assert.Single(await Failed(t)));
         Assert.Empty(await Completed(t));
     }
@@ -240,16 +222,16 @@ public class RefundTests(Containers containers)
         t.Stripe.NextRefundStatus = "pending";
         var command = Command(orderId, 400);
         await Send(t, command);
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
         using var first = await Post(t, "re_test_1", "succeeded", command.RefundId);
         using var again = await Post(t, "re_test_1", "succeeded", command.RefundId); // a new event id
 
         Assert.Equal(System.Net.HttpStatusCode.OK, first.StatusCode);
         Assert.Equal(System.Net.HttpStatusCode.OK, again.StatusCode);
-        Assert.Equal(RefundStatuses.Succeeded, (await RefundAsync(t, command.RefundId)).Status);
+        Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(command.RefundId)).Status);
         Assert.Single(await Completed(t));
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
     }
 
     [Fact]
@@ -265,11 +247,11 @@ public class RefundTests(Containers containers)
         using var posted = await Post(t, made.Id, "succeeded", command.RefundId);
 
         Assert.Equal(System.Net.HttpStatusCode.OK, posted.StatusCode);
-        var row = await RefundAsync(t, command.RefundId);
+        var row = await t.RefundAsync(command.RefundId);
         Assert.Equal((RefundStatuses.Succeeded, made.Id), (row.Status, row.StripeRefundId));
         Assert.Single(await Completed(t));
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
         Assert.Single(Creates(t));
         Assert.Single(await Completed(t));
@@ -286,7 +268,7 @@ public class RefundTests(Containers containers)
         Assert.Equal(System.Net.HttpStatusCode.OK, posted.StatusCode);
         Assert.Empty(await Completed(t));
         Assert.Empty(await Failed(t));
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
     }
 
     [Fact]
@@ -303,15 +285,15 @@ public class RefundTests(Containers containers)
             return Task.CompletedTask;
         };
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
         Assert.NotNull(webhook);
         using var response = await webhook;
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal(RefundStatuses.Succeeded, (await RefundAsync(t, command.RefundId)).Status);
+        Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(command.RefundId)).Status);
         Assert.Single(await Completed(t));
         Assert.Empty(await Failed(t));
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
     }
 
     [Fact]
@@ -322,19 +304,19 @@ public class RefundTests(Containers containers)
         var (orderId, paymentId, _) = await Seed.PaidAsync(t, 1000);
         var command = Command(orderId, 400);
         await Send(t, command);
-        await RunExecutor(t);
-        Assert.Equal(0, ErrorLogs(t));
+        await t.RunExecutorAsync();
+        Assert.Equal(0, t.ErrorLogs);
 
         using var posted = await Post(t, "re_test_1", "failed", command.RefundId, "lost_or_stolen_card");
 
         Assert.Equal(System.Net.HttpStatusCode.OK, posted.StatusCode);
-        var row = await RefundAsync(t, command.RefundId);
+        var row = await t.RefundAsync(command.RefundId);
         Assert.Equal((RefundStatuses.Succeeded, null), (row.Status, row.FailureReason));
-        Assert.Equal(400, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Empty(await Failed(t));
         Assert.Single(await Completed(t));
         Assert.Equal(0, metrics.Sum("refunds_total", ("status", "failed")));
-        Assert.Equal(1, ErrorLogs(t));
+        Assert.Equal(1, t.ErrorLogs);
     }
 
     [Fact]
@@ -349,26 +331,26 @@ public class RefundTests(Containers containers)
 
         for (var attempt = 1; attempt <= 4; attempt++)
         {
-            await RunExecutor(t);
-            var row = await RefundAsync(t, command.RefundId);
+            await t.RunExecutorAsync();
+            var row = await t.RefundAsync(command.RefundId);
             Assert.Equal((RefundStatuses.Pending, attempt), (row.Status, row.Attempts));
             var due = t.Clock.GetUtcNow() + schedule[attempt - 1];
             Assert.Equal(due, row.NextAttemptAt!.Value, TimeSpan.FromMilliseconds(1));
 
-            await RunExecutor(t); // not due yet: no call
+            await t.RunExecutorAsync(); // not due yet: no call
             Assert.Equal(attempt, Creates(t).Count());
             t.Clock.Advance(schedule[attempt - 1]);
         }
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
-        var failed = await RefundAsync(t, command.RefundId);
+        var failed = await t.RefundAsync(command.RefundId);
         Assert.Equal((RefundStatuses.Failed, "provider_unavailable", 5), (failed.Status, failed.FailureReason, failed.Attempts));
         Assert.Equal(5, Creates(t).Count());
-        Assert.Equal(0, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Equal(new RefundFailedV1(orderId, command.RefundId, "provider_unavailable"), Assert.Single(await Failed(t)));
-        Assert.Equal(1, ErrorLogs(t));
+        Assert.Equal(1, t.ErrorLogs);
     }
 
     [Fact]
@@ -380,13 +362,13 @@ public class RefundTests(Containers containers)
         await Send(t, command);
         t.Stripe.Fail(Refunds, 400, "charge_already_refunded");
 
-        await RunExecutor(t);
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
+        await t.RunExecutorAsync();
 
-        var row = await RefundAsync(t, command.RefundId);
+        var row = await t.RefundAsync(command.RefundId);
         Assert.Equal((RefundStatuses.Failed, "charge_already_refunded"), (row.Status, row.FailureReason));
         Assert.Single(Creates(t));
-        Assert.Equal(0, (await PaymentAsync(t, paymentId)).RefundedCents);
+        Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Equal(new RefundFailedV1(orderId, command.RefundId, "charge_already_refunded"), Assert.Single(await Failed(t)));
     }
 
@@ -401,9 +383,9 @@ public class RefundTests(Containers containers)
         await Send(t, b);
         t.Stripe.Fail(Refunds, 500);
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
-        var rows = new[] { await RefundAsync(t, a.RefundId), await RefundAsync(t, b.RefundId) };
+        var rows = new[] { await t.RefundAsync(a.RefundId), await t.RefundAsync(b.RefundId) };
         var failing = Assert.Single(rows, r => r.Status == RefundStatuses.Pending);
         var done = Assert.Single(rows, r => r.Status == RefundStatuses.Succeeded);
         Assert.Equal(1, failing.Attempts);

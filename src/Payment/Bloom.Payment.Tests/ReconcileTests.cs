@@ -20,27 +20,11 @@ public class ReconcileTests(Containers containers)
 
     private static NightlyJob Nightly(TestPayment t) => ActivatorUtilities.CreateInstance<NightlyJob>(t.Services);
 
-    private static Task RunExecutor(TestPayment t) => ActivatorUtilities.CreateInstance<ProviderExecutor>(t.Services).RunOnceAsync(Ct);
-
-    private static async Task<PaymentRow> PaymentAsync(TestPayment t, Guid orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.Payments.AsNoTracking().SingleAsync(p => p.OrderId == orderId, Ct);
-    }
-
-    private static async Task<RefundRow> RefundAsync(TestPayment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Refunds.AsNoTracking().SingleAsync(r => r.Id == id, Ct);
-    }
-
     private static Task<IReadOnlyList<PaymentSucceededV1>> Succeeded(TestPayment t) => Outbox.PayloadsAsync<PaymentSucceededV1>(t, PaymentMessages.Succeeded);
 
     private static Task<IReadOnlyList<RefundCompletedV1>> Completed(TestPayment t) => Outbox.PayloadsAsync<RefundCompletedV1>(t, PaymentMessages.RefundCompleted);
 
     private static Task<IReadOnlyList<RefundFailedV1>> Failed(TestPayment t) => Outbox.PayloadsAsync<RefundFailedV1>(t, PaymentMessages.RefundFailed);
-
-    private static int ErrorLogs(TestPayment t) => t.Logs.Entries.Count(e => e.StartsWith("[Error]", StringComparison.Ordinal));
 
     private static Task<HttpResponseMessage> PostCompleted(TestPayment t, Guid paymentId, Guid orderId, string sessionId, string piId) =>
         StripeEvents.PostAsync(t, StripeEvents.Json("checkout.session.completed", StripeEvents.CompletedSession(paymentId, orderId, sessionId, piId), t.Clock.GetUtcNow()));
@@ -55,8 +39,8 @@ public class ReconcileTests(Containers containers)
         var (orderId, paymentId, piId) = await Seed.PaidAsync(t, 1000);
         var refundId = Guid.NewGuid();
         await Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, refundId, 400, "return", null));
-        await RunExecutor(t);
-        Assert.Equal(RefundStatuses.Succeeded, (await RefundAsync(t, refundId)).Status);
+        await t.RunExecutorAsync();
+        Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(refundId)).Status);
         return (paymentId, piId, refundId);
     }
 
@@ -72,7 +56,7 @@ public class ReconcileTests(Containers containers)
 
         await Reconcile(t);
 
-        var payment = await PaymentAsync(t, orderId);
+        var payment = await t.PaymentByOrderAsync(orderId);
         Assert.Equal((PaymentStatuses.Succeeded, piId), (payment.Status, payment.StripePaymentIntentId));
         var sent = Assert.Single(await Succeeded(t));
         Assert.Equal((orderId, paymentId, 1000L), (sent.OrderId, sent.PaymentId, sent.AmountCents));
@@ -94,7 +78,7 @@ public class ReconcileTests(Containers containers)
 
         await Reconcile(t);
 
-        Assert.Equal(PaymentStatuses.Open, (await PaymentAsync(t, orderId)).Status);
+        Assert.Equal(PaymentStatuses.Open, (await t.PaymentByOrderAsync(orderId)).Status);
         Assert.Equal(0, t.Stripe.Requests.Count(r => r.Method == "GET"));
     }
 
@@ -109,7 +93,7 @@ public class ReconcileTests(Containers containers)
 
         await Reconcile(t);
 
-        Assert.Equal(PaymentStatuses.Expired, (await PaymentAsync(t, orderId)).Status);
+        Assert.Equal(PaymentStatuses.Expired, (await t.PaymentByOrderAsync(orderId)).Status);
         Assert.Equal(1, metrics.Sum("reconcile_fixes_total", ("kind", "payment_expired")));
         Assert.Empty(await Succeeded(t));
     }
@@ -125,22 +109,22 @@ public class ReconcileTests(Containers containers)
         var bad = Guid.NewGuid();
         await Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, ok, 300, "return", null));
         await Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, bad, 200, "return", null));
-        await RunExecutor(t);
-        var okRow = await RefundAsync(t, ok);
-        var badRow = await RefundAsync(t, bad);
+        await t.RunExecutorAsync();
+        var okRow = await t.RefundAsync(ok);
+        var badRow = await t.RefundAsync(bad);
         Assert.Equal((RefundStatuses.Submitted, RefundStatuses.Submitted), (okRow.Status, badRow.Status));
         t.Stripe.SetRefund(okRow.StripeRefundId!, "succeeded");
         t.Stripe.SetRefund(badRow.StripeRefundId!, "failed", "expired_or_canceled_card");
 
         t.Clock.Advance(TimeSpan.FromMinutes(10)); // not yet stuck
         await Reconcile(t);
-        Assert.Equal(RefundStatuses.Submitted, (await RefundAsync(t, ok)).Status);
+        Assert.Equal(RefundStatuses.Submitted, (await t.RefundAsync(ok)).Status);
 
         t.Clock.Advance(TimeSpan.FromSeconds(1));
         await Reconcile(t);
 
-        Assert.Equal(RefundStatuses.Succeeded, (await RefundAsync(t, ok)).Status);
-        var failed = await RefundAsync(t, bad);
+        Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(ok)).Status);
+        var failed = await t.RefundAsync(bad);
         Assert.Equal((RefundStatuses.Failed, "expired_or_canceled_card"), (failed.Status, failed.FailureReason));
         await using var db = t.NewDb();
         Assert.Equal(300, (await db.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId, Ct)).RefundedCents);
@@ -174,7 +158,7 @@ public class ReconcileTests(Containers containers)
         var sent = await Succeeded(t);
         Assert.Equal(paid.Order(), sent.Select(s => s.PaymentId).Order()); // exactly one event per payment
         Assert.InRange(metrics.Sum("reconcile_fixes_total"), 0, 10);
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
     }
 
     [Fact]
@@ -190,10 +174,10 @@ public class ReconcileTests(Containers containers)
 
         await Reconcile(t);
 
-        var statuses = new[] { (await PaymentAsync(t, firstOrder)).Status, (await PaymentAsync(t, secondOrder)).Status };
+        var statuses = new[] { (await t.PaymentByOrderAsync(firstOrder)).Status, (await t.PaymentByOrderAsync(secondOrder)).Status };
         Assert.Equal([PaymentStatuses.Open, PaymentStatuses.Succeeded], statuses.Order());
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Warning]", StringComparison.Ordinal));
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
         Assert.Single(await Succeeded(t));
 
         await Reconcile(t); // the skipped record is retried on the next pass
@@ -250,7 +234,7 @@ public class ReconcileTests(Containers containers)
 
         Assert.Empty(mismatches);
         Assert.Equal(0, metrics.Latest("reconcile_mismatches"));
-        Assert.Equal(0, ErrorLogs(t));
+        Assert.Equal(0, t.ErrorLogs);
     }
 
     [Fact]

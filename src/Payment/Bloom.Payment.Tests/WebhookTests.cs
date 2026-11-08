@@ -10,18 +10,6 @@ public class WebhookTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private static async Task<PaymentRow> RowAsync(TestPayment t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Payments.AsNoTracking().SingleAsync(p => p.Id == id, Ct);
-    }
-
-    private static async Task SqlAsync(TestPayment t, FormattableString sql)
-    {
-        await using var db = t.NewDb();
-        await db.Database.ExecuteSqlAsync(sql, Ct);
-    }
-
     private static async Task<int> EventCountAsync(TestPayment t)
     {
         await using var db = t.NewDb();
@@ -60,7 +48,7 @@ public class WebhookTests(Containers containers)
         using var response = await Complete(t, p);
 
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
-        var row = await RowAsync(t, p.PaymentId);
+        var row = await t.PaymentAsync(p.PaymentId);
         Assert.Equal(PaymentStatuses.Succeeded, row.Status);
         Assert.Equal(p.Pi, row.StripePaymentIntentId);
         Assert.Equal(now, row.SucceededAt);
@@ -129,7 +117,7 @@ public class WebhookTests(Containers containers)
         }
 
         Assert.Equal(0, await EventCountAsync(t));
-        Assert.Equal(PaymentStatuses.Open, (await RowAsync(t, p.PaymentId)).Status);
+        Assert.Equal(PaymentStatuses.Open, (await t.PaymentAsync(p.PaymentId)).Status);
         Assert.Equal(4, metrics.Sum("webhooks_total", ("type", "unknown"), ("result", "bad_signature")));
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]"));
     }
@@ -148,10 +136,10 @@ public class WebhookTests(Containers containers)
         })
         {
             var p = await OpenAsync(t);
-            await SqlAsync(t, setup(p.PaymentId));
+            await t.SqlAsync(setup(p.PaymentId));
             using var response = await Complete(t, p);
             Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
-            Assert.Equal(PaymentStatuses.Succeeded, (await RowAsync(t, p.PaymentId)).Status);
+            Assert.Equal(PaymentStatuses.Succeeded, (await t.PaymentAsync(p.PaymentId)).Status);
         }
 
         Assert.Equal(3, (await Outbox.PayloadsAsync<PaymentSucceededV1>(t, PaymentMessages.Succeeded)).Count);
@@ -177,7 +165,7 @@ public class WebhookTests(Containers containers)
 
         var created = await t.Internal.CreatePaymentAsync(Seed.Request(orderId, 1000), cancellationToken: Ct);
 
-        var row = await RowAsync(t, Guid.Parse(created.PaymentId));
+        var row = await t.PaymentAsync(Guid.Parse(created.PaymentId));
         Assert.Equal(PaymentStatuses.Succeeded, row.Status);
         Assert.Equal("pi_early", row.StripePaymentIntentId);
         Assert.NotEmpty(created.CheckoutUrl);
@@ -197,8 +185,8 @@ public class WebhookTests(Containers containers)
         using var a = await Post(t, "checkout.session.expired", StripeEvents.ExpiredSession(open.PaymentId, open.OrderId, open.Session));
         using var b = await Post(t, "checkout.session.expired", StripeEvents.ExpiredSession(paid.PaymentId, paid.OrderId, paid.Session));
 
-        Assert.Equal(PaymentStatuses.Expired, (await RowAsync(t, open.PaymentId)).Status);
-        Assert.Equal(PaymentStatuses.Succeeded, (await RowAsync(t, paid.PaymentId)).Status);
+        Assert.Equal(PaymentStatuses.Expired, (await t.PaymentAsync(open.PaymentId)).Status);
+        Assert.Equal(PaymentStatuses.Succeeded, (await t.PaymentAsync(paid.PaymentId)).Status);
         Assert.Single(await Outbox.PayloadsAsync<PaymentSucceededV1>(t, PaymentMessages.Succeeded)); // no event for the expiry
         Assert.Empty(await Outbox.PayloadsAsync<PaymentFailedV1>(t, PaymentMessages.Failed));
     }
@@ -218,7 +206,7 @@ public class WebhookTests(Containers containers)
         var failed = await Outbox.PayloadsAsync<PaymentFailedV1>(t, PaymentMessages.Failed);
         Assert.Equal(["card_declined", "expired_card", "unknown"], failed.Select(f => f.FailureCode));
         Assert.All(failed, f => Assert.Equal(new(p.OrderId, p.PaymentId), (f.OrderId, f.PaymentId)));
-        Assert.Equal(PaymentStatuses.Open, (await RowAsync(t, p.PaymentId)).Status);
+        Assert.Equal(PaymentStatuses.Open, (await t.PaymentAsync(p.PaymentId)).Status);
     }
 
     [Fact]
@@ -234,7 +222,7 @@ public class WebhookTests(Containers containers)
 
         Assert.All(new[] { a, b, c }, r => Assert.Equal(System.Net.HttpStatusCode.OK, r.StatusCode));
         Assert.Equal(3, await EventCountAsync(t));
-        Assert.Equal(PaymentStatuses.Open, (await RowAsync(t, p.PaymentId)).Status);
+        Assert.Equal(PaymentStatuses.Open, (await t.PaymentAsync(p.PaymentId)).Status);
         Assert.Empty(await Outbox.PayloadsAsync<PaymentSucceededV1>(t, PaymentMessages.Succeeded));
         Assert.Empty(await Outbox.PayloadsAsync<PaymentFailedV1>(t, PaymentMessages.Failed));
         Assert.Equal(1, metrics.Sum("webhooks_total", ("type", "customer.created"), ("result", "processed")));
@@ -272,21 +260,21 @@ public class WebhookTests(Containers containers)
         await using var t = await TestPayment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
         var p = await OpenAsync(t);
-        await SqlAsync(t, $"ALTER TABLE payments ADD CONSTRAINT ck_test_never CHECK (status <> 'succeeded') NOT VALID");
+        await t.SqlAsync($"ALTER TABLE payments ADD CONSTRAINT ck_test_never CHECK (status <> 'succeeded') NOT VALID");
 
         using var failed = await Complete(t, p, "evt_retry");
 
         Assert.Equal(System.Net.HttpStatusCode.InternalServerError, failed.StatusCode);
         Assert.Equal(0, await EventCountAsync(t));
-        Assert.Equal(PaymentStatuses.Open, (await RowAsync(t, p.PaymentId)).Status);
+        Assert.Equal(PaymentStatuses.Open, (await t.PaymentAsync(p.PaymentId)).Status);
         Assert.Equal(1, metrics.Sum("webhooks_total", ("type", "checkout.session.completed"), ("result", "error")));
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]"));
 
-        await SqlAsync(t, $"ALTER TABLE payments DROP CONSTRAINT ck_test_never");
+        await t.SqlAsync($"ALTER TABLE payments DROP CONSTRAINT ck_test_never");
         using var again = await Complete(t, p, "evt_retry");
 
         Assert.Equal(System.Net.HttpStatusCode.OK, again.StatusCode);
-        Assert.Equal(PaymentStatuses.Succeeded, (await RowAsync(t, p.PaymentId)).Status);
+        Assert.Equal(PaymentStatuses.Succeeded, (await t.PaymentAsync(p.PaymentId)).Status);
         Assert.Equal(1, metrics.Sum("webhooks_total", ("result", "processed")));
     }
 

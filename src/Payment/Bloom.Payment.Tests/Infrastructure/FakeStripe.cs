@@ -141,11 +141,6 @@ public sealed class FakeStripe(FakeTimeProvider clock) : HttpMessageHandler
         lock (_gate) return ToSession(Find(_sessions, id));
     }
 
-    public StripeRefund Refund(string id)
-    {
-        lock (_gate) return ToRefund(Find(_refunds, id));
-    }
-
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var path = request.RequestUri!.AbsolutePath.TrimStart('/');
@@ -292,9 +287,6 @@ public sealed class FakeStripe(FakeTimeProvider clock) : HttpMessageHandler
 
     private static StripeSession ToSession(SessionRow s) =>
         new(s.Id, $"https://checkout.stripe.test/{s.Id}", s.Status, s.PaymentStatus, s.PaymentIntentId, s.Amount, s.ExpiresAt);
-
-    private static StripeRefund ToRefund(RefundRow r) =>
-        new(r.Id, r.Status, r.Amount, r.FailureReason, Guid.TryParse(r.RefundId, out var id) ? id : null, r.Created);
 
     private static string? Header(HttpRequestMessage r, string name) => r.Headers.TryGetValues(name, out var v) ? v.Single() : null;
 

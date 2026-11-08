@@ -1,6 +1,7 @@
 using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
 using Bloom.Payment.Stripe;
+using Bloom.Payment.Worker;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -113,6 +114,38 @@ public sealed class TestPayment : IAsyncDisposable
 
     private static PaymentDbContext NewDb(string connectionString) =>
         new(new DbContextOptionsBuilder<PaymentDbContext>().UseNpgsql(connectionString).Options);
+
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    /// <summary>The payment row of an order.</summary>
+    public async Task<PaymentRow> PaymentByOrderAsync(Guid orderId)
+    {
+        await using var db = NewDb();
+        return await db.Payments.AsNoTracking().SingleAsync(p => p.OrderId == orderId, Ct);
+    }
+
+    public async Task<PaymentRow> PaymentAsync(Guid id)
+    {
+        await using var db = NewDb();
+        return await db.Payments.AsNoTracking().SingleAsync(p => p.Id == id, Ct);
+    }
+
+    public async Task<RefundRow> RefundAsync(Guid id)
+    {
+        await using var db = NewDb();
+        return await db.Refunds.AsNoTracking().SingleAsync(r => r.Id == id, Ct);
+    }
+
+    public async Task SqlAsync(FormattableString sql)
+    {
+        await using var db = NewDb();
+        await db.Database.ExecuteSqlAsync(sql, Ct);
+    }
+
+    /// <summary>One pass of the provider executor.</summary>
+    public Task RunExecutorAsync() => ActivatorUtilities.CreateInstance<ProviderExecutor>(Services).RunOnceAsync(Ct);
+
+    public int ErrorLogs => Logs.Entries.Count(e => e.StartsWith("[Error]", StringComparison.Ordinal));
 
     public async ValueTask DisposeAsync()
     {

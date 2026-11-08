@@ -198,14 +198,12 @@ public class StripeClientTests
         Assert.All(intents, p => Assert.Equal("succeeded", p.Status));
     }
 
-    private static string Header(string body, string secret, DateTimeOffset at) => StripeEvents.Sign(body, secret, at);
-
     [Fact]
     public void Signature_accepts_a_valid_header_and_any_matching_v1()
     {
         var now = _clock.GetUtcNow();
         var body = "{\"id\":\"evt_1\"}"u8.ToArray();
-        var header = Header("{\"id\":\"evt_1\"}", Secret, now);
+        var header = StripeEvents.Sign("{\"id\":\"evt_1\"}", Secret, now);
         Assert.True(WebhookSignature.Verify(header, body, Secret, now));
 
         var t = header.Split(',')[0];
@@ -221,13 +219,13 @@ public class StripeClientTests
         var text = "{\"id\":\"evt_1\"}";
         var body = System.Text.Encoding.UTF8.GetBytes(text);
 
-        Assert.False(WebhookSignature.Verify(Header(text, "whsec_other", now), body, Secret, now));
-        Assert.False(WebhookSignature.Verify(Header(text, Secret, now.AddMinutes(-5).AddSeconds(-1)), body, Secret, now));
-        Assert.False(WebhookSignature.Verify(Header(text, Secret, now.AddMinutes(5).AddSeconds(1)), body, Secret, now));
+        Assert.False(WebhookSignature.Verify(StripeEvents.Sign(text, "whsec_other", now), body, Secret, now));
+        Assert.False(WebhookSignature.Verify(StripeEvents.Sign(text, Secret, now.AddMinutes(-5).AddSeconds(-1)), body, Secret, now));
+        Assert.False(WebhookSignature.Verify(StripeEvents.Sign(text, Secret, now.AddMinutes(5).AddSeconds(1)), body, Secret, now));
         Assert.False(WebhookSignature.Verify(null, body, Secret, now));
         Assert.False(WebhookSignature.Verify("", body, Secret, now));
         Assert.False(WebhookSignature.Verify("t=x,v1=zz", body, Secret, now));
         Assert.False(WebhookSignature.Verify($"t={now.ToUnixTimeSeconds()}", body, Secret, now)); // no v1
-        Assert.False(WebhookSignature.Verify(Header(text, Secret, now), System.Text.Encoding.UTF8.GetBytes("{\"id\":\"evt_2\"}"), Secret, now));
+        Assert.False(WebhookSignature.Verify(StripeEvents.Sign(text, Secret, now), System.Text.Encoding.UTF8.GetBytes("{\"id\":\"evt_2\"}"), Secret, now));
     }
 }

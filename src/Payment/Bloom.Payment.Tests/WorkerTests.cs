@@ -57,12 +57,6 @@ public class WorkerTests(Containers containers)
         return await db.Refunds.AsNoTracking().SingleOrDefaultAsync(r => r.Id == id, Ct);
     }
 
-    private static async Task<string> StatusAsync(TestPayment t, Guid orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.Payments.AsNoTracking().Where(p => p.OrderId == orderId).Select(p => p.Status).SingleAsync(Ct);
-    }
-
     /// <summary>The worker's clock ticks the hosted executor (<c>PeriodicTimer(5 s)</c> on the test clock).</summary>
     private static void TickExecutor(TestPayment worker) => worker.Clock.Advance(TimeSpan.FromSeconds(5));
 
@@ -166,7 +160,7 @@ public class WorkerTests(Containers containers)
             await Poll.UntilAsync(async () => await db.Payments.AsNoTracking().AnyAsync(p => p.OrderId == orderId && p.CancelRequested, Ct), 15, "cancel requested");
         TickExecutor(worker);
 
-        await Poll.UntilAsync(async () => await StatusAsync(api, orderId) == PaymentStatuses.Canceled, 15, "payment canceled");
+        await Poll.UntilAsync(async () => (await api.PaymentByOrderAsync(orderId)).Status == PaymentStatuses.Canceled, 15, "payment canceled");
     }
 
     [Fact]

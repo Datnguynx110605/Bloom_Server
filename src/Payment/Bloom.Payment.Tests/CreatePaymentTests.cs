@@ -16,18 +16,6 @@ public class CreatePaymentTests(Containers containers)
     private static AsyncUnaryCall<CreatePaymentResponse> Create(TestPayment t, CreatePaymentRequest request) =>
         t.Internal.CreatePaymentAsync(request, cancellationToken: Ct);
 
-    private static async Task<PaymentRow> RowAsync(TestPayment t, Guid orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.Payments.AsNoTracking().SingleAsync(p => p.OrderId == orderId, Ct);
-    }
-
-    private static async Task SqlAsync(TestPayment t, FormattableString sql)
-    {
-        await using var db = t.NewDb();
-        await db.Database.ExecuteSqlAsync(sql, Ct);
-    }
-
     private static IEnumerable<StripeRequest> Creates(TestPayment t) => t.Stripe.Requests.Where(r => r.Path == Sessions);
 
     [Fact]
@@ -39,7 +27,7 @@ public class CreatePaymentTests(Containers containers)
 
         var (orderId, response, sessionId) = await Seed.CreateAsync(t, 1000);
 
-        var row = await RowAsync(t, orderId);
+        var row = await t.PaymentByOrderAsync(orderId);
         Assert.Equal(PaymentStatuses.Open, row.Status);
         Assert.Equal(sessionId, row.StripeSessionId);
         Assert.Equal(response.PaymentId, row.Id.ToString("D"));
@@ -79,17 +67,17 @@ public class CreatePaymentTests(Containers containers)
         var orderId = Guid.NewGuid();
         t.Stripe.TimeoutNext(Sessions, storeFirst: true);
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.ProviderUnavailable);
-        Assert.Equal(PaymentStatuses.Creating, (await RowAsync(t, orderId)).Status);
+        Assert.Equal(PaymentStatuses.Creating, (await t.PaymentByOrderAsync(orderId)).Status);
 
         var locked = t.Clock.GetUtcNow().AddSeconds(60); // a crash never released the claim
-        await SqlAsync(t, $"UPDATE payments SET locked_until = {locked} WHERE order_id = {orderId}");
+        await t.SqlAsync($"UPDATE payments SET locked_until = {locked} WHERE order_id = {orderId}");
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.CreateInProgress);
         Assert.Equal(1, t.Stripe.Count(Sessions));
 
         t.Clock.Advance(TimeSpan.FromSeconds(61));
         var response = await Create(t, Seed.Request(orderId, 1000));
 
-        var row = await RowAsync(t, orderId);
+        var row = await t.PaymentByOrderAsync(orderId);
         Assert.Equal(PaymentStatuses.Open, row.Status);
         Assert.Equal("cs_test_1", row.StripeSessionId);
         Assert.Equal(row.CheckoutUrl, response.CheckoutUrl);
@@ -111,7 +99,7 @@ public class CreatePaymentTests(Containers containers)
 
         var response = await Create(t, Seed.Request(orderId, 1000)); // within 60 s, no clock change
 
-        var row = await RowAsync(t, orderId);
+        var row = await t.PaymentByOrderAsync(orderId);
         Assert.Equal(PaymentStatuses.Open, row.Status);
         Assert.Equal("cs_test_1", row.StripeSessionId);
         Assert.Equal(row.CheckoutUrl, response.CheckoutUrl);
@@ -130,13 +118,13 @@ public class CreatePaymentTests(Containers containers)
 
         t.Stripe.Fail(Sessions, 500);
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.ProviderUnavailable);
-        var row = await RowAsync(t, orderId);
+        var row = await t.PaymentByOrderAsync(orderId);
         Assert.Equal(PaymentStatuses.Creating, row.Status);
         Assert.True(row.LockedUntil <= t.Clock.GetUtcNow()); // released, the next call resumes (owner item 2)
 
         t.Stripe.Fail(Sessions, 400, "parameter_invalid_integer");
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.ProviderUnavailable);
-        Assert.Equal(PaymentStatuses.Creating, (await RowAsync(t, orderId)).Status);
+        Assert.Equal(PaymentStatuses.Creating, (await t.PaymentByOrderAsync(orderId)).Status);
 
         Assert.Equal(2, metrics.Sum("payments_created_total", ("result", "provider_unavailable")));
     }
@@ -175,11 +163,11 @@ public class CreatePaymentTests(Containers containers)
         {
             var (orderId, _, _) = await Seed.CreateAsync(t, 1000);
             var stale = t.Clock.GetUtcNow().AddSeconds(-1); // a stale `creating` row would be taken over: the amount is compared first (owner item 1)
-            await SqlAsync(t, $"UPDATE payments SET status = {status}, locked_until = {(status == PaymentStatuses.Creating ? stale : (DateTimeOffset?)null)} WHERE order_id = {orderId}");
+            await t.SqlAsync($"UPDATE payments SET status = {status}, locked_until = {(status == PaymentStatuses.Creating ? stale : (DateTimeOffset?)null)} WHERE order_id = {orderId}");
 
             await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 2000)), PaymentErrors.ExistsDifferentAmount);
 
-            Assert.Equal(status, (await RowAsync(t, orderId)).Status);
+            Assert.Equal(status, (await t.PaymentByOrderAsync(orderId)).Status);
         }
 
         Assert.Equal(statuses.Length, t.Stripe.Count(Sessions)); // the seeds only
@@ -194,7 +182,7 @@ public class CreatePaymentTests(Containers containers)
         foreach (var status in new[] { PaymentStatuses.Expired, PaymentStatuses.Canceled, PaymentStatuses.Open })
         {
             var (orderId, response, _) = await Seed.CreateAsync(t, 1000);
-            await SqlAsync(t, $"UPDATE payments SET status = {status} WHERE order_id = {orderId}");
+            await t.SqlAsync($"UPDATE payments SET status = {status} WHERE order_id = {orderId}");
             seeded.Add((orderId, response));
         }
         t.Clock.Advance(TimeSpan.FromHours(2)); // the open row is now past session_expires_at
@@ -208,7 +196,7 @@ public class CreatePaymentTests(Containers containers)
         }
 
         Assert.Equal(3, t.Stripe.Count(Sessions)); // PR-01: no new session
-        Assert.Equal([PaymentStatuses.Expired, PaymentStatuses.Canceled, PaymentStatuses.Open], [.. await Task.WhenAll(seeded.Select(async s => (await RowAsync(t, s.OrderId)).Status))]);
+        Assert.Equal([PaymentStatuses.Expired, PaymentStatuses.Canceled, PaymentStatuses.Open], [.. await Task.WhenAll(seeded.Select(async s => (await t.PaymentByOrderAsync(s.OrderId)).Status))]);
     }
 
     [Fact]
@@ -244,7 +232,7 @@ public class CreatePaymentTests(Containers containers)
         var request = Seed.Request(Guid.NewGuid(), 1000);
         await Create(t, request);
 
-        Assert.Equal(request.AccountId, (await RowAsync(t, Guid.Parse(request.OrderId))).AccountId.ToString("D")); // PR-05: payments.account_id only
+        Assert.Equal(request.AccountId, (await t.PaymentByOrderAsync(Guid.Parse(request.OrderId))).AccountId.ToString("D")); // PR-05: payments.account_id only
         var account = Guid.Parse(request.AccountId);
         Assert.All(t.Stripe.Requests, r =>
         {

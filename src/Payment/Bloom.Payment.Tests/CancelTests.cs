@@ -1,9 +1,7 @@
 using Bloom.Payment.Consumers;
 using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
-using Bloom.Payment.Worker;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Bloom.Payment.Tests;
 
@@ -17,15 +15,6 @@ public class CancelTests(Containers containers)
     private static Task Send(TestPayment t, Guid orderId) =>
         Consume.Async<CancelPaymentConsumer>(t, PaymentMessages.CancelPayment, new CancelPaymentV1(orderId));
 
-    private static Task RunExecutor(TestPayment t) =>
-        ActivatorUtilities.CreateInstance<ProviderExecutor>(t.Services).RunOnceAsync(Ct);
-
-    private static async Task<PaymentRow> PaymentAsync(TestPayment t, Guid orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.Payments.AsNoTracking().SingleAsync(p => p.OrderId == orderId, Ct);
-    }
-
     private static Task<IReadOnlyList<PaymentSucceededV1>> Succeeded(TestPayment t) => Outbox.PayloadsAsync<PaymentSucceededV1>(t, PaymentMessages.Succeeded);
 
     [Fact]
@@ -36,14 +25,14 @@ public class CancelTests(Containers containers)
 
         await Send(t, orderId);
 
-        var requested = await PaymentAsync(t, orderId);
+        var requested = await t.PaymentByOrderAsync(orderId);
         Assert.Equal((PaymentStatuses.Open, true), (requested.Status, requested.CancelRequested));
         Assert.Equal(0, t.Stripe.Count(Expire(sessionId)));
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
         Assert.Equal(1, t.Stripe.Count(Expire(sessionId)));
-        Assert.Equal(PaymentStatuses.Canceled, (await PaymentAsync(t, orderId)).Status);
+        Assert.Equal(PaymentStatuses.Canceled, (await t.PaymentByOrderAsync(orderId)).Status);
         Assert.Equal("expired", t.Stripe.Session(sessionId).Status);
         Assert.Empty(await Succeeded(t));
         Assert.Empty(t.Stripe.Unserved);
@@ -57,9 +46,9 @@ public class CancelTests(Containers containers)
         var calls = t.Stripe.Requests.Count;
 
         await Send(t, orderId);
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
-        var payment = await PaymentAsync(t, orderId);
+        var payment = await t.PaymentByOrderAsync(orderId);
         Assert.Equal((PaymentStatuses.Succeeded, false), (payment.Status, payment.CancelRequested));
         Assert.Equal(calls, t.Stripe.Requests.Count);
         Assert.Single(await Succeeded(t));
@@ -75,9 +64,9 @@ public class CancelTests(Containers containers)
         await Send(t, orderId);
         var piId = t.Stripe.Pay(sessionId); // the customer pays before the executor's expire call
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
-        var payment = await PaymentAsync(t, orderId);
+        var payment = await t.PaymentByOrderAsync(orderId);
         Assert.Equal((PaymentStatuses.Succeeded, piId), (payment.Status, payment.StripePaymentIntentId));
         var sent = Assert.Single(await Succeeded(t));
         Assert.Equal((orderId, paymentId, 1000L), (sent.OrderId, sent.PaymentId, sent.AmountCents));
@@ -88,7 +77,7 @@ public class CancelTests(Containers containers)
         var body = StripeEvents.Json("checkout.session.completed", StripeEvents.CompletedSession(paymentId, orderId, sessionId, piId), t.Clock.GetUtcNow());
         using var posted = await StripeEvents.PostAsync(t, body);
         posted.EnsureSuccessStatusCode();
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
         Assert.Single(await Succeeded(t));
         Assert.Equal(1, t.Stripe.Count(Expire(sessionId)));
@@ -103,9 +92,9 @@ public class CancelTests(Containers containers)
         await Send(t, orderId);
         t.Stripe.ExpireSession(sessionId);
 
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
-        Assert.Equal(PaymentStatuses.Expired, (await PaymentAsync(t, orderId)).Status);
+        Assert.Equal(PaymentStatuses.Expired, (await t.PaymentByOrderAsync(orderId)).Status);
         Assert.Equal(1, t.Stripe.Count(Expire(sessionId)));
         Assert.Equal(1, t.Stripe.Requests.Count(r => r is { Method: "GET" } && r.Path == $"v1/checkout/sessions/{sessionId}")); // the retrieve
         Assert.Empty(await Succeeded(t));
@@ -119,20 +108,20 @@ public class CancelTests(Containers containers)
         await Send(t, orderId);
         t.Stripe.Fail(Expire(sessionId), 503, times: 2);
 
-        await RunExecutor(t);
-        Assert.Equal((PaymentStatuses.Open, 1), ((await PaymentAsync(t, orderId)).Status, t.Stripe.Count(Expire(sessionId))));
-        await RunExecutor(t);
-        Assert.Equal((PaymentStatuses.Open, 2), ((await PaymentAsync(t, orderId)).Status, t.Stripe.Count(Expire(sessionId))));
-        await RunExecutor(t);
-        Assert.Equal((PaymentStatuses.Canceled, 3), ((await PaymentAsync(t, orderId)).Status, t.Stripe.Count(Expire(sessionId))));
+        await t.RunExecutorAsync();
+        Assert.Equal((PaymentStatuses.Open, 1), ((await t.PaymentByOrderAsync(orderId)).Status, t.Stripe.Count(Expire(sessionId))));
+        await t.RunExecutorAsync();
+        Assert.Equal((PaymentStatuses.Open, 2), ((await t.PaymentByOrderAsync(orderId)).Status, t.Stripe.Count(Expire(sessionId))));
+        await t.RunExecutorAsync();
+        Assert.Equal((PaymentStatuses.Canceled, 3), ((await t.PaymentByOrderAsync(orderId)).Status, t.Stripe.Count(Expire(sessionId))));
 
         // Past the session's own expiry the executor no longer picks the payment (the reconciler takes over).
         var (lateOrder, _, lateSession) = await Seed.CreateAsync(t);
         await Send(t, lateOrder);
         t.Clock.Advance(TimeSpan.FromMinutes(48));
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
         Assert.Equal(0, t.Stripe.Count(Expire(lateSession)));
-        Assert.Equal(PaymentStatuses.Open, (await PaymentAsync(t, lateOrder)).Status);
+        Assert.Equal(PaymentStatuses.Open, (await t.PaymentByOrderAsync(lateOrder)).Status);
     }
 
     [Fact]
@@ -145,7 +134,7 @@ public class CancelTests(Containers containers)
         var (expiredOrder, _, expiredSession) = await Seed.CreateAsync(t);
         var (canceledOrder, _, _) = await Seed.CreateAsync(t);
         await Send(t, canceledOrder);
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
         await using (var db = t.NewDb())
         {
             await db.Database.ExecuteSqlAsync($"UPDATE payments SET status = 'creating', stripe_session_id = NULL WHERE order_id = {creatingOrder}", Ct);
@@ -155,10 +144,10 @@ public class CancelTests(Containers containers)
 
         foreach (var order in new[] { creatingOrder, expiredOrder, canceledOrder, paidOrder }) await Send(t, order);
 
-        Assert.False((await PaymentAsync(t, creatingOrder)).CancelRequested);
-        Assert.False((await PaymentAsync(t, expiredOrder)).CancelRequested);
-        Assert.Equal(PaymentStatuses.Canceled, (await PaymentAsync(t, canceledOrder)).Status);
-        Assert.False((await PaymentAsync(t, paidOrder)).CancelRequested);
+        Assert.False((await t.PaymentByOrderAsync(creatingOrder)).CancelRequested);
+        Assert.False((await t.PaymentByOrderAsync(expiredOrder)).CancelRequested);
+        Assert.Equal(PaymentStatuses.Canceled, (await t.PaymentByOrderAsync(canceledOrder)).Status);
+        Assert.False((await t.PaymentByOrderAsync(paidOrder)).CancelRequested);
         await using var check = t.NewDb();
         Assert.Equal(1, await check.Payments.CountAsync(p => p.CancelRequested, Ct)); // only the one that was canceled
         Assert.Equal(0, t.Stripe.Count(Expire(expiredSession)));
@@ -170,12 +159,12 @@ public class CancelTests(Containers containers)
         await using var t = await TestPayment.StartAsync(containers);
         var (orderId, response, sessionId) = await Seed.CreateAsync(t);
         await Send(t, orderId);
-        await RunExecutor(t);
+        await t.RunExecutorAsync();
 
         var body = StripeEvents.Json("checkout.session.expired", StripeEvents.ExpiredSession(Guid.Parse(response.PaymentId), orderId, sessionId), t.Clock.GetUtcNow());
         using var posted = await StripeEvents.PostAsync(t, body);
         posted.EnsureSuccessStatusCode();
 
-        Assert.Equal(PaymentStatuses.Canceled, (await PaymentAsync(t, orderId)).Status);
+        Assert.Equal(PaymentStatuses.Canceled, (await t.PaymentByOrderAsync(orderId)).Status);
     }
 }
