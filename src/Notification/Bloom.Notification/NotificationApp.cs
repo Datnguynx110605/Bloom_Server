@@ -1,4 +1,5 @@
 using Bloom.Notification.Data;
+using Bloom.Notification.Email;
 using Bloom.Notification.Observability;
 using Bloom.Notification.Templates;
 using Bloom.Shared;
@@ -34,6 +35,15 @@ public static class NotificationApp
         builder.Services.AddSingleton(new TemplateRenderer(options)); // parses every template now: a bad template fails the build of the app (plan N15)
         builder.Services.AddSingleton<AfterCommitInterceptor>();
         builder.Services.AddDbContext<NotificationDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
+        if (options.Email.Provider == "resend")
+        {
+            builder.Services.AddHttpClient<ResendEmailProvider>(c => ResendEmailProvider.Configure(c, options.Email.Resend));
+            builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<ResendEmailProvider>());
+        }
+        else
+        {
+            builder.Services.AddTransient<IEmailProvider, SmtpEmailProvider>();
+        }
         var bloom = builder.Services.AddBloom<NotificationDbContext>(o =>
         {
             o.ServiceName = "notification";

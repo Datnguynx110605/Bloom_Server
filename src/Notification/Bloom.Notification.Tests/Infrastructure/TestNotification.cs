@@ -1,4 +1,8 @@
+using System.Buffers.Text;
+using System.Security.Cryptography;
+using System.Text;
 using Bloom.Notification.Data;
+using Bloom.Notification.Email;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -37,6 +41,9 @@ public sealed class TestNotification : IAsyncDisposable
 
     public required LogCapture Logs { get; init; }
 
+    /// <summary>The fake behind the app's Resend client (plan N10).</summary>
+    public required FakeResend Resend { get; init; }
+
     /// <summary>The connection string of the database (the app connects as its owner, plan N2).</summary>
     public required string ConnectionString { get; init; }
 
@@ -52,6 +59,7 @@ public sealed class TestNotification : IAsyncDisposable
         var connectionString = options.ConnectionString ?? await containers.CreateDatabaseAsync();
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var logs = new LogCapture();
+        var resend = new FakeResend();
 
         var config = DefaultConfig(connectionString, containers.RabbitMqUri, containers.RedisConnectionString, containers.SmtpHost, containers.SmtpPort.ToString());
         config["Notification:Mode"] = options.Mode;
@@ -63,6 +71,7 @@ public sealed class TestNotification : IAsyncDisposable
             b.Configuration.AddInMemoryCollection(config);
             b.Services.AddSingleton<TimeProvider>(clock); // registered first, so the app's TryAdd keeps it
             b.Services.AddSingleton<ILoggerProvider>(logs);
+            b.Services.AddHttpClient<ResendEmailProvider>().ConfigurePrimaryHttpMessageHandler(() => resend); // the app's own registration adds the rest
         });
         if (fresh)
         {
@@ -75,9 +84,21 @@ public sealed class TestNotification : IAsyncDisposable
             Http = app.GetTestClient(),
             Clock = clock,
             Logs = logs,
+            Resend = resend,
             ConnectionString = connectionString,
             Server = app.GetTestServer(),
         };
+    }
+
+    /// <summary>Seals a code like Identity's <c>SecretBox</c> (AES-256-GCM, nonce ‖ ciphertext ‖ tag, base64url) under <see cref="CodeKey"/>.</summary>
+    public static string EncryptCode(string code)
+    {
+        var plaintext = Encoding.UTF8.GetBytes(code);
+        var result = new byte[12 + plaintext.Length + 16];
+        RandomNumberGenerator.Fill(result.AsSpan(0, 12));
+        using var aes = new AesGcm(Convert.FromBase64String(CodeKey), 16);
+        aes.Encrypt(result.AsSpan(0, 12), plaintext, result.AsSpan(12, plaintext.Length), result.AsSpan(12 + plaintext.Length));
+        return Base64Url.EncodeToString(result);
     }
 
     /// <summary>Every key of plan N4 except <c>Mode</c>, with valid values.</summary>
