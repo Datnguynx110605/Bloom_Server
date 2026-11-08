@@ -91,12 +91,13 @@ public sealed class NightlyJob(IServiceScopeFactory scopes, TimeProvider clock, 
         return mismatches;
     }
 
-    // A failed fetch counts as a mismatch: it is reported, never corrected.
+    // A failed fetch, or a payment without a session id (succeeded by an early webhook before the claimer stored it), counts as a mismatch: it is reported, never corrected.
     private async Task<bool> SessionMatchesAsync(IPaymentProvider provider, PaymentRow payment, CancellationToken ct)
     {
+        if (payment.StripeSessionId is null) return false;
         try
         {
-            var s = await provider.GetSessionAsync(payment.StripeSessionId!, ct);
+            var s = await provider.GetSessionAsync(payment.StripeSessionId, ct);
             return s is { Status: "complete", PaymentStatus: "paid" } && s.PaymentIntentId == payment.StripePaymentIntentId && s.AmountTotal == payment.AmountCents;
         }
         catch (ProviderException e)
@@ -126,13 +127,8 @@ public sealed class NightlyJob(IServiceScopeFactory scopes, TimeProvider clock, 
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
         var cutoff = clock.GetUtcNow().AddDays(-90);
-        int deleted;
-        do
-        {
-            deleted = await db.Database.ExecuteSqlAsync($"""
-                DELETE FROM provider_events WHERE event_id IN (SELECT event_id FROM provider_events WHERE received_at < {cutoff} LIMIT {PurgeBatch})
-                """, ct);
-        }
-        while (deleted >= PurgeBatch);
+        while (await db.Database.ExecuteSqlAsync($"""
+            DELETE FROM provider_events WHERE event_id IN (SELECT event_id FROM provider_events WHERE received_at < {cutoff} LIMIT {PurgeBatch})
+            """, ct) >= PurgeBatch) { }
     }
 }

@@ -37,6 +37,7 @@ public sealed class Reconciler(IServiceScopeFactory scopes, TimeProvider clock, 
         var now = clock.GetUtcNow();
         List<(Guid Id, string SessionId)> payments;
         List<(Guid Id, string StripeRefundId)> refunds;
+        int open;
         await using (var scope = scopes.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
@@ -46,6 +47,7 @@ public sealed class Reconciler(IServiceScopeFactory scopes, TimeProvider clock, 
                 .OrderBy(p => p.CreatedAt).Select(p => new { p.Id, p.StripeSessionId }).ToListAsync(ct)).Select(p => (p.Id, p.StripeSessionId!)).ToList();
             refunds = (await db.Refunds.AsNoTracking().Where(r => r.Status == RefundStatuses.Submitted && r.UpdatedAt < refundCutoff && r.StripeRefundId != null)
                 .OrderBy(r => r.UpdatedAt).Select(r => new { r.Id, r.StripeRefundId }).ToListAsync(ct)).Select(r => (r.Id, r.StripeRefundId!)).ToList();
+            open = await db.Disputes.CountAsync(d => !ClosedDisputes.Contains(d.Status), ct);
         }
 
         foreach (var (id, sessionId) in payments)
@@ -60,8 +62,6 @@ public sealed class Reconciler(IServiceScopeFactory scopes, TimeProvider clock, 
                     : null;
             }, ct);
 
-        await using var countScope = scopes.CreateAsyncScope();
-        var open = await countScope.ServiceProvider.GetRequiredService<PaymentDbContext>().Disputes.CountAsync(d => !ClosedDisputes.Contains(d.Status), ct);
         metrics.SetDisputesOpen(open);
     }
 

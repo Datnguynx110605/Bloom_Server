@@ -145,7 +145,7 @@ public static class StripeWebhook
 
     private static async Task UpsertDisputeAsync(JsonElement dispute, long eventCreated, PaymentDbContext db, DateTimeOffset now, ILogger logger, CancellationToken ct)
     {
-        var intent = Str(dispute, "payment_intent");
+        if (Str(dispute, "payment_intent") is not { } intent) return; // a null would match every payment without an intent
         var paymentId = await db.Payments.AsNoTracking().Where(p => p.StripePaymentIntentId == intent).Select(p => (Guid?)p.Id).SingleOrDefaultAsync(ct);
         if (paymentId is null) return;
 

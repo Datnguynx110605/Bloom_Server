@@ -279,6 +279,19 @@ public class ReconcileTests(Containers containers)
     }
 
     [Fact]
+    public async Task Succeeded_payment_without_a_session_id_is_a_mismatch()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        t.Clock.SetUtcNow(DayNoon);
+        var (orderId, response, _) = await Seed.CreateAsync(t);
+        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', succeeded_at = {DayNoon}, stripe_payment_intent_id = 'pi_early', stripe_session_id = NULL WHERE order_id = {orderId}"); // an early webhook won the race
+
+        var mismatches = await Nightly(t).RunAsync(Day, Ct);
+
+        Assert.Equal(["bloom_only payment pi_early"], mismatches);
+    }
+
+    [Fact]
     public async Task Lists_are_read_across_pages()
     {
         await using var t = await TestPayment.StartAsync(containers);

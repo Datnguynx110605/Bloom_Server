@@ -61,7 +61,8 @@ namespace Bloom.Payment.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("PaymentId");
+                    b.HasIndex("PaymentId")
+                        .HasDatabaseName("ix_disputes_payment_id");
 
                     b.HasIndex("StripeDisputeId")
                         .IsUnique()

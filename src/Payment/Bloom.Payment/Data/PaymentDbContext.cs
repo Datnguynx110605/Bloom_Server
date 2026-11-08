@@ -75,6 +75,7 @@ public sealed partial class PaymentDbContext(DbContextOptions<PaymentDbContext> 
         {
             e.ToTable("disputes");
             e.HasOne<PaymentRow>().WithMany().HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(x => x.PaymentId).HasDatabaseName("ix_disputes_payment_id");
             e.HasIndex(x => x.StripeDisputeId).IsUnique().HasDatabaseName("ux_disputes_stripe_dispute_id");
         });
 

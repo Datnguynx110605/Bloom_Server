@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Bloom.Payment.Data.Migrations
 {
     [DbContext(typeof(PaymentDbContext))]
-    [Migration("20261108091318_Initial")]
+    [Migration("20261108133518_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -64,7 +64,8 @@ namespace Bloom.Payment.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("PaymentId");
+                    b.HasIndex("PaymentId")
+                        .HasDatabaseName("ix_disputes_payment_id");
 
                     b.HasIndex("StripeDisputeId")
                         .IsUnique()

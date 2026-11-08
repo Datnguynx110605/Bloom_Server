@@ -6,7 +6,6 @@ using Bloom.Payment.Stripe;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 
 namespace Bloom.Payment.Services;
 
@@ -26,16 +25,8 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
         var found = await FindAsync(orderId, ct);
         if (found is null)
         {
-            PaymentRow? claimed = null;
-            try
-            {
-                claimed = await InsertAsync(request, ct);
-            }
-            catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
-            {
-                // another call inserted first: step 1 once more
-            }
-            if (claimed is not null) return await OpenSessionAsync(claimed, request, ct);
+            if (await InsertAsync(request, ct) is { } claimed) return await OpenSessionAsync(claimed, request, ct);
+            // another call inserted first: step 1 once more
             found = await FindAsync(orderId, ct) ?? throw new InvalidOperationException("ux_payments_order_id fired but the payment is gone.");
         }
 
@@ -64,8 +55,8 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
     private Task<PaymentRow?> FindAsync(Guid orderId, CancellationToken ct) =>
         db.Payments.AsNoTracking().SingleOrDefaultAsync(p => p.OrderId == orderId, ct);
 
-    /// <summary>Tx 1.</summary>
-    private async Task<PaymentRow> InsertAsync(CreatePaymentRequest r, CancellationToken ct)
+    /// <summary>Tx 1: the claimed row, or null when another call already holds the order.</summary>
+    private async Task<PaymentRow?> InsertAsync(CreatePaymentRequest r, CancellationToken ct)
     {
         var now = clock.GetUtcNow();
         var row = new PaymentRow
@@ -82,17 +73,12 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
             CreatedAt = now,
             UpdatedAt = now,
         };
-        db.Payments.Add(row);
-        try
-        {
-            await db.SaveChangesAsync(ct);
-        }
-        catch
-        {
-            db.Entry(row).State = EntityState.Detached; // the caller may look the row up again on this context
-            throw;
-        }
-        return row;
+        var inserted = await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO payments (id, order_id, order_number, account_id, amount_cents, currency, status, locked_until, session_expires_at, created_at, updated_at)
+            VALUES ({row.Id}, {row.OrderId}, {row.OrderNumber}, {row.AccountId}, {row.AmountCents}, {row.Currency}, {row.Status}, {row.LockedUntil}, {row.SessionExpiresAt}, {row.CreatedAt}, {row.UpdatedAt})
+            ON CONFLICT (order_id) DO NOTHING
+            """, ct);
+        return inserted == 1 ? row : null;
     }
 
     /// <summary>Steps 3 and 4 for a row this call has claimed (its <c>LockedUntil</c> is the claim).</summary>

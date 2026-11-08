@@ -36,21 +36,16 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
     }
 
     /// <summary><c>open</c> → <c>expired</c>, no event (order handles its own deadline). False for any other status.</summary>
-    public async Task<bool> ExpireAsync(Guid paymentId, CancellationToken ct)
-    {
-        var now = clock.GetUtcNow();
-        return await db.Database.ExecuteSqlAsync($"""
-            UPDATE payments SET status = 'expired', version = version + 1, updated_at = {now}
-            WHERE id = {paymentId} AND status = 'open'
-            """, ct) == 1;
-    }
+    public Task<bool> ExpireAsync(Guid paymentId, CancellationToken ct) => LeaveOpenAsync(paymentId, PaymentStatuses.Expired, ct);
 
     /// <summary><c>open</c> → <c>canceled</c> after Stripe expired the session, no event. False for any other status.</summary>
-    public async Task<bool> CancelAsync(Guid paymentId, CancellationToken ct)
+    public Task<bool> CancelAsync(Guid paymentId, CancellationToken ct) => LeaveOpenAsync(paymentId, PaymentStatuses.Canceled, ct);
+
+    private async Task<bool> LeaveOpenAsync(Guid paymentId, string to, CancellationToken ct)
     {
         var now = clock.GetUtcNow();
         return await db.Database.ExecuteSqlAsync($"""
-            UPDATE payments SET status = 'canceled', version = version + 1, updated_at = {now}
+            UPDATE payments SET status = {to}, version = version + 1, updated_at = {now}
             WHERE id = {paymentId} AND status = 'open'
             """, ct) == 1;
     }

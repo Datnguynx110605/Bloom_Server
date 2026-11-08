@@ -48,7 +48,7 @@ public static class StripeEvents
             metadata = refundId is { } r ? new Dictionary<string, string> { ["refund_id"] = r.ToString("D") } : [],
         };
 
-    public static object Dispute(string id, string piId, string status, long amount, string reason) =>
+    public static object Dispute(string id, string? piId, string status, long amount, string reason) =>
         new { id, @object = "dispute", payment_intent = piId, status, amount, reason };
 
     private static object Metadata(Guid paymentId, Guid orderId) => new { order_id = orderId.ToString("D"), payment_id = paymentId.ToString("D") };

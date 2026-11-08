@@ -234,6 +234,7 @@ public class WebhookTests(Containers containers)
         await using var t = await TestPayment.StartAsync(containers);
         var p = await OpenAsync(t);
         using var paid = await Complete(t, p);
+        await OpenAsync(t); // an open payment has no intent, which a dispute without one must not match
 
         using var created = await Post(t, "charge.dispute.created", StripeEvents.Dispute("dp_1", p.Pi, "needs_response", 1000, "fraudulent"));
         await using (var db = t.NewDb())
@@ -246,12 +247,13 @@ public class WebhookTests(Containers containers)
         t.Clock.Advance(TimeSpan.FromHours(1));
         using var updated = await Post(t, "charge.dispute.closed", StripeEvents.Dispute("dp_1", p.Pi, "won", 1000, "fraudulent"));
         using var unknown = await Post(t, "charge.dispute.created", StripeEvents.Dispute("dp_2", "pi_nobody", "needs_response", 500, "general"));
+        using var noIntent = await Post(t, "charge.dispute.created", StripeEvents.Dispute("dp_3", null, "needs_response", 500, "general"));
 
         await using var db2 = t.NewDb();
         var after = await db2.Disputes.AsNoTracking().SingleAsync(Ct);
         Assert.Equal("won", after.Status);
         Assert.True(after.UpdatedAt > after.OpenedAt);
-        Assert.Equal(4, await EventCountAsync(t)); // completed, created, closed, the unknown one
+        Assert.Equal(5, await EventCountAsync(t)); // completed, created, closed, the unknown one, the one without an intent
     }
 
     [Fact]

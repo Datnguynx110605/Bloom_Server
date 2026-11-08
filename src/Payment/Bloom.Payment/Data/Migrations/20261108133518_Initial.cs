@@ -174,7 +174,7 @@ namespace Bloom.Payment.Data.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_disputes_payment_id",
+                name: "ix_disputes_payment_id",
                 table: "disputes",
                 column: "payment_id");
 
