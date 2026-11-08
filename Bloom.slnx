@@ -34,6 +34,8 @@
   </Folder>
   <Folder Name="/src/Payment/">
     <Project Path="src/Payment/Bloom.Payment.Contracts/Bloom.Payment.Contracts.csproj" />
+    <Project Path="src/Payment/Bloom.Payment.Tests/Bloom.Payment.Tests.csproj" />
+    <Project Path="src/Payment/Bloom.Payment/Bloom.Payment.csproj" />
   </Folder>
   <Folder Name="/src/Shared/">
     <Project Path="src/Shared/Bloom.Shared.Tests/Bloom.Shared.Tests.csproj" />

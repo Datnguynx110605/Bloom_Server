@@ -1,0 +1,113 @@
+using Bloom.Payment.Contracts;
+using Bloom.Payment.Data;
+using Grpc.Net.Client;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
+
+namespace Bloom.Payment.Tests;
+
+public sealed class TestPaymentOptions
+{
+    public string Mode { get; set; } = "api";
+
+    /// <summary>Reuses this database (for example an API host and a worker host on one database) instead of creating one.</summary>
+    public string? ConnectionString { get; set; }
+
+    /// <summary>Config keys (for example <c>Payment:StorefrontBaseUrl</c>) that replace the defaults of <see cref="TestPayment.DefaultConfig"/>.</summary>
+    public Dictionary<string, string?> Config { get; } = [];
+}
+
+/// <summary>The payment app built through <see cref="PaymentApp.Build"/> on <c>TestServer</c> (plan R1), on its own database (plan R16).</summary>
+public sealed class TestPayment : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+
+    private readonly GrpcChannel _channel;
+
+    private TestPayment(WebApplication app, GrpcChannel channel)
+    {
+        _app = app;
+        _channel = channel;
+        Internal = new(channel);
+    }
+
+    /// <summary>The internal gRPC client, called in-process (plan R1). Later tasks add the staff client here.</summary>
+    public PaymentInternal.PaymentInternalClient Internal { get; }
+
+    public required HttpClient Http { get; init; }
+
+    /// <summary>The app's <see cref="TimeProvider"/>. Starts at the real time.</summary>
+    public required FakeTimeProvider Clock { get; init; }
+
+    public required LogCapture Logs { get; init; }
+
+    /// <summary>The connection string of the database (the app connects as its owner, plan R2).</summary>
+    public required string ConnectionString { get; init; }
+
+    public IServiceProvider Services => _app.Services;
+
+    public static async Task<TestPayment> StartAsync(Containers containers, Action<TestPaymentOptions>? configure = null)
+    {
+        var options = new TestPaymentOptions();
+        configure?.Invoke(options);
+        var fresh = options.ConnectionString is null;
+        var connectionString = options.ConnectionString ?? await containers.CreateDatabaseAsync();
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var logs = new LogCapture();
+
+        var config = DefaultConfig(connectionString, containers.RabbitMqUri);
+        config["Payment:Mode"] = options.Mode;
+        foreach (var (key, value) in options.Config) config[key] = value;
+
+        var app = PaymentApp.Build([], b =>
+        {
+            b.WebHost.UseTestServer();
+            b.Configuration.AddInMemoryCollection(config);
+            b.Services.AddSingleton<TimeProvider>(clock); // registered first, so the app's TryAdd keeps it
+            b.Services.AddSingleton<ILoggerProvider>(logs);
+        });
+        if (fresh)
+        {
+            await using var db = NewDb(connectionString);
+            await db.Database.MigrateAsync(); // the app never migrates (plan R2)
+        }
+        await app.StartAsync();
+        var server = app.GetTestServer();
+        return new TestPayment(app, GrpcChannel.ForAddress(server.BaseAddress, new() { HttpHandler = server.CreateHandler() }))
+        {
+            Http = app.GetTestClient(),
+            Clock = clock,
+            Logs = logs,
+            ConnectionString = connectionString,
+        };
+    }
+
+    /// <summary>Every key of plan R4 except <c>Mode</c>, with valid values.</summary>
+    internal static Dictionary<string, string?> DefaultConfig(string database, string rabbitMq) => new()
+    {
+        ["Payment:Database"] = database,
+        ["Payment:RabbitMq"] = rabbitMq,
+        ["Payment:StorefrontBaseUrl"] = "https://shop.test",
+        ["Payment:Stripe:ApiKey"] = "sk_test_x",
+        ["Payment:Stripe:WebhookSecret"] = "whsec_test",
+        ["Payment:Stripe:BaseUrl"] = "https://stripe.test/",
+    };
+
+    /// <summary>A test-side context on the same database.</summary>
+    public PaymentDbContext NewDb() => NewDb(ConnectionString);
+
+    private static PaymentDbContext NewDb(string connectionString) =>
+        new(new DbContextOptionsBuilder<PaymentDbContext>().UseNpgsql(connectionString).Options);
+
+    public async ValueTask DisposeAsync()
+    {
+        Http.Dispose();
+        _channel.Dispose();
+        await _app.DisposeAsync();
+    }
+}
