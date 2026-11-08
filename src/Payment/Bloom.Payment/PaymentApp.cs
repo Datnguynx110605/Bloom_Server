@@ -1,4 +1,5 @@
 using Bloom.Payment.Data;
+using Bloom.Payment.Domain;
 using Bloom.Payment.Observability;
 using Bloom.Payment.Services;
 using Bloom.Payment.Stripe;
@@ -32,6 +33,7 @@ public static class PaymentApp
         builder.Services.AddSingleton(options);
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)
         builder.Services.AddSingleton<PaymentMetrics>();
+        builder.Services.AddScoped<Transitions>();
         builder.Services.AddDbContext<PaymentDbContext>(o => o.UseNpgsql(options.Database));
         var bloom = builder.Services.AddBloom<PaymentDbContext>(o =>
         {
@@ -58,6 +60,7 @@ public static class PaymentApp
         if (api)
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
+            app.MapStripeWebhook(); // plain HTTP: the signature needs the raw body (04-payment §3)
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;
