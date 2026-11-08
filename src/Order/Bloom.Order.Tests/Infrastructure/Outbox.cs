@@ -16,7 +16,8 @@ public static class Outbox
     public static async Task<IReadOnlyList<T>> PayloadsAsync<T>(TestOrder t, string messageType) =>
         (await EnvelopesAsync(t, messageType)).Select(e => e.GetPayload<T>()).ToList();
 
-    private static async Task<List<Envelope>> EnvelopesAsync(TestOrder t, string messageType)
+    /// <summary>The envelopes of every outbox message of <paramref name="messageType"/>, oldest first.</summary>
+    public static async Task<List<Envelope>> EnvelopesAsync(TestOrder t, string messageType)
     {
         await using var db = t.NewDb();
         var rows = await db.Set<OutboxMessage>().Where(m => m.MessageType == messageType).OrderBy(m => m.Id)

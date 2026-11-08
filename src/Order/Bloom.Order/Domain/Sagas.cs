@@ -49,6 +49,13 @@ public sealed class Sagas(OrderDbContext db, OutboxWriter outbox, TimeProvider c
             WHERE order_id = {orderId} AND completed_at IS NULL AND {step} = ANY(pending_steps)
             """, ct);
 
+    /// <summary><c>payment.refund-failed.v1</c> (spec §4): <c>refund</c> becomes <c>refund_failed</c> in the open saga that waits for it, so the saga stays open for an operator.</summary>
+    public async Task FailRefundAsync(Guid orderId, CancellationToken ct) =>
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE order_sagas SET pending_steps = array_replace(pending_steps, {SagaSteps.Refund}, {SagaSteps.RefundFailed})
+            WHERE order_id = {orderId} AND completed_at IS NULL AND {SagaSteps.Refund} = ANY(pending_steps)
+            """, ct);
+
     private static string[] StepsFor(string type, string kind, bool afterPayment)
     {
         if (type == SagaTypes.LatePayment) return [SagaSteps.Refund];

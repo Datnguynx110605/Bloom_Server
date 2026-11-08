@@ -58,6 +58,16 @@ public static class OrderApp
         bloom.AddConsumer<ReservationReleasedConsumer>("inventory-reservation-released", ReservationReleasedConsumer.Bindings);
         bloom.AddConsumer<StockAllocatedConsumer>("inventory-stock-allocated", StockAllocatedConsumer.Bindings);
         bloom.AddConsumer<LaunchStageChangedConsumer>("launch-stage-changed", LaunchStageChangedConsumer.Bindings);
+        bloom.AddConsumer<RefundCompletedConsumer>("payment-refund-completed", RefundCompletedConsumer.Bindings);
+        bloom.AddConsumer<RefundFailedConsumer>("payment-refund-failed", RefundFailedConsumer.Bindings);
+        bloom.AddConsumer<HoldReleasedConsumer>("launch-hold-released", HoldReleasedConsumer.Bindings);
+        bloom.AddConsumer<PackingStartedConsumer>("fulfillment-packing-started", PackingStartedConsumer.Bindings);
+        bloom.AddConsumer<ShipmentShippedConsumer>("fulfillment-shipment-shipped", ShipmentShippedConsumer.Bindings);
+        bloom.AddConsumer<ShipmentDeliveredConsumer>("fulfillment-shipment-delivered", ShipmentDeliveredConsumer.Bindings);
+        bloom.AddConsumer<DeliveryFailedConsumer>("fulfillment-delivery-failed", DeliveryFailedConsumer.Bindings);
+        bloom.AddConsumer<ReturnRequestedConsumer>("fulfillment-return-requested", ReturnRequestedConsumer.Bindings);
+        bloom.AddConsumer<ReturnClosedConsumer>("fulfillment-return-closed", ReturnClosedConsumer.Bindings);
+        bloom.AddConsumer<ReturnDecidedConsumer>("fulfillment-return-decided", ReturnDecidedConsumer.Bindings);
         builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddGrpcClient<LaunchInternal.LaunchInternalClient>(o => o.Address = new Uri(options.Launch));
