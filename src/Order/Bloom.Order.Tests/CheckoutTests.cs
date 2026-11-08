@@ -257,6 +257,37 @@ public class CheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task Retry_with_the_same_key_and_another_shipping_option_is_IDEMPOTENCY_KEY_REUSED()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, _) = await CartOfOneAsync(t);
+        var key = Guid.NewGuid();
+        t.Upstreams.Fail("ReserveStock", StatusCode.Unavailable);
+        await UnavailableAsync(Seed.CheckoutAsync(t, account, key));
+        var calls = t.Upstreams.Calls.Count;
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key, r => r.ShippingOption = "express"), StatusCode.InvalidArgument, "IDEMPOTENCY_KEY_REUSED");
+
+        Assert.Equal(calls, t.Upstreams.Calls.Count);
+        var order = await OrderOfAsync(t, account);
+        Assert.Equal((OrderStatuses.Creating, "standard"), (order.Status, order.ShippingOption));
+    }
+
+    [Fact]
+    public async Task Retry_with_the_same_key_and_another_address_is_IDEMPOTENCY_KEY_REUSED()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, _) = await CartOfOneAsync(t);
+        var key = Guid.NewGuid();
+        t.Upstreams.Fail("ReserveStock", StatusCode.Unavailable);
+        await UnavailableAsync(Seed.CheckoutAsync(t, account, key));
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key, r => r.ShipTo.Zip = "89502"), StatusCode.InvalidArgument, "IDEMPOTENCY_KEY_REUSED");
+
+        Assert.Equal(OrderStatuses.Creating, (await OrderOfAsync(t, account)).Status);
+    }
+
+    [Fact]
     public async Task Resumed_order_hold_conflict_also_releases()
     {
         await using var t = await TestOrder.StartAsync(containers);

@@ -165,6 +165,23 @@ public class LaunchCheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task Retry_of_a_launch_order_with_a_cart_source_is_IDEMPOTENCY_KEY_REUSED()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, launchId, key) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var device = Seed.LaunchSku(t.Upstreams, launchId);
+        t.Upstreams.Fail("HoldAllocation", StatusCode.Unavailable);
+        Assert.Equal(StatusCode.Unavailable, (await Assert.ThrowsAsync<RpcException>(() => LaunchCheckout(t, account, launchId, key, lines: [Product(device)]).ResponseAsync)).StatusCode);
+        var calls = t.Upstreams.Calls.Count;
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.InvalidArgument, "IDEMPOTENCY_KEY_REUSED");
+
+        Assert.Equal(calls, t.Upstreams.Calls.Count);
+        await using var db = t.NewDb();
+        Assert.Equal(OrderStatuses.Creating, (await db.Orders.AsNoTracking().SingleAsync(o => o.AccountId == account, Ct)).Status);
+    }
+
+    [Fact]
     public async Task Preorder_open_sku_is_accepted_although_catalog_says_not_buyable()
     {
         await using var t = await TestOrder.StartAsync(containers);

@@ -8,6 +8,7 @@ using Bloom.Order.Domain;
 using Bloom.Order.Errors;
 using Bloom.Order.Observability;
 using Bloom.Payment.Contracts;
+using Bloom.Shared.Errors;
 using Bloom.Shared.Idempotency;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -48,7 +49,7 @@ public sealed class CheckoutService(
         {
             return await guard.ExecuteMultiStepAsync(request, context,
                 (claim, ct) => ClaimAsync(claim, request, shipTo, ct),
-                (claim, state, ct) => RunAsync(caller, request, state, ct));
+                (claim, state, ct) => RunAsync(caller, request, shipTo, state, ct));
         }
         finally
         {
@@ -76,12 +77,14 @@ public sealed class CheckoutService(
         return (order.Id, false);
     }
 
-    private async Task<StartCheckoutResponse> RunAsync(Caller caller, StartCheckoutRequest request, (Guid OrderId, bool Existed) state, CancellationToken ct)
+    private async Task<StartCheckoutResponse> RunAsync(Caller caller, StartCheckoutRequest request, ShipToV1 shipTo, (Guid OrderId, bool Existed) state, CancellationToken ct)
     {
         db.ChangeTracker.Clear(); // a takeover runs this again on a context that still tracks what the lost run saved
         try
         {
             var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == state.OrderId, ct);
+            if (state.Existed && !SameRequest(order, request, shipTo)) // a retry may not change what the first request fixed (00-reliability §7.4); the creating sweep compensates the order
+                throw BloomErrors.Create(StatusCode.InvalidArgument, BloomErrors.IdempotencyKeyReused, "This Idempotency-Key was already used for a different request.");
             if (order.Status == OrderStatuses.Cancelled) // swept while the key was released (owner item 1)
                 throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
             if (order.Status == OrderStatuses.Creating) await PlaceAsync(order, request, caller, state.Existed, ct);
@@ -96,6 +99,13 @@ public sealed class CheckoutService(
             throw;
         }
     }
+
+    /// <summary>What Tx 1 stored (source kind, launch, shipping option, address) against the request. Coupon, lines and pass token are not stored before Tx 2, so the request stays authoritative for them.</summary>
+    private static bool SameRequest(OrderRow order, StartCheckoutRequest request, ShipToV1 shipTo) =>
+        order.Kind == (request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch ? OrderKinds.Launch : OrderKinds.Regular)
+        && (order.Kind == OrderKinds.Regular || order.LaunchId == Guid.Parse(request.Launch.LaunchId))
+        && order.ShippingOption == request.ShippingOption
+        && order.ShipTo with { Lines = [] } == shipTo with { Lines = [] } && order.ShipTo.Lines.SequenceEqual(shipTo.Lines);
 
     /// <summary>Steps 3 to 6 of §6.2: price and validate, hold the stock, then Tx 2.</summary>
     private async Task PlaceAsync(OrderRow order, StartCheckoutRequest request, Caller caller, bool existed, CancellationToken ct)
@@ -166,7 +176,7 @@ public sealed class CheckoutService(
             var (id, checkedTerms) = await coupons.CheckAsync(Inputs.CouponCode(request.CouponCode, "coupon_code").Normalized, order.AccountId, ct);
             (couponId, terms) = (id, checkedTerms);
         }
-        var shipping = request.ShippingOption == ShippingOptions.Express ? await db.CheckoutSettings.AsNoTracking().Select(s => s.ExpressFeeCents).SingleAsync(ct) : 0;
+        var shipping = order.ShippingOption == ShippingOptions.Express ? await db.CheckoutSettings.AsNoTracking().Select(s => s.ExpressFeeCents).SingleAsync(ct) : 0;
         return new Placement(lines, Pricing.Compute(lines, terms, launchOrder: launch, options.TaxRateBasisPoints!.Value, shipping), couponId);
 
         PricedLine Line(CartLine l, int no, int? parentNo)
