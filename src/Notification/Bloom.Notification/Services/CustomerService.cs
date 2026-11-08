@@ -48,9 +48,7 @@ public sealed class CustomerService(NotificationDbContext db, Tickets tickets, T
     {
         var accountId = Caller.From(context).RequireCustomer().UserId;
         if (request.Ids.Count is < 1 or > 100) throw NotificationErrors.Validation("ids", "ids must hold 1 to 100 UUIDs.");
-        var ids = new List<Guid>(request.Ids.Count);
-        foreach (var id in request.Ids)
-            ids.Add(Guid.TryParseExact(id, "D", out var parsed) ? parsed : throw NotificationErrors.Validation("ids", "Every id must be a UUID."));
+        var ids = request.Ids.Select(id => Guid.TryParseExact(id, "D", out var g) ? g : throw NotificationErrors.Validation("ids", "Every id must be a UUID.")).ToList();
 
         var now = clock.GetUtcNow();
         await db.Notifications.Where(n => n.AccountId == accountId && ids.Contains(n.Id) && n.ReadAt == null)

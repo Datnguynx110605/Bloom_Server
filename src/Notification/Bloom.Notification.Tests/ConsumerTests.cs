@@ -63,12 +63,6 @@ public class ConsumerTests(Containers containers)
         return account;
     }
 
-    private static async Task<List<NotificationRow>> RowsAsync(TestNotification t, Guid account)
-    {
-        await using var db = t.NewDb();
-        return await db.Notifications.AsNoTracking().Where(n => n.AccountId == account).ToListAsync(Ct);
-    }
-
     private static async Task<List<EmailJobRow>> JobsAsync(TestNotification t, Guid? account = null, Guid? source = null)
     {
         await using var db = t.NewDb();
@@ -94,7 +88,7 @@ public class ConsumerTests(Containers containers)
         Assert.Equal("order.confirmed", pushed.Type);
         await Task.Delay(500, Ct);
         Assert.False(inbox.Reader.TryRead(out _), "a second push arrived");
-        Assert.Single(await RowsAsync(t, account));
+        Assert.Single(await Seed.RowsAsync(t, account));
         Assert.Single(await JobsAsync(t, account));
         Assert.Equal(1, metrics.Sum("ws_pushes_total", ("type", "order.confirmed")));
         Assert.Equal(1, metrics.Sum("notifications_created_total", ("type", "order.confirmed"), ("channel", "in_app")));
@@ -120,7 +114,7 @@ public class ConsumerTests(Containers containers)
         if (emailOnly)
         {
             Assert.Null(job.AccountId);
-            Assert.Empty(await RowsAsync(t, account));
+            Assert.Empty(await Seed.RowsAsync(t, account));
             Assert.Equal(type == "account.code" ? "Code@Bloom.test" : "staff@bloom.test", job.ToEmail);
             return;
         }
@@ -128,12 +122,26 @@ public class ConsumerTests(Containers containers)
         Assert.Equal($"{account:N}@bloom.test", job.ToEmail);
         Assert.Equal(Number, Data(job)["orderNumber"]);
         Assert.Equal("Ada", Data(job)["name"]);
-        var row = Assert.Single(await RowsAsync(t, account));
+        var row = Assert.Single(await Seed.RowsAsync(t, account));
         Assert.Equal(type, row.Type);
         Assert.Equal($"/orders/{Number}", row.Link);
         Assert.Equal(id, row.SourceMessageId);
         Assert.False(string.IsNullOrWhiteSpace(row.Title));
         Assert.False(string.IsNullOrWhiteSpace(row.Body));
+    }
+
+    [Fact]
+    public async Task In_app_text_stores_markup_raw()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        var account = Guid.NewGuid();
+        await Seed.ContactAsync(t, account, $"{account:N}@bloom.test", "Ada");
+        const string number = "<script>x</script> & \"q\"";
+
+        await Consume.Async(t, OrderMessages.Paid, new OrderPaidV1(Order, number, account, null, DateTimeOffset.UtcNow, 1000, []));
+
+        var row = Assert.Single(await Seed.RowsAsync(t, account));
+        Assert.Equal($"We received your payment for order {number}.", row.Body); // escaping is the client's job; the stored text is raw
     }
 
     [Fact]
@@ -146,7 +154,7 @@ public class ConsumerTests(Containers containers)
 
         var e = await Assert.ThrowsAnyAsync<Exception>(() => Consume.Async(t, FulfillmentMessages.ShipmentShipped, Payload(FulfillmentMessages.ShipmentShipped, account), shipped));
         Assert.IsNotType<PermanentFailureException>(e);
-        Assert.Empty(await RowsAsync(t, account));
+        Assert.Empty(await Seed.RowsAsync(t, account));
         Assert.Empty(await JobsAsync(t, source: shipped));
 
         await Consume.Async(t, OrderMessages.Paid, Payload(OrderMessages.Paid, account));
@@ -164,7 +172,7 @@ public class ConsumerTests(Containers containers)
         var e = await Assert.ThrowsAnyAsync<Exception>(() => Consume.Async(t, OrderMessages.Paid, Payload(OrderMessages.Paid, account), id));
         Assert.IsNotType<PermanentFailureException>(e);
         Assert.Empty(await JobsAsync(t, source: id));
-        Assert.Empty(await RowsAsync(t, account));
+        Assert.Empty(await Seed.RowsAsync(t, account));
 
         await Seed.ContactAsync(t, account, "a@bloom.test", "Ada");
         await Consume.Async(t, OrderMessages.Paid, Payload(OrderMessages.Paid, account), id);
@@ -197,12 +205,12 @@ public class ConsumerTests(Containers containers)
         var decided = Guid.NewGuid();
 
         await Consume.Async(t, FulfillmentMessages.ReturnClosed, new ReturnClosedV1(Order, Guid.NewGuid(), "decided"), decided);
-        Assert.Empty(await RowsAsync(t, account));
+        Assert.Empty(await Seed.RowsAsync(t, account));
         Assert.Empty(await JobsAsync(t, source: decided));
 
         var expired = Guid.NewGuid();
         await Consume.Async(t, FulfillmentMessages.ReturnClosed, Payload(FulfillmentMessages.ReturnClosed, account), expired);
-        Assert.Equal("return.expired", Assert.Single(await RowsAsync(t, account)).Type);
+        Assert.Equal("return.expired", Assert.Single(await Seed.RowsAsync(t, account)).Type);
         Assert.Equal("return.expired", Assert.Single(await JobsAsync(t, source: expired)).Template);
     }
 
@@ -221,7 +229,7 @@ public class ConsumerTests(Containers containers)
         Assert.Equal("refund.issued", job.Template);
         Assert.Equal("$25.00", Data(job)["refundAmount"]);
         Assert.Equal(Number, Data(job)["orderNumber"]);
-        Assert.Contains(await RowsAsync(t, account), r => r.Type == "refund.issued");
+        Assert.Contains(await Seed.RowsAsync(t, account), r => r.Type == "refund.issued");
     }
 
     [Fact]
@@ -270,7 +278,7 @@ public class ConsumerTests(Containers containers)
 
         await Task.Delay(1000, Ct);
         Assert.False(inbox.Reader.TryRead(out _), "pushed before the commit");
-        Assert.Empty(await RowsAsync(t, account));
+        Assert.Empty(await Seed.RowsAsync(t, account));
         Assert.Empty(await JobsAsync(t, source: id));
 
         await Consume.Async(t, OrderMessages.Paid, Payload(OrderMessages.Paid, account), id);
@@ -309,11 +317,7 @@ public class ConsumerTests(Containers containers)
         Guid pendingA, sentA, pendingB;
         await using (var db = t.NewDb())
         {
-            EmailJobRow Job(Guid account, string status) => new()
-            {
-                Id = Guid.CreateVersion7(), AccountId = account, ToEmail = "x@bloom.test", Template = "order.confirmed", Data = "{}", Status = status,
-                NextAttemptAt = t.Clock.GetUtcNow(), SourceMessageId = Guid.NewGuid(), CreatedAt = t.Clock.GetUtcNow(),
-            };
+            EmailJobRow Job(Guid account, string status) => Seed.Job(status: status, createdAt: t.Clock.GetUtcNow(), accountId: account);
             var jobs = new[] { Job(a, EmailStatuses.Pending), Job(a, EmailStatuses.Sent), Job(b, EmailStatuses.Pending) };
             (pendingA, sentA, pendingB) = (jobs[0].Id, jobs[1].Id, jobs[2].Id);
             db.EmailJobs.AddRange(jobs);
@@ -349,6 +353,6 @@ public class ConsumerTests(Containers containers)
         await Sockets.ClosedAsync(socket, TimeSpan.FromSeconds(2));
         await using var db = t.NewDb();
         Assert.True(await db.Contacts.AnyAsync(x => x.AccountId == account, Ct));
-        Assert.Single(await RowsAsync(t, account));
+        Assert.Single(await Seed.RowsAsync(t, account));
     }
 }

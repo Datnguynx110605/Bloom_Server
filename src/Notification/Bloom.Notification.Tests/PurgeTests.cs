@@ -12,17 +12,6 @@ public class PurgeTests(Containers containers)
 
     private static DailyPurge Purge(TestNotification t) => ActivatorUtilities.CreateInstance<DailyPurge>(t.Services);
 
-    private static async Task JobAsync(TestNotification t, string status, DateTimeOffset createdAt)
-    {
-        await using var db = t.NewDb();
-        db.EmailJobs.Add(new EmailJobRow
-        {
-            Id = Guid.CreateVersion7(), ToEmail = "a@bloom.test", Template = "order.confirmed", Data = "{}", Status = status,
-            SourceMessageId = Guid.NewGuid(), NextAttemptAt = createdAt, CreatedAt = createdAt,
-        });
-        await db.SaveChangesAsync(Ct);
-    }
-
     [Fact]
     public async Task N11_notifications_older_than_90_days_are_purged()
     {
@@ -31,12 +20,7 @@ public class PurgeTests(Containers containers)
         var now = t.Clock.GetUtcNow();
         await using (var db = t.NewDb())
         {
-            for (var i = 0; i < 2500; i++)
-                db.Notifications.Add(new NotificationRow
-                {
-                    Id = Guid.CreateVersion7(), AccountId = account, Type = "order.confirmed", Title = "t", Body = "b", Link = "/l",
-                    SourceMessageId = Guid.NewGuid(), CreatedAt = now.AddDays(-91),
-                });
+            for (var i = 0; i < 2500; i++) db.Notifications.Add(Seed.Notification(account, now.AddDays(-91)));
             await db.SaveChangesAsync(Ct);
         }
         for (var i = 0; i < 3; i++) await Seed.NotificationAsync(t, account, now.AddDays(-89));
@@ -53,9 +37,9 @@ public class PurgeTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var now = t.Clock.GetUtcNow();
-        foreach (var status in new[] { EmailStatuses.Sent, EmailStatuses.Failed, EmailStatuses.Cancelled }) await JobAsync(t, status, now.AddDays(-31));
-        await JobAsync(t, EmailStatuses.Pending, now.AddDays(-31));
-        await JobAsync(t, EmailStatuses.Sent, now.AddDays(-29));
+        foreach (var status in new[] { EmailStatuses.Sent, EmailStatuses.Failed, EmailStatuses.Cancelled }) await Seed.JobAsync(t, status: status, createdAt: now.AddDays(-31));
+        await Seed.JobAsync(t, createdAt: now.AddDays(-31));
+        await Seed.JobAsync(t, status: EmailStatuses.Sent, createdAt: now.AddDays(-29));
 
         await Purge(t).PurgeOnceAsync(Ct);
 

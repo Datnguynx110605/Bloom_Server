@@ -13,18 +13,11 @@ public sealed record ResendRequest(string Path, string? IdempotencyKey, string? 
 /// </summary>
 public sealed class FakeResend : HttpMessageHandler
 {
-    private sealed class Failure(int status, string? name, int times)
-    {
-        public int Status { get; } = status;
-        public string? Name { get; } = name;
-        public int Left { get; set; } = times;
-    }
-
     private readonly object _gate = new();
     private readonly List<ResendRequest> _requests = [];
     private readonly List<string> _unexpected = [];
     private readonly Dictionary<string, string> _delivered = []; // idempotency key -> message id
-    private readonly Queue<Failure> _failures = [];
+    private readonly Queue<(int Status, string? Name)> _failures = [];
     private int _hangs, _count;
 
     public IReadOnlyList<ResendRequest> Requests { get { lock (_gate) return [.. _requests]; } }
@@ -41,7 +34,8 @@ public sealed class FakeResend : HttpMessageHandler
     /// <summary>The next <paramref name="times"/> requests answer <paramref name="status"/>, with Resend's error body <c>{name, message, statusCode}</c> when <paramref name="name"/> is set.</summary>
     public void Fail(int status, string? name = null, int times = 1)
     {
-        lock (_gate) _failures.Enqueue(new(status, name, times));
+        lock (_gate)
+            for (var i = 0; i < times; i++) _failures.Enqueue((status, name));
     }
 
     /// <summary>The next request never answers: it waits until the caller cancels (or times out).</summary>
@@ -66,18 +60,18 @@ public sealed class FakeResend : HttpMessageHandler
         if (!served) return Reply(HttpStatusCode.NotFound, new { name = "not_found", message = "fake Resend serves only POST emails", statusCode = 404 });
         if (Before is { } before) await before();
 
-        bool hang;
-        Failure? failure = null;
+        bool hang, failed;
+        (int Status, string? Name) failure = default;
         lock (_gate)
         {
             hang = _hangs > 0 && _hangs-- > 0;
-            if (!hang && _failures.TryPeek(out failure) && --failure.Left <= 0) _failures.Dequeue();
+            failed = !hang && _failures.TryDequeue(out failure);
         }
         if (hang)
         {
             await Task.Delay(Timeout.Infinite, ct); // ends with the caller's cancellation
         }
-        if (failure is not null)
+        if (failed)
             return Reply((HttpStatusCode)failure.Status, failure.Name is null ? new { message = "failed", statusCode = failure.Status } : new { name = failure.Name, message = "failed", statusCode = failure.Status } as object);
 
         lock (_gate)

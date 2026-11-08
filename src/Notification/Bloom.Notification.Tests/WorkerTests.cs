@@ -22,12 +22,8 @@ public class WorkerTests(Containers containers)
 
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    private sealed class Hosts(TestNotification api1, TestNotification api2, TestNotification worker) : IAsyncDisposable
+    private sealed record Hosts(TestNotification Api1, TestNotification Api2, TestNotification Worker) : IAsyncDisposable
     {
-        public TestNotification Api1 { get; } = api1;
-        public TestNotification Api2 { get; } = api2;
-        public TestNotification Worker { get; } = worker;
-
         public async ValueTask DisposeAsync()
         {
             await Worker.DisposeAsync();
@@ -57,9 +53,7 @@ public class WorkerTests(Containers containers)
             new BasicProperties { MessageId = e.MessageId.ToString(), Type = messageType, DeliveryMode = DeliveryModes.Persistent }, e.ToUtf8Bytes()).AsTask();
     }
 
-    private static string Producer(string messageType) => EventConsumer().Single(h => h.Binding.MessageType == messageType).Binding.Producer!;
-
-    private static IReadOnlyList<(string Handler, ConsumerBinding Binding)> EventConsumer() => Consumers.EventConsumer.Handlers;
+    private static string Producer(string messageType) => Consumers.EventConsumer.Handlers.Single(h => h.Binding.MessageType == messageType).Binding.Producer!;
 
     private static async Task<Guid> CustomerAsync(TestNotification t)
     {
@@ -67,15 +61,6 @@ public class WorkerTests(Containers containers)
         await Seed.ContactAsync(t, account, $"{account:N}@bloom.test", "Ada");
         return account;
     }
-
-    private static async Task<List<NotificationRow>> RowsAsync(TestNotification t, Guid account)
-    {
-        await using var db = t.NewDb();
-        return await db.Notifications.AsNoTracking().Where(n => n.AccountId == account).ToListAsync(Ct);
-    }
-
-    private static Task<PushMessage> WithinAsync(System.Threading.Channels.Channel<PushMessage> inbox, int seconds) =>
-        inbox.Reader.ReadAsync(Ct).AsTask().WaitAsync(TimeSpan.FromSeconds(seconds), Ct);
 
     [Fact]
     public async Task Every_queue_is_bound()
@@ -86,8 +71,8 @@ public class WorkerTests(Containers containers)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.Split('\t')).ToList();
         var queues = (await containers.RabbitCtlAsync("list_queues", "name", "-q")).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.Trim()).ToHashSet();
 
-        Assert.Equal(17, EventConsumer().Count);
-        foreach (var (handler, binding) in EventConsumer())
+        Assert.Equal(17, Consumers.EventConsumer.Handlers.Count);
+        foreach (var (handler, binding) in Consumers.EventConsumer.Handlers)
         {
             var queue = $"notification.{handler}";
             Assert.Contains(bindings, b => b.Length >= 5 && b[0] == $"{binding.Producer}.events" && b[2] == queue && b[4] == binding.MessageType);
@@ -110,9 +95,9 @@ public class WorkerTests(Containers containers)
         await PublishAsync(channel, "order", OrderMessages.Paid, paid, id);
         await PublishAsync(channel, "order", OrderMessages.Paid, paid, id);
         await PublishAsync(channel, "order", OrderMessages.Paid, ConsumerTests.Payload(OrderMessages.Paid, sentinel)); // queued after the duplicate: its row proves the duplicate was handled
-        await Poll.UntilAsync(async () => (await RowsAsync(hosts.Api1, sentinel)).Count == 1, 15, "the sentinel row");
+        await Poll.UntilAsync(async () => (await Seed.RowsAsync(hosts.Api1, sentinel)).Count == 1, 15, "the sentinel row");
 
-        Assert.Single(await RowsAsync(hosts.Api1, account));
+        Assert.Single(await Seed.RowsAsync(hosts.Api1, account));
         await using var db = hosts.Api1.NewDb();
         Assert.Equal(1, await db.EmailJobs.CountAsync(j => j.AccountId == account, Ct));
     }
@@ -126,10 +111,10 @@ public class WorkerTests(Containers containers)
 
         await PublishAsync(channel, "fulfillment", FulfillmentMessages.ShipmentShipped, ConsumerTests.Payload(FulfillmentMessages.ShipmentShipped, account));
         await Task.Delay(1500, Ct);
-        Assert.Empty(await RowsAsync(hosts.Api1, account));
+        Assert.Empty(await Seed.RowsAsync(hosts.Api1, account));
         await PublishAsync(channel, "order", OrderMessages.Paid, ConsumerTests.Payload(OrderMessages.Paid, account));
 
-        await Poll.UntilAsync(async () => (await RowsAsync(hosts.Api1, account)).Any(r => r.Type == "order.shipped"), 15, "the order.shipped row after the retry");
+        await Poll.UntilAsync(async () => (await Seed.RowsAsync(hosts.Api1, account)).Any(r => r.Type == "order.shipped"), 15, "the order.shipped row after the retry");
     }
 
     [Fact]
@@ -179,11 +164,11 @@ public class WorkerTests(Containers containers)
         await PublishAsync(channel, "order", OrderMessages.Paid, ConsumerTests.Payload(OrderMessages.Paid, a));
         await PublishAsync(channel, "order", OrderMessages.Paid, ConsumerTests.Payload(OrderMessages.Paid, b));
 
-        var pushA = await WithinAsync(inboxA, 5);
-        var pushB = await WithinAsync(inboxB, 5);
+        var pushA = await Sockets.NextAsync(inboxA, 5);
+        var pushB = await Sockets.NextAsync(inboxB, 5);
         Assert.Equal("order.confirmed", pushA.Type);
-        Assert.Equal(Assert.Single(await RowsAsync(hosts.Api1, a)).Id, pushA.Id);
-        Assert.Equal(Assert.Single(await RowsAsync(hosts.Api1, b)).Id, pushB.Id);
+        Assert.Equal(Assert.Single(await Seed.RowsAsync(hosts.Api1, a)).Id, pushA.Id);
+        Assert.Equal(Assert.Single(await Seed.RowsAsync(hosts.Api1, b)).Id, pushB.Id);
         Assert.False(inboxA.Reader.TryRead(out _));
         Assert.False(inboxB.Reader.TryRead(out _));
     }
@@ -234,13 +219,9 @@ public class WorkerTests(Containers containers)
     public async Task Dlq_admin_is_hosted()
     {
         await using var hosts = await StartAsync();
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/admin/dlq/notification/queues");
-        request.Headers.Add("x-bloom-user-type", "staff");
-        request.Headers.Add("x-bloom-role", "Admin");
-        request.Headers.Add("x-bloom-user-id", Guid.NewGuid().ToString());
-        request.Headers.Add("x-bloom-request-id", Guid.NewGuid().ToString());
+        using var admin = hosts.Api2.StaffClient("Admin");
 
-        var response = await hosts.Api2.Http.SendAsync(request, Ct);
+        var response = await admin.GetAsync("/api/admin/dlq/notification/queues", Ct);
 
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         var queues = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct)).RootElement.GetProperty("queues").EnumerateArray()

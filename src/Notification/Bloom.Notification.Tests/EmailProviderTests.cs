@@ -121,6 +121,18 @@ public class EmailProviderTests(Containers containers)
         Assert.Empty(n.Resend.Requests);
     }
 
+    [Fact]
+    public async Task Smtp_malformed_address_is_permanent()
+    {
+        await using var n = await TestNotification.StartAsync(containers, o => o.Config["Notification:Email:Provider"] = "smtp");
+
+        var e = await Assert.ThrowsAsync<EmailSendException>(() => Provider(n).SendAsync(Message("not an address"), "bloom:email:k", TestContext.Current.CancellationToken));
+
+        Assert.False(e.Transient);
+        Assert.Equal("invalid_address", e.Reason);
+        Assert.DoesNotContain("not an address", e.Message);
+    }
+
     [Theory, InlineData(550, true), InlineData(553, true), InlineData(554, false), InlineData(421, false), InlineData(451, false)]
     public void Smtp_mailbox_errors_are_permanent(int code, bool permanent) =>
         Assert.Equal(permanent, SmtpEmailProvider.IsPermanent((SmtpStatusCode)code));

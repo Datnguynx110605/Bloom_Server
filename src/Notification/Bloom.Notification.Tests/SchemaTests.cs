@@ -10,30 +10,6 @@ public class SchemaTests(Containers containers)
 
     private static Guid Id() => Guid.CreateVersion7();
 
-    private static NotificationRow NewNotification(Guid sourceMessageId, string type) => new()
-    {
-        Id = Id(),
-        AccountId = Id(),
-        Type = type,
-        Title = "t",
-        Body = "b",
-        Link = "/orders/BLM-1",
-        SourceMessageId = sourceMessageId,
-        CreatedAt = DateTimeOffset.UtcNow,
-    };
-
-    private static EmailJobRow NewJob(Guid sourceMessageId, string template, string status = EmailStatuses.Pending) => new()
-    {
-        Id = Id(),
-        ToEmail = "a@bloom.test",
-        Template = template,
-        Data = "{}",
-        Status = status,
-        NextAttemptAt = DateTimeOffset.UtcNow,
-        SourceMessageId = sourceMessageId,
-        CreatedAt = DateTimeOffset.UtcNow,
-    };
-
     private static async Task<string> SqlStateAsync(NotificationDbContext db, object entity)
     {
         db.Add(entity);
@@ -58,13 +34,13 @@ public class SchemaTests(Containers containers)
         var source = Id();
         await using (var db = t.NewDb())
         {
-            db.Add(NewNotification(source, "order.confirmed"));
-            db.Add(NewNotification(source, "order.shipped")); // another type is fine
+            db.Add(Seed.Notification(type: "order.confirmed", sourceMessageId: source));
+            db.Add(Seed.Notification(type: "order.shipped", sourceMessageId: source)); // another type is fine
             await db.SaveChangesAsync(Ct);
         }
 
         await using var again = t.NewDb();
-        Assert.Equal("23505", await SqlStateAsync(again, NewNotification(source, "order.confirmed")));
+        Assert.Equal("23505", await SqlStateAsync(again, Seed.Notification(type: "order.confirmed", sourceMessageId: source)));
     }
 
     [Fact]
@@ -74,13 +50,13 @@ public class SchemaTests(Containers containers)
         var source = Id();
         await using (var db = t.NewDb())
         {
-            db.Add(NewJob(source, "order.confirmed"));
-            db.Add(NewJob(source, "order.shipped"));
+            db.Add(Seed.Job("order.confirmed", sourceMessageId: source));
+            db.Add(Seed.Job("order.shipped", sourceMessageId: source));
             await db.SaveChangesAsync(Ct);
         }
 
         await using var again = t.NewDb();
-        Assert.Equal("23505", await SqlStateAsync(again, NewJob(source, "order.confirmed")));
+        Assert.Equal("23505", await SqlStateAsync(again, Seed.Job("order.confirmed", sourceMessageId: source)));
     }
 
     [Fact]
@@ -89,7 +65,7 @@ public class SchemaTests(Containers containers)
         await using var t = await TestNotification.StartAsync(containers);
         await using var db = t.NewDb();
 
-        Assert.Equal("23514", await SqlStateAsync(db, NewJob(Id(), "order.confirmed", status: "x")));
+        Assert.Equal("23514", await SqlStateAsync(db, Seed.Job(status: "x")));
     }
 
     [Fact]

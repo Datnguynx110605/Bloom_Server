@@ -81,7 +81,9 @@ public class HubTests(Containers containers)
         var connected = attempts.Where(a => a.Connection is not null).ToArray();
         Assert.Single(connected);
         Assert.Equal(HubConnectionState.Connected, connected[0].Connection!.State);
-        Assert.Equal(9, attempts.Count(a => a.Error is not null));
+        var losers = attempts.Where(a => a.Error is not null).Select(a => a.Error!).ToArray();
+        Assert.Equal(9, losers.Length);
+        Assert.All(losers, e => Assert.Contains("401", e.Message)); // "Incomplete handshake, status code: 401"
         Assert.Equal(9, metrics.Sum("ws_rejected_total", ("reason", "ticket")));
         await connected[0].Connection!.DisposeAsync();
     }

@@ -91,7 +91,7 @@ public class ShellTests(Containers containers)
     {
         var e = reason == NotificationErrors.ValidationFailed
             ? NotificationErrors.Validation("page_token", "m")
-            : Assert.Throws<RpcException>(() => new Caller(Guid.NewGuid(), "staff", "admin").RequireCustomer());
+            : Assert.Throws<RpcException>(() => new Caller(Guid.NewGuid(), "staff").RequireCustomer());
 
         Assert.Equal(code, e.StatusCode);
         var info = ErrorInfoOf(e);
@@ -102,28 +102,23 @@ public class ShellTests(Containers containers)
     [Fact]
     public void Role_checks()
     {
-        var customer = new Caller(Guid.NewGuid(), "customer", null);
+        var customer = new Caller(Guid.NewGuid(), "customer");
 
         Assert.Same(customer, customer.RequireCustomer());
-        foreach (var role in new[] { "support", "warehouse", "catalog_manager", "admin" })
-            Assert.Equal(StatusCode.PermissionDenied, Assert.Throws<RpcException>(() => new Caller(Guid.NewGuid(), "staff", role).RequireCustomer()).StatusCode);
+        Assert.Equal(StatusCode.PermissionDenied, Assert.Throws<RpcException>(() => new Caller(Guid.NewGuid(), "staff").RequireCustomer()).StatusCode);
     }
 
     [Fact]
     public async Task Api_host_starts_and_hosts_the_dlq_admin()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/admin/dlq/notification/queues");
-        request.Headers.Add("x-bloom-user-type", "staff");
-        request.Headers.Add("x-bloom-role", "Admin");
-        request.Headers.Add("x-bloom-user-id", Guid.NewGuid().ToString());
-        request.Headers.Add("x-bloom-request-id", Guid.NewGuid().ToString());
+        using var admin = t.StaffClient("Admin");
 
-        var response = await t.Http.SendAsync(request, TestContext.Current.CancellationToken);
+        var response = await admin.GetAsync("/api/admin/dlq/notification/queues", TestContext.Current.CancellationToken);
 
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
     }
 
     private static ErrorInfo ErrorInfoOf(RpcException e) =>
-        Google.Rpc.Status.Parser.ParseFrom(e.Trailers.GetValueBytes("grpc-status-details-bin")).Details.Single().Unpack<ErrorInfo>();
+        e.GetRpcStatus()!.Details.Single().Unpack<ErrorInfo>();
 }

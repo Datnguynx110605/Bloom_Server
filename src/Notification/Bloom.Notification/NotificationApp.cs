@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
+using System.Net.Http.Headers;
 
 namespace Bloom.Notification;
 
@@ -44,7 +45,12 @@ public static class NotificationApp
         builder.Services.AddDbContext<NotificationDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         if (options.Email.Provider == "resend")
         {
-            builder.Services.AddHttpClient<ResendEmailProvider>(c => ResendEmailProvider.Configure(c, options.Email.Resend));
+            builder.Services.AddHttpClient<ResendEmailProvider>(c =>
+            {
+                c.BaseAddress = new Uri(options.Email.Resend.BaseUrl.TrimEnd('/') + "/");
+                c.Timeout = TimeSpan.FromSeconds(10);
+                c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.Email.Resend.ApiKey);
+            });
             builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<ResendEmailProvider>());
         }
         else

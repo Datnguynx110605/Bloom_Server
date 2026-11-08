@@ -49,8 +49,16 @@ public sealed class EventConsumer(
         // GetPayload comes first in every case: an invalid payload dead-letters at once, with nothing written.
         switch (e.MessageType)
         {
-            case IdentityMessages.VerificationCode: await Code(e, ct); break;
-            case IdentityMessages.StaffInvited: await Invitation(e, ct); break;
+            case IdentityMessages.VerificationCode:
+                var code = e.GetPayload<VerificationCodeV1>();
+                // The code stays encrypted exactly as received until the sender decrypts it (NR-03).
+                await EnqueueEmail(e, NotificationTypes.AccountCode, null, code.Email,
+                    new() { ["purpose"] = code.Purpose, ["encryptedCode"] = code.EncryptedCode, ["expiresAt"] = code.ExpiresAt.ToString("O") }, ct);
+                break;
+            case IdentityMessages.StaffInvited:
+                var invited = e.GetPayload<StaffInvitedV1>();
+                await EnqueueEmail(e, NotificationTypes.StaffInvitation, null, invited.Email, new() { ["role"] = invited.Role, ["inviteUrl"] = invited.InviteUrl }, ct);
+                break;
             case IdentityMessages.CustomerRegistered:
                 var registered = e.GetPayload<CustomerRegisteredV1>();
                 await UpsertContact(e, registered.AccountId, registered.Email, registered.Name, ct);
@@ -61,8 +69,16 @@ public sealed class EventConsumer(
                 break;
             case IdentityMessages.AccountDeleted: await AccountDeleted(e.GetPayload<AccountDeletedV1>().AccountId, ct); break;
             case IdentityMessages.TokensRevoked: Disconnect(e.GetPayload<TokensRevokedV1>().AccountId); break;
-            case OrderMessages.Paid: await OrderPaid(e.GetPayload<OrderPaidV1>(), e, ct); break;
-            case OrderMessages.Cancelled: await OrderCancelled(e.GetPayload<OrderCancelledV1>(), e, ct); break;
+            case OrderMessages.Paid:
+                var paid = e.GetPayload<OrderPaidV1>();
+                await InsertOrderRef(paid.OrderId, paid.AccountId, paid.OrderNumber, ct);
+                await Notify(e, NotificationTypes.OrderConfirmed, paid.AccountId, paid.OrderNumber, [], ct);
+                break;
+            case OrderMessages.Cancelled:
+                var cancelled = e.GetPayload<OrderCancelledV1>();
+                await InsertOrderRef(cancelled.OrderId, cancelled.AccountId, cancelled.OrderNumber, ct);
+                await Notify(e, NotificationTypes.OrderCancelled, cancelled.AccountId, cancelled.OrderNumber, new() { ["reason"] = cancelled.Reason }, ct);
+                break;
             case OrderMessages.PreorderDelayed:
                 var delayed = e.GetPayload<OrderPreorderDelayedV1>();
                 await Notify(e, NotificationTypes.OrderPreorderDelayed, delayed.AccountId, delayed.OrderNumber, [], ct);
@@ -101,24 +117,10 @@ public sealed class EventConsumer(
         }
     }
 
-    private Task Code(Envelope e, CancellationToken ct)
-    {
-        var p = e.GetPayload<VerificationCodeV1>();
-        // The code stays encrypted exactly as received until the sender decrypts it (NR-03).
-        return EnqueueEmail(e, NotificationTypes.AccountCode, null, p.Email,
-            new() { ["purpose"] = p.Purpose, ["encryptedCode"] = p.EncryptedCode, ["expiresAt"] = p.ExpiresAt.ToString("O") }, ct);
-    }
-
-    private Task Invitation(Envelope e, CancellationToken ct)
-    {
-        var p = e.GetPayload<StaffInvitedV1>();
-        return EnqueueEmail(e, NotificationTypes.StaffInvitation, null, p.Email, new() { ["role"] = p.Role, ["inviteUrl"] = p.InviteUrl }, ct);
-    }
-
     /// <summary>Keeps the newest contact (plan N12): an older event never overwrites a newer one.</summary>
     private Task UpsertContact(Envelope e, Guid accountId, string email, string name, CancellationToken ct)
     {
-        var at = new DateTimeOffset(DateTime.SpecifyKind(e.OccurredAt, DateTimeKind.Utc));
+        var at = e.OccurredAt.ToUniversalTime();
         return db.Database.ExecuteSqlAsync($"""
             INSERT INTO contacts (account_id, email, name, updated_at) VALUES ({accountId}, {email}, {name}, {at})
             ON CONFLICT (account_id) DO UPDATE SET email = excluded.email, name = excluded.name, updated_at = excluded.updated_at
@@ -136,18 +138,6 @@ public sealed class EventConsumer(
     }
 
     private void Disconnect(Guid accountId) => db.AfterCommit.Add(() => Disconnects.PublishAsync(redis, accountId));
-
-    private async Task OrderPaid(OrderPaidV1 p, Envelope e, CancellationToken ct)
-    {
-        await InsertOrderRef(p.OrderId, p.AccountId, p.OrderNumber, ct);
-        await Notify(e, NotificationTypes.OrderConfirmed, p.AccountId, p.OrderNumber, [], ct);
-    }
-
-    private async Task OrderCancelled(OrderCancelledV1 p, Envelope e, CancellationToken ct)
-    {
-        await InsertOrderRef(p.OrderId, p.AccountId, p.OrderNumber, ct);
-        await Notify(e, NotificationTypes.OrderCancelled, p.AccountId, p.OrderNumber, new() { ["reason"] = p.Reason }, ct);
-    }
 
     /// <summary>Fulfillment and payment events carry only the order id: account and order number come from <c>order_refs</c> (§5.3).</summary>
     private async Task ViaOrderRef(Envelope e, Guid orderId, string type, Dictionary<string, string> vars, CancellationToken ct)
@@ -184,9 +174,9 @@ public sealed class EventConsumer(
         if (inserted == 1)
             db.AfterCommit.Add(async () =>
             {
+                metrics.Created(type, "in_app"); // counted before the push: a failed push still created the row
                 await hub.Clients.Group(NotificationHub.Group(accountId)).SendAsync(NotificationHub.ClientMethod, new PushMessage(id, type, title, link, now), CancellationToken.None);
                 metrics.Pushed(type);
-                metrics.Created(type, "in_app");
             });
 
         await EnqueueEmail(e, type, accountId, contact.Email, vars, ct);
@@ -200,11 +190,6 @@ public sealed class EventConsumer(
             VALUES ({Guid.CreateVersion7()}, {accountId}, {to}, {template}, {JsonSerializer.Serialize(data)}::jsonb, {EmailStatuses.Pending}, 0, {now}, {e.MessageId}, {now})
             ON CONFLICT (source_message_id, template) DO NOTHING
             """, ct);
-        if (inserted == 1)
-            db.AfterCommit.Add(() =>
-            {
-                metrics.Created(template, "email");
-                return Task.CompletedTask;
-            });
+        if (inserted == 1) db.AfterCommit.Add(() => { metrics.Created(template, "email"); return Task.CompletedTask; });
     }
 }

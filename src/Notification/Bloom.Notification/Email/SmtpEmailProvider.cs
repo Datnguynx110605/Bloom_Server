@@ -12,12 +12,22 @@ public sealed class SmtpEmailProvider(NotificationOptions options) : IEmailProvi
         var smtp = options.Email.Smtp;
         using var client = new SmtpClient(smtp.Host, smtp.Port);
         if (!string.IsNullOrEmpty(smtp.User)) client.Credentials = new NetworkCredential(smtp.User, smtp.Password);
-        using var mail = new MailMessage(options.Email.From, message.To) { Subject = message.Subject, Body = message.Text };
-        mail.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(message.Html, null, MediaTypeNames.Text.Html));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); // SmtpClient.Timeout does not apply to SendMailAsync
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         try
         {
-            await client.SendMailAsync(mail, ct);
+            using var mail = new MailMessage(options.Email.From, message.To) { Subject = message.Subject, Body = message.Text };
+            mail.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(message.Html, null, MediaTypeNames.Text.Html));
+            await client.SendMailAsync(mail, timeout.Token);
             return null;
+        }
+        catch (FormatException e) // a malformed address will never be accepted (no message: it would echo the address)
+        {
+            throw new EmailSendException(false, "invalid_address", "The recipient address is malformed.", e);
+        }
+        catch (OperationCanceledException e) when (!ct.IsCancellationRequested) // our 10 s; the caller's own cancellation propagates
+        {
+            throw new EmailSendException(true, "timeout", "The SMTP server did not answer in time.", e);
         }
         catch (SmtpException e) // never log or echo the address or body
         {

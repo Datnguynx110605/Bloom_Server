@@ -15,21 +15,6 @@ public class SenderTests(Containers containers)
 
     private static EmailSender Sender(TestNotification t) => ActivatorUtilities.CreateInstance<EmailSender>(t.Services);
 
-    private static async Task<Guid> JobAsync(TestNotification t, string template = "order.confirmed", Dictionary<string, string>? data = null, string status = EmailStatuses.Pending,
-        DateTimeOffset? next = null, string? to = null)
-    {
-        var id = Guid.CreateVersion7();
-        var now = t.Clock.GetUtcNow();
-        await using var db = t.NewDb();
-        db.EmailJobs.Add(new EmailJobRow
-        {
-            Id = id, ToEmail = to ?? $"{id:N}@customer.test", Template = template, Status = status, NextAttemptAt = next ?? now, SourceMessageId = Guid.NewGuid(), CreatedAt = now,
-            Data = JsonSerializer.Serialize(data ?? new Dictionary<string, string> { ["name"] = "Ada", ["orderNumber"] = "BL-1001" }),
-        });
-        await db.SaveChangesAsync(Ct);
-        return id;
-    }
-
     private static async Task<EmailJobRow> RowAsync(TestNotification t, Guid id)
     {
         await using var db = t.NewDb();
@@ -90,7 +75,7 @@ public class SenderTests(Containers containers)
     public async Task Expired_code_is_still_sent()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        var id = await JobAsync(t, "account.code", new() { ["purpose"] = "signup", ["encryptedCode"] = TestNotification.EncryptCode("111222"), ["expiresAt"] = "2020-01-01T00:00:00.0000000+00:00" });
+        var id = await Seed.JobAsync(t, "account.code", new() { ["purpose"] = "signup", ["encryptedCode"] = TestNotification.EncryptCode("111222"), ["expiresAt"] = "2020-01-01T00:00:00.0000000+00:00" });
 
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
 
@@ -103,7 +88,7 @@ public class SenderTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var sealedCode = Tampered(TestNotification.EncryptCode("482913"));
-        var id = await JobAsync(t, "account.code", new() { ["purpose"] = "signup", ["encryptedCode"] = sealedCode, ["expiresAt"] = "2030-01-01T00:00:00.0000000+00:00" }, to: "who@customer.test");
+        var id = await Seed.JobAsync(t, "account.code", new() { ["purpose"] = "signup", ["encryptedCode"] = sealedCode, ["expiresAt"] = "2030-01-01T00:00:00.0000000+00:00" }, to: "who@customer.test");
 
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
 
@@ -121,7 +106,7 @@ public class SenderTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         t.Resend.Fail(500, times: 5);
-        var id = await JobAsync(t);
+        var id = await Seed.JobAsync(t);
         TimeSpan[] delays = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
 
         for (var attempt = 1; attempt <= 4; attempt++)
@@ -153,7 +138,7 @@ public class SenderTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         t.Resend.Fail(422, "validation_error");
-        var id = await JobAsync(t);
+        var id = await Seed.JobAsync(t);
 
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
 
@@ -169,8 +154,8 @@ public class SenderTests(Containers containers)
     public async Task Not_due_and_finished_jobs_are_skipped()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        await JobAsync(t, next: t.Clock.GetUtcNow().AddSeconds(5));
-        foreach (var status in new[] { EmailStatuses.Sent, EmailStatuses.Failed, EmailStatuses.Cancelled }) await JobAsync(t, status: status);
+        await Seed.JobAsync(t, next: t.Clock.GetUtcNow().AddSeconds(5));
+        foreach (var status in new[] { EmailStatuses.Sent, EmailStatuses.Failed, EmailStatuses.Cancelled }) await Seed.JobAsync(t, status: status);
 
         Assert.Equal(0, await Sender(t).RunOnceAsync(Ct));
 
@@ -183,7 +168,7 @@ public class SenderTests(Containers containers)
         await using var t = await TestNotification.StartAsync(containers);
         t.Resend.Before = () => Task.Delay(50, Ct);
         var ids = new List<Guid>();
-        for (var i = 0; i < 60; i++) ids.Add(await JobAsync(t));
+        for (var i = 0; i < 60; i++) ids.Add(await Seed.JobAsync(t));
 
         var handled = await Task.WhenAll(Sender(t).RunOnceAsync(Ct), Sender(t).RunOnceAsync(Ct));
 
@@ -199,7 +184,7 @@ public class SenderTests(Containers containers)
     public async Task Claimed_job_waits_for_its_lease()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        var id = await JobAsync(t, next: t.Clock.GetUtcNow().AddMinutes(1)); // what a crashed sender leaves behind
+        var id = await Seed.JobAsync(t, next: t.Clock.GetUtcNow().AddMinutes(1)); // what a crashed sender leaves behind
 
         Assert.Equal(0, await Sender(t).RunOnceAsync(Ct));
         t.Clock.Advance(TimeSpan.FromSeconds(61));
@@ -209,12 +194,33 @@ public class SenderTests(Containers containers)
     }
 
     [Fact]
+    public async Task Job_whose_lease_was_taken_over_is_skipped()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        var first = await Seed.JobAsync(t);
+        var second = await Seed.JobAsync(t);
+        var takenOver = t.Clock.GetUtcNow().AddMinutes(2);
+        // While pass A sends the first job it holds, a second sender claims the other one (its next_attempt_at moves).
+        t.Resend.Before = () => t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = {takenOver} WHERE 'bloom:email:' || id::text <> {t.Resend.Requests[0].IdempotencyKey}");
+
+        await Sender(t).RunOnceAsync(Ct);
+
+        var request = Assert.Single(t.Resend.Requests); // the job A lost is not sent
+        var sentId = Guid.Parse(request.IdempotencyKey!["bloom:email:".Length..]);
+        var lost = await RowAsync(t, sentId == first ? second : first);
+        Assert.Equal(EmailStatuses.Pending, lost.Status);
+        Assert.Equal(0, lost.Attempts);
+        Assert.Equal(takenOver, lost.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.Equal(EmailStatuses.Sent, (await RowAsync(t, sentId)).Status);
+    }
+
+    [Fact]
     public async Task One_failure_does_not_block_the_others()
     {
         await using var t = await TestNotification.StartAsync(containers);
         t.Resend.Fail(500);
-        var first = await JobAsync(t);
-        var second = await JobAsync(t);
+        var first = await Seed.JobAsync(t);
+        var second = await Seed.JobAsync(t);
 
         Assert.Equal(2, await Sender(t).RunOnceAsync(Ct));
 
@@ -226,7 +232,7 @@ public class SenderTests(Containers containers)
     public async Task Job_cancelled_during_the_send_stays_cancelled()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        var id = await JobAsync(t);
+        var id = await Seed.JobAsync(t);
         t.Resend.Before = () => t.SqlAsync($"UPDATE email_jobs SET status = {EmailStatuses.Cancelled} WHERE id = {id}");
 
         await Sender(t).RunOnceAsync(Ct);
@@ -242,7 +248,7 @@ public class SenderTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers, o => o.Config["Notification:Email:Provider"] = "smtp");
         var to = $"{Guid.NewGuid():N}@customer.test";
-        var id = await JobAsync(t, to: to);
+        var id = await Seed.JobAsync(t, to: to);
 
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
 
@@ -256,18 +262,19 @@ public class SenderTests(Containers containers)
     }
 
     [Fact]
-    public async Task Malformed_address_is_retried_as_unexpected_and_does_not_break_the_batch()
+    public async Task Malformed_address_fails_at_once_and_does_not_break_the_batch()
     {
         await using var t = await TestNotification.StartAsync(containers, o => o.Config["Notification:Email:Provider"] = "smtp");
-        var bad = await JobAsync(t, to: "not an address");
-        var good = await JobAsync(t);
+        var bad = await Seed.JobAsync(t, to: "not an address");
+        var good = await Seed.JobAsync(t);
 
         Assert.Equal(2, await Sender(t).RunOnceAsync(Ct));
 
         var row = await RowAsync(t, bad);
-        Assert.Equal(EmailStatuses.Pending, row.Status);
-        Assert.Equal("unexpected", row.LastError);
+        Assert.Equal(EmailStatuses.Failed, row.Status);
+        Assert.Equal("invalid_address", row.LastError);
         Assert.Equal(1, row.Attempts);
+        Assert.Equal(1, t.ErrorLogs);
         Assert.Equal(EmailStatuses.Sent, (await RowAsync(t, good)).Status);
         Assert.DoesNotContain(t.Logs.Entries, e => e.Contains("not an address"));
     }
@@ -278,10 +285,10 @@ public class SenderTests(Containers containers)
         await using var t = await TestNotification.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
         var later = t.Clock.GetUtcNow().AddHours(1);
-        await JobAsync(t, next: later);
-        await JobAsync(t, next: later);
-        await JobAsync(t, status: EmailStatuses.Sent);
-        await JobAsync(t, status: EmailStatuses.Failed);
+        await Seed.JobAsync(t, next: later);
+        await Seed.JobAsync(t, next: later);
+        await Seed.JobAsync(t, status: EmailStatuses.Sent);
+        await Seed.JobAsync(t, status: EmailStatuses.Failed);
 
         await Sender(t).RefreshGaugeAsync(Ct);
 

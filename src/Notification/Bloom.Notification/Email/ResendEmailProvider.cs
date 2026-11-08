@@ -1,23 +1,12 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 
 namespace Bloom.Notification.Email;
 
-/// <summary>Resend over <c>HttpClient</c> and <c>System.Text.Json</c> (spec §7): one <c>POST emails</c> per send. Configure the client with <see cref="Configure"/>.</summary>
+/// <summary>Resend over <c>HttpClient</c> and <c>System.Text.Json</c> (spec §7): one <c>POST emails</c> per send. The client (base address, bearer key, 10 s timeout) is configured in <c>NotificationApp</c>.</summary>
 public sealed class ResendEmailProvider(HttpClient http, NotificationOptions options) : IEmailProvider
 {
-    public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
-
-    /// <summary>Base address, bearer key and the 10 s timeout.</summary>
-    public static void Configure(HttpClient http, NotificationOptions.ResendOptions resend)
-    {
-        http.BaseAddress = new Uri(resend.BaseUrl.TrimEnd('/') + "/");
-        http.Timeout = Timeout;
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", resend.ApiKey);
-    }
-
     public async Task<string?> SendAsync(EmailMessage message, string idempotencyKey, CancellationToken ct)
     {
         // Messages never carry the address or body: they are PII and may hold a code.

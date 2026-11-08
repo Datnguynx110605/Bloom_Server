@@ -71,21 +71,10 @@ public static class Sockets
         return inbox;
     }
 
-    public static async Task<PushMessage> NextAsync(Channel<PushMessage> inbox)
-    {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromSeconds(10));
-        return await inbox.Reader.ReadAsync(cts.Token);
-    }
+    public static Task<PushMessage> NextAsync(Channel<PushMessage> inbox, int seconds = 10) =>
+        inbox.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(seconds), TestContext.Current.CancellationToken);
 
     /// <summary>Waits for the server to close the connection; fails when it is still open after <paramref name="within"/> (real time).</summary>
-    public static async Task ClosedAsync(HubConnection c, TimeSpan within)
-    {
-        var deadline = DateTime.UtcNow + within;
-        while (c.State != HubConnectionState.Disconnected)
-        {
-            Assert.True(DateTime.UtcNow < deadline, $"Connection still {c.State} after {within}");
-            await Task.Delay(25, TestContext.Current.CancellationToken);
-        }
-    }
+    public static Task ClosedAsync(HubConnection c, TimeSpan within) =>
+        Poll.UntilAsync(() => Task.FromResult(c.State == HubConnectionState.Disconnected), (int)within.TotalSeconds, "the connection to close");
 }
