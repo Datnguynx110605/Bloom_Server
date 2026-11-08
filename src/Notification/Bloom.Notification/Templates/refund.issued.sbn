@@ -1,0 +1,16 @@
+--- subject
+Your refund for order {{ orderNumber }}
+--- html
+<p>Hi {{ name }},</p>
+<p>We refunded {{ refundAmount }} for order {{ orderNumber }}. It can take a few days to show on your statement.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+We refunded {{ refundAmount }} for order {{ orderNumber }}. It can take a few days to show on your statement.
+
+View your order: {{ orderUrl }}
+--- title
+Refund issued
+--- body
+We refunded {{ refundAmount }} for order {{ orderNumber }}.

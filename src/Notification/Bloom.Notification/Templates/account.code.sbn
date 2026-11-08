@@ -1,0 +1,12 @@
+--- subject
+Your Bloom code
+--- html
+<p>{{ if purpose == "signup" }}Use this code to finish creating your Bloom account.{{ else if purpose == "reset_password" }}Use this code to reset your Bloom password.{{ else if purpose == "change_email" }}Use this code to confirm your new email address.{{ else }}Here is your Bloom code.{{ end }}</p>
+<p><strong>{{ code }}</strong></p>
+<p>The code expires soon. If you did not ask for it, you can ignore this email.</p>
+--- text
+{{ if purpose == "signup" }}Use this code to finish creating your Bloom account.{{ else if purpose == "reset_password" }}Use this code to reset your Bloom password.{{ else if purpose == "change_email" }}Use this code to confirm your new email address.{{ else }}Here is your Bloom code.{{ end }}
+
+{{ code }}
+
+The code expires soon. If you did not ask for it, you can ignore this email.

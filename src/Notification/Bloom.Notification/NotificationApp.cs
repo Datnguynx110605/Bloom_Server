@@ -1,5 +1,6 @@
 using Bloom.Notification.Data;
 using Bloom.Notification.Observability;
+using Bloom.Notification.Templates;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -30,6 +31,7 @@ public static class NotificationApp
         builder.Services.AddSingleton(options);
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan N3)
         builder.Services.AddSingleton<NotificationMetrics>();
+        builder.Services.AddSingleton(new TemplateRenderer(options)); // parses every template now: a bad template fails the build of the app (plan N15)
         builder.Services.AddSingleton<AfterCommitInterceptor>();
         builder.Services.AddDbContext<NotificationDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         var bloom = builder.Services.AddBloom<NotificationDbContext>(o =>

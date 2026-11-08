@@ -1,0 +1,9 @@
+--- subject
+You are invited to Bloom
+--- html
+<p>You have been invited to join the Bloom team as {{ role }}.</p>
+<p><a href="{{ inviteUrl }}">Accept the invitation</a></p>
+--- text
+You have been invited to join the Bloom team as {{ role }}.
+
+Accept the invitation: {{ inviteUrl }}

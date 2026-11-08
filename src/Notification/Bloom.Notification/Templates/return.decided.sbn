@@ -1,0 +1,16 @@
+--- subject
+Your return for order {{ orderNumber }} was reviewed
+--- html
+<p>Hi {{ name }},</p>
+<p>We reviewed your return for order {{ orderNumber }}. Your refund is {{ refundAmount }}.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+We reviewed your return for order {{ orderNumber }}. Your refund is {{ refundAmount }}.
+
+View your order: {{ orderUrl }}
+--- title
+Return reviewed
+--- body
+We reviewed your return for order {{ orderNumber }}. Your refund is {{ refundAmount }}.

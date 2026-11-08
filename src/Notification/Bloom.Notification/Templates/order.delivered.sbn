@@ -1,0 +1,16 @@
+--- subject
+Order {{ orderNumber }} was delivered
+--- html
+<p>Hi {{ name }},</p>
+<p>Order {{ orderNumber }} was delivered. We hope you enjoy it.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+Order {{ orderNumber }} was delivered. We hope you enjoy it.
+
+View your order: {{ orderUrl }}
+--- title
+Order delivered
+--- body
+Order {{ orderNumber }} was delivered.

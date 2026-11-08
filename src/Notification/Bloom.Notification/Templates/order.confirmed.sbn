@@ -1,0 +1,16 @@
+--- subject
+Order {{ orderNumber }} is confirmed
+--- html
+<p>Hi {{ name }},</p>
+<p>Thank you! We received your payment for order {{ orderNumber }}.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+Thank you! We received your payment for order {{ orderNumber }}.
+
+View your order: {{ orderUrl }}
+--- title
+Order confirmed
+--- body
+We received your payment for order {{ orderNumber }}.
