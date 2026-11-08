@@ -30,7 +30,8 @@ public static class NotificationApp
         builder.Services.AddSingleton(options);
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan N3)
         builder.Services.AddSingleton<NotificationMetrics>();
-        builder.Services.AddDbContext<NotificationDbContext>(o => o.UseNpgsql(options.Database));
+        builder.Services.AddSingleton<AfterCommitInterceptor>();
+        builder.Services.AddDbContext<NotificationDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         var bloom = builder.Services.AddBloom<NotificationDbContext>(o =>
         {
             o.ServiceName = "notification";
