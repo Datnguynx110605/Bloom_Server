@@ -3,14 +3,14 @@ using Bloom.Notification.Observability;
 namespace Bloom.Notification.Sockets;
 
 /// <summary>
-/// Runs before the hub on its exact path and answers without a body (owner item 1): not a WebSocket upgrade 400 (the ticket stays),
+/// Runs before the hub on its path and every path under it and answers without a body (owner item 1): not a WebSocket upgrade 400 (the ticket stays),
 /// Origin not allowed 403 (the ticket stays), unknown or used ticket 401. The ticket is spent last, so only an allowed upgrade can burn it.
 /// </summary>
 public sealed class HubGate(RequestDelegate next, NotificationOptions options, Tickets tickets, NotificationMetrics metrics)
 {
     public async Task InvokeAsync(HttpContext context)
     {
-        if (!context.Request.Path.Equals(NotificationHub.Path, StringComparison.OrdinalIgnoreCase))
+        if (!context.Request.Path.StartsWithSegments(NotificationHub.Path, StringComparison.OrdinalIgnoreCase)) // the hub path and everything under it (negotiate, trailing slash)
         {
             await next(context);
             return;

@@ -76,6 +76,7 @@ public static class NotificationApp
         var app = builder.Build();
         if (api)
         {
+            app.UseWebSockets(); // the gate reads IsWebSocketRequest before MapHub's own WebSockets middleware runs; Kestrel has no feature of its own
             app.UseMiddleware<HubGate>();
             app.MapHub<NotificationHub>(NotificationHub.Path, o => o.Transports = HttpTransportType.WebSockets);
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7

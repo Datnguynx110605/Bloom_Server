@@ -1,6 +1,8 @@
 using Bloom.Notification.Sockets;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
 
@@ -115,6 +117,48 @@ public class HubTests(Containers containers)
         Assert.True(await t.Services.GetRequiredService<IConnectionMultiplexer>().GetDatabase().KeyExistsAsync($"ws:ticket:{ticket}"));
         await using var c = await Sockets.ConnectAsync(t, ticket);
         Assert.Equal(0, metrics.Sum("ws_rejected_total"));
+    }
+
+    [Fact]
+    public async Task Every_path_under_the_hub_is_gated()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        var ticket = await Sockets.TicketAsync(t, Guid.NewGuid());
+
+        var negotiate = await t.Http.PostAsync($"{NotificationHub.Path}/negotiate?ticket={ticket}", null, Ct);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, negotiate.StatusCode);
+        Assert.Equal(401, await Sockets.StatusAsync(t, null, path: NotificationHub.Path + "/"));
+        Assert.Equal(403, await Sockets.StatusAsync(t, ticket, "https://evil.test", NotificationHub.Path.ToUpperInvariant()));
+        Assert.True(await t.Services.GetRequiredService<IConnectionMultiplexer>().GetDatabase().KeyExistsAsync($"ws:ticket:{ticket}"));
+    }
+
+    [Fact]
+    public async Task Kestrel_accepts_a_real_websocket_upgrade()
+    {
+        // TestServer supplies the WebSocket feature itself, Kestrel only through UseWebSockets(): run the gate on the real server too.
+        var config = TestNotification.DefaultConfig(await containers.CreateDatabaseAsync(), containers.RabbitMqUri, containers.RedisConnectionString, containers.SmtpHost, containers.SmtpPort.ToString());
+        config["Notification:Mode"] = "api";
+        await using var app = NotificationApp.Build([], b =>
+        {
+            b.Configuration.AddInMemoryCollection(config);
+            b.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, "http://127.0.0.1:0");
+        });
+        await app.StartAsync(Ct);
+        var url = app.Urls.Single();
+        var ticket = await app.Services.GetRequiredService<Tickets>().IssueAsync(Guid.NewGuid());
+
+        await using var c = new HubConnectionBuilder()
+            .WithUrl($"{url}{NotificationHub.Path}?ticket={ticket}", o =>
+            {
+                o.Transports = Microsoft.AspNetCore.Http.Connections.HttpTransportType.WebSockets;
+                o.SkipNegotiation = true;
+                o.WebSocketConfiguration = ws => ws.SetRequestHeader("Origin", Sockets.Origin);
+            })
+            .Build();
+        await c.StartAsync(Ct);
+
+        Assert.Equal(HubConnectionState.Connected, c.State);
+        await c.StopAsync(Ct);
     }
 
     [Fact]

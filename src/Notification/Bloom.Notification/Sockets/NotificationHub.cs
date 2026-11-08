@@ -15,7 +15,11 @@ public sealed class NotificationHub(ConnectionRegistry registry) : Hub
 
     public override async Task OnConnectedAsync()
     {
-        var accountId = (Guid)Context.GetHttpContext()!.Items[HubGate.AccountItem]!;
+        if (Context.GetHttpContext()?.Items[HubGate.AccountItem] is not Guid accountId)
+        {
+            Context.Abort(); // fail closed: only HubGate sets the account
+            return;
+        }
         await Groups.AddToGroupAsync(Context.ConnectionId, Group(accountId));
         registry.Add(accountId, Context);
     }

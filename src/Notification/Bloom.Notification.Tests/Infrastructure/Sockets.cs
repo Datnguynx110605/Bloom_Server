@@ -37,18 +37,24 @@ public static class Sockets
             .Build();
         var registry = t.Services.GetRequiredService<ConnectionRegistry>();
         var before = registry.Count;
-        await connection.StartAsync(TestContext.Current.CancellationToken);
+        try { await connection.StartAsync(TestContext.Current.CancellationToken); }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
         // The client is connected once the handshake is answered, which is before the hub has joined the group and registered the socket.
         await Poll.UntilAsync(() => Task.FromResult(registry.Count > before), 5, "the hub to register the socket");
         return connection;
     }
 
     /// <summary>The HTTP status the hub path answers a WebSocket request with (101 when it upgrades); the socket is closed again.</summary>
-    public static async Task<int> StatusAsync(TestNotification t, string? ticket, string? origin = Origin)
+    public static async Task<int> StatusAsync(TestNotification t, string? ticket, string? origin = Origin, string path = NotificationHub.Path)
     {
         try
         {
-            using var ws = await OpenAsync(t, Url(t, ticket), origin, TestContext.Current.CancellationToken);
+            var uri = new Uri(t.Server.BaseAddress, ticket is null ? path : $"{path}?ticket={ticket}");
+            using var ws = await OpenAsync(t, uri, origin, TestContext.Current.CancellationToken);
             return 101;
         }
         catch (InvalidOperationException e) when (e.Message.StartsWith("Incomplete handshake, status code: ", StringComparison.Ordinal))
