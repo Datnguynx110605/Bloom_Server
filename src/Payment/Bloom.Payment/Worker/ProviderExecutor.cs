@@ -12,7 +12,7 @@ namespace Bloom.Payment.Worker;
 public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider clock, ILogger<ProviderExecutor> logger) : BackgroundService
 {
     // Retry delay after transient failure n (1-based); the 5th failure fails the refund (spec §7).
-    private static readonly TimeSpan[] Backoff = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
+    internal static readonly TimeSpan[] Backoff = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
     private const int MaxAttempts = 5;
     private const int Batch = 50;
 
@@ -136,16 +136,18 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        await db.Database.ExecuteSqlAsync($"""
+        // 0 rows: a webhook moved the refund on while the lock was free, so Stripe has it and it must not fail here.
+        var pending = await db.Database.ExecuteSqlAsync($"""
             UPDATE refunds SET attempts = {n}, next_attempt_at = {next}, updated_at = {now}
             WHERE id = {refund.Id} AND status = {RefundStatuses.Pending}
-            """, ct);
-        if (n >= MaxAttempts)
+            """, ct) == 1;
+        if (pending && n >= MaxAttempts)
         {
             await scope.ServiceProvider.GetRequiredService<Transitions>().ApplyRefundAsync(refund.Id, "failed", null, ProviderException.Unavailable, ct);
             await db.SaveChangesAsync(ct);
         }
         await tx.CommitAsync(ct);
         if (n < MaxAttempts) logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); retrying at {NextAttemptAt}", refund.Id, n, next);
+        else if (pending) logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); giving up", refund.Id, n);
     }
 }

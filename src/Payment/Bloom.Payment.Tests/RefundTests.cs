@@ -36,6 +36,12 @@ public class RefundTests(Containers containers)
     private static Task<HttpResponseMessage> Post(TestPayment t, string stripeRefundId, string status, Guid? refundId, string? failureReason = null, string? eventId = null) =>
         StripeEvents.PostAsync(t, StripeEvents.Json("refund.updated", StripeEvents.Refund(stripeRefundId, status, refundId, failureReason), t.Clock.GetUtcNow(), eventId));
 
+    private static async Task<bool> WaitingOnALockAsync(TestPayment t)
+    {
+        await using var db = t.NewDb();
+        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()").SingleAsync(Ct) > 0;
+    }
+
     [Fact]
     public async Task Refund_command_records_intent_and_executor_completes_it()
     {
@@ -350,6 +356,59 @@ public class RefundTests(Containers containers)
         Assert.Equal(5, Creates(t).Count());
         Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Equal(new RefundFailedV1(orderId, command.RefundId, "provider_unavailable"), Assert.Single(await Failed(t)));
+        Assert.Equal(1, t.ErrorLogs);
+    }
+
+    [Fact]
+    public async Task Fifth_failure_leaves_a_refund_the_webhook_already_submitted()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, paymentId, _) = await Seed.PaidAsync(t, 1000);
+        var command = Command(orderId, 400);
+        await Send(t, command);
+        t.Stripe.Fail(Refunds, 500, times: 5);
+        TimeSpan[] schedule = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
+        foreach (var delay in schedule)
+        {
+            await t.RunExecutorAsync();
+            t.Clock.Advance(delay);
+        }
+        Task<HttpResponseMessage>? webhook = null;
+        t.Stripe.Before = async path =>
+        {
+            if (path != Refunds) return;
+            webhook = Post(t, "re_test_1", "pending", command.RefundId);
+            await Poll.UntilAsync(() => WaitingOnALockAsync(t), 10, "the webhook waits for the executor's row lock");
+        };
+
+        await t.RunExecutorAsync(); // the 5th call fails, but the webhook gets the row first
+
+        Assert.NotNull(webhook);
+        using var response = await webhook;
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(5, Creates(t).Count());
+        var row = await t.RefundAsync(command.RefundId);
+        Assert.Equal(RefundStatuses.Submitted, row.Status);
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
+        Assert.Empty(await Failed(t));
+        Assert.Empty(await Completed(t));
+    }
+
+    [Fact]
+    public async Task Unknown_stripe_status_backs_off_instead_of_blocking_the_queue()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, _, _) = await Seed.PaidAsync(t, 1000);
+        t.Stripe.NextRefundStatus = "some_new_status";
+        var command = Command(orderId, 400);
+        await Send(t, command);
+
+        await t.RunExecutorAsync();
+
+        Assert.Single(Creates(t));
+        var row = await t.RefundAsync(command.RefundId);
+        Assert.Equal(RefundStatuses.Pending, row.Status);
+        Assert.Equal(t.Clock.GetUtcNow() + TimeSpan.FromMinutes(2), row.NextAttemptAt!.Value, TimeSpan.FromMilliseconds(1));
         Assert.Equal(1, t.ErrorLogs);
     }
 

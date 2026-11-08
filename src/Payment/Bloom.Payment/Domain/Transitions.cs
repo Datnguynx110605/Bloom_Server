@@ -2,6 +2,7 @@ using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
 using Bloom.Payment.Observability;
 using Bloom.Payment.Stripe;
+using Bloom.Payment.Worker;
 using Bloom.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 
@@ -86,6 +87,12 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
         if (target is null)
         {
             logger.LogError("Stripe reports refund {RefundId} of order {OrderId} in the unknown status {Status}; ignored", refundId, refund.OrderId, stripeStatus);
+            // A pending row would be due again at once and, as the oldest, block every other refund: look again after the longest backoff.
+            var at = clock.GetUtcNow();
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE refunds SET next_attempt_at = {at + ProviderExecutor.Backoff[^1]}, updated_at = {at}
+                WHERE id = {refundId} AND status = {RefundStatuses.Pending}
+                """, ct);
             return false;
         }
         if (refund.Status is RefundStatuses.Succeeded or RefundStatuses.Failed)
