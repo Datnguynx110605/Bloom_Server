@@ -68,6 +68,7 @@ public static class PaymentApp
         if (api)
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
+            app.MapGrpcService<StaffService>(); // transcoded to /api/admin/payments (spec §6)
             app.MapStripeWebhook(); // plain HTTP: the signature needs the raw body (04-payment §3)
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }

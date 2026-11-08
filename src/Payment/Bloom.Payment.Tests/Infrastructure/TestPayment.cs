@@ -19,6 +19,9 @@ public sealed class TestPaymentOptions
     /// <summary>Reuses this database (for example an API host and a worker host on one database) instead of creating one.</summary>
     public string? ConnectionString { get; set; }
 
+    /// <summary>Uses this Stripe double instead of a new one, so two hosts on one database see the same Stripe (an API host and a worker host).</summary>
+    public FakeStripe? Stripe { get; set; }
+
     /// <summary>Config keys (for example <c>Payment:StorefrontBaseUrl</c>) that replace the defaults of <see cref="TestPayment.DefaultConfig"/>.</summary>
     public Dictionary<string, string?> Config { get; } = [];
 }
@@ -47,7 +50,7 @@ public sealed class TestPayment : IAsyncDisposable
 
     public required LogCapture Logs { get; init; }
 
-    /// <summary>The Stripe double behind the app's real <see cref="StripeClient"/>; one per host, on the test clock.</summary>
+    /// <summary>The Stripe double behind the app's real <see cref="StripeClient"/>; one per host (unless shared through <see cref="TestPaymentOptions.Stripe"/>), on the test clock.</summary>
     public required FakeStripe Stripe { get; init; }
 
     /// <summary>The connection string of the database (the app connects as its owner, plan R2).</summary>
@@ -63,7 +66,7 @@ public sealed class TestPayment : IAsyncDisposable
         var connectionString = options.ConnectionString ?? await containers.CreateDatabaseAsync();
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var logs = new LogCapture();
-        var stripe = new FakeStripe(clock);
+        var stripe = options.Stripe ?? new FakeStripe(clock);
 
         var config = DefaultConfig(connectionString, containers.RabbitMqUri);
         config["Payment:Mode"] = options.Mode;

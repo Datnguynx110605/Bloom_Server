@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package bloom.payment.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Payment";
+
+// 04-payment §5.1, Staff API: Support and Admin, transcoded to JSON under /api/admin/payments (spec §6). The internal CreatePayment is in payment_internal.proto.
+service PaymentStaff {
+  // The payment of an order with its refunds (oldest first) and disputes (oldest first). NOT_FOUND when the order has no payment.
+  rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse) {
+    option (google.api.http) = { get: "/api/admin/payments/{order_id}" };
+  }
+}
+
+message GetPaymentRequest {
+  string order_id = 1;
+}
+
+// Not `Payment`: it would clash with the Bloom.Payment namespace.
+message GetPaymentResponse {
+  PaymentDetails payment = 1;
+  repeated RefundDetails refunds = 2;
+  repeated DisputeDetails disputes = 3;
+}
+
+// Every column of `payments` but `locked_until`. Text that is null in the table is "", a null time is unset.
+message PaymentDetails {
+  string id = 1;
+  string order_id = 2;
+  string order_number = 3;
+  string account_id = 4;
+  int64 amount_cents = 5;
+  string currency = 6;
+  string status = 7;
+  string stripe_session_id = 8;
+  string stripe_payment_intent_id = 9;
+  string checkout_url = 10;
+  google.protobuf.Timestamp session_expires_at = 11;
+  bool cancel_requested = 12;
+  int64 refunded_cents = 13;
+  google.protobuf.Timestamp succeeded_at = 14;
+  int64 version = 15;
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp updated_at = 17;
+}
+
+// Every column of `refunds`.
+message RefundDetails {
+  string id = 1;
+  string payment_id = 2;
+  string order_id = 3;
+  int64 amount_cents = 4;
+  string reason = 5;
+  repeated RefundLine lines = 6;
+  string status = 7;
+  string stripe_refund_id = 8;
+  string failure_reason = 9;
+  int32 attempts = 10;
+  google.protobuf.Timestamp next_attempt_at = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message RefundLine {
+  int32 line_no = 1;
+  int64 amount_cents = 2;
+}
+
+// Every column of `disputes`.
+message DisputeDetails {
+  string id = 1;
+  string payment_id = 2;
+  string stripe_dispute_id = 3;
+  string status = 4;
+  int64 amount_cents = 5;
+  string reason = 6;
+  google.protobuf.Timestamp opened_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
