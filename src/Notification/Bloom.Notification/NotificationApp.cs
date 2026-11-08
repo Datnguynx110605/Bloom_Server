@@ -76,6 +76,7 @@ public static class NotificationApp
         {
             bloom.AddWorker(); // worker only (plan N6)
             builder.Services.AddHostedService<EmailSender>();
+            builder.Services.AddHostedService<DailyPurge>();
         }
 
         var app = builder.Build();

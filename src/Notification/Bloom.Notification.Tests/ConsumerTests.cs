@@ -15,10 +15,10 @@ public class ConsumerTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private const string Number = "BL-1001";
+    internal const string Number = "BL-1001";
 
     // One database per host (plan N11), so every test can reuse this order id.
-    private static readonly Guid Order = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    internal static readonly Guid Order = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     public static TheoryData<string, string, string[]> NotifyingMessages => new()
     {
@@ -37,7 +37,7 @@ public class ConsumerTests(Containers containers)
         { PaymentMessages.RefundCompleted, NotificationTypes.RefundIssued, ["refundAmount"] },
     };
 
-    private static object Payload(string messageType, Guid account, string code = "482913") => messageType switch
+    internal static object Payload(string messageType, Guid account, string code = "482913") => messageType switch
     {
         IdentityMessages.VerificationCode => new VerificationCodeV1("Code@Bloom.test", "signup", TestNotification.EncryptCode(code), new DateTimeOffset(2030, 1, 2, 3, 4, 5, TimeSpan.Zero)),
         IdentityMessages.StaffInvited => new StaffInvitedV1("staff@bloom.test", "support", "https://admin.test/invite/abc"),
