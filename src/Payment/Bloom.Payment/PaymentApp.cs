@@ -1,6 +1,7 @@
 using Bloom.Payment.Data;
 using Bloom.Payment.Observability;
 using Bloom.Payment.Services;
+using Bloom.Payment.Stripe;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -37,6 +38,8 @@ public static class PaymentApp
             o.ServiceName = "payment";
             o.RabbitMqUri = options.RabbitMq;
         });
+
+        builder.Services.AddHttpClient<IPaymentProvider, StripeClient>(c => StripeClient.Configure(c, options.Stripe));
 
         if (api)
         {

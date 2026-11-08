@@ -1,5 +1,6 @@
 using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
+using Bloom.Payment.Stripe;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -46,6 +47,9 @@ public sealed class TestPayment : IAsyncDisposable
 
     public required LogCapture Logs { get; init; }
 
+    /// <summary>The Stripe double behind the app's real <see cref="StripeClient"/>; one per host, on the test clock.</summary>
+    public required FakeStripe Stripe { get; init; }
+
     /// <summary>The connection string of the database (the app connects as its owner, plan R2).</summary>
     public required string ConnectionString { get; init; }
 
@@ -59,6 +63,7 @@ public sealed class TestPayment : IAsyncDisposable
         var connectionString = options.ConnectionString ?? await containers.CreateDatabaseAsync();
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var logs = new LogCapture();
+        var stripe = new FakeStripe(clock);
 
         var config = DefaultConfig(connectionString, containers.RabbitMqUri);
         config["Payment:Mode"] = options.Mode;
@@ -70,6 +75,7 @@ public sealed class TestPayment : IAsyncDisposable
             b.Configuration.AddInMemoryCollection(config);
             b.Services.AddSingleton<TimeProvider>(clock); // registered first, so the app's TryAdd keeps it
             b.Services.AddSingleton<ILoggerProvider>(logs);
+            b.Services.AddHttpClient<IPaymentProvider, StripeClient>().ConfigurePrimaryHttpMessageHandler(() => stripe); // the app's own registration adds the rest
         });
         if (fresh)
         {
@@ -83,6 +89,7 @@ public sealed class TestPayment : IAsyncDisposable
             Http = app.GetTestClient(),
             Clock = clock,
             Logs = logs,
+            Stripe = stripe,
             ConnectionString = connectionString,
         };
     }
