@@ -5,6 +5,7 @@ using Bloom.Notification.Observability;
 using Bloom.Notification.Services;
 using Bloom.Notification.Sockets;
 using Bloom.Notification.Templates;
+using Bloom.Notification.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -74,6 +75,7 @@ public static class NotificationApp
         else
         {
             bloom.AddWorker(); // worker only (plan N6)
+            builder.Services.AddHostedService<EmailSender>();
         }
 
         var app = builder.Build();
