@@ -22,7 +22,7 @@ public class TemplateTests
 
     public static TheoryData<string> AllTypes() => [.. NotificationTypes.All];
 
-    public static TheoryData<string> OrderTypes() => [.. NotificationTypes.InApp];
+    public static TheoryData<string> InAppTypes() => [.. NotificationTypes.InApp];
 
     [Theory, MemberData(nameof(AllTypes))]
     public void Every_type_renders_every_part(string type)
@@ -63,7 +63,7 @@ public class TemplateTests
     public void Emails_have_no_images(string type) =>
         Assert.DoesNotContain("<img", Renderer.RenderEmail(type, Vars()).Html, StringComparison.OrdinalIgnoreCase);
 
-    [Theory, MemberData(nameof(OrderTypes))]
+    [Theory, MemberData(nameof(InAppTypes))]
     public void Order_emails_link_the_order(string type)
     {
         var (_, html, text) = Renderer.RenderEmail(type, Vars());
@@ -99,6 +99,12 @@ public class TemplateTests
             .Select(r => Renderer.RenderEmail(NotificationTypes.OrderCancelled, Vars(("reason", r))).Text).ToList();
         Assert.Equal(5, texts.Distinct().Count());
         Assert.DoesNotContain(generic, texts);
+
+        var genericBody = Renderer.RenderInApp(NotificationTypes.OrderCancelled, Vars(("reason", "other"))).Body;
+        var bodies = new[] { "customer", "support", "checkout_expired", "late_payment", "checkout_failed" }
+            .Select(r => Renderer.RenderInApp(NotificationTypes.OrderCancelled, Vars(("reason", r))).Body).ToList();
+        Assert.Equal(5, bodies.Distinct().Count());
+        Assert.DoesNotContain(genericBody, bodies);
     }
 
     [Fact]
@@ -107,6 +113,12 @@ public class TemplateTests
         var texts = new[] { "returned_to_sender", "lost" }
             .Select(k => Renderer.RenderEmail(NotificationTypes.OrderDeliveryFailed, Vars(("kind", k))).Text).ToList();
         Assert.Equal(2, texts.Distinct().Count());
+
+        var genericBody = Renderer.RenderInApp(NotificationTypes.OrderDeliveryFailed, Vars(("kind", "other"))).Body;
+        var bodies = new[] { "returned_to_sender", "lost" }
+            .Select(k => Renderer.RenderInApp(NotificationTypes.OrderDeliveryFailed, Vars(("kind", k))).Body).ToList();
+        Assert.Equal(2, bodies.Distinct().Count());
+        Assert.DoesNotContain(genericBody, bodies);
     }
 
     [Fact]

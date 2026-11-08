@@ -13,4 +13,4 @@ View your order: {{ orderUrl }}
 --- title
 Delivery problem
 --- body
-We could not deliver order {{ orderNumber }}.
+{{ if kind == "returned_to_sender" }}The carrier sent order {{ orderNumber }} back to us.{{ else if kind == "lost" }}The carrier lost the package for order {{ orderNumber }}.{{ else }}We could not deliver order {{ orderNumber }}.{{ end }}

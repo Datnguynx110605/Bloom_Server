@@ -13,4 +13,4 @@ View your order: {{ orderUrl }}
 --- title
 Order cancelled
 --- body
-Order {{ orderNumber }} was cancelled.
+{{ if reason == "customer" }}As you asked, order {{ orderNumber }} was cancelled.{{ else if reason == "support" }}Our support team cancelled order {{ orderNumber }}.{{ else if reason == "checkout_expired" }}Order {{ orderNumber }} was cancelled: the payment was not completed in time.{{ else if reason == "late_payment" }}Order {{ orderNumber }} was cancelled: your payment arrived after the order expired.{{ else if reason == "checkout_failed" }}Order {{ orderNumber }} was cancelled: the checkout failed.{{ else }}Order {{ orderNumber }} was cancelled.{{ end }}
