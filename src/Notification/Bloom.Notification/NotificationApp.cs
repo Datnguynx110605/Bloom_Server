@@ -1,3 +1,4 @@
+using Bloom.Notification.Consumers;
 using Bloom.Notification.Data;
 using Bloom.Notification.Email;
 using Bloom.Notification.Observability;
@@ -56,6 +57,8 @@ public static class NotificationApp
             o.ServiceName = "notification";
             o.RabbitMqUri = options.RabbitMq;
         });
+
+        foreach (var (handler, binding) in EventConsumer.Handlers) bloom.AddConsumer<EventConsumer>(handler, binding); // both modes, for the DLQ catalog (plan N6)
 
         if (api)
         {

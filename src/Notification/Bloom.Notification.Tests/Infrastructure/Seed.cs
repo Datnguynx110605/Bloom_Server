@@ -18,4 +18,18 @@ public static class Seed
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         return id;
     }
+
+    public static async Task ContactAsync(TestNotification t, Guid accountId, string email, string name)
+    {
+        await using var db = t.NewDb();
+        db.Contacts.Add(new ContactRow { AccountId = accountId, Email = email, Name = name, UpdatedAt = t.Clock.GetUtcNow() });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    public static async Task OrderRefAsync(TestNotification t, Guid orderId, Guid accountId, string orderNumber)
+    {
+        await using var db = t.NewDb();
+        db.OrderRefs.Add(new OrderRefRow { OrderId = orderId, AccountId = accountId, OrderNumber = orderNumber, UpdatedAt = t.Clock.GetUtcNow() });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
 }
