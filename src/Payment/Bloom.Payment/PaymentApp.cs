@@ -60,6 +60,8 @@ public static class PaymentApp
         {
             bloom.AddWorker(); // worker only (plan R6)
             builder.Services.AddHostedService<ProviderExecutor>();
+            builder.Services.AddHostedService<Reconciler>();
+            builder.Services.AddHostedService<NightlyJob>();
         }
 
         var app = builder.Build();
