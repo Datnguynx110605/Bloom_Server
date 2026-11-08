@@ -118,6 +118,21 @@ public sealed class TestNotification : IAsyncDisposable
         ["Notification:Email:Smtp:Port"] = smtpPort,
     };
 
+    /// <summary>An HTTP client that sends the headers the gateway adds for a signed-in customer (plan N1).</summary>
+    public HttpClient CustomerClient(Guid accountId) => Client("customer", accountId, null);
+
+    /// <summary>The same for a staff member with <paramref name="role"/>.</summary>
+    public HttpClient StaffClient(string role) => Client("staff", Guid.NewGuid(), role);
+
+    private HttpClient Client(string userType, Guid userId, string? role)
+    {
+        var client = Server.CreateClient();
+        client.DefaultRequestHeaders.Add("x-bloom-user-id", userId.ToString("D"));
+        client.DefaultRequestHeaders.Add("x-bloom-user-type", userType);
+        if (role is not null) client.DefaultRequestHeaders.Add("x-bloom-role", role);
+        return client;
+    }
+
     /// <summary>A test-side context on the same database.</summary>
     public NotificationDbContext NewDb() => NewDb(ConnectionString);
 

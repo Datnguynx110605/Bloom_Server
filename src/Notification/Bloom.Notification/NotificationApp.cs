@@ -1,6 +1,8 @@
 using Bloom.Notification.Data;
 using Bloom.Notification.Email;
 using Bloom.Notification.Observability;
+using Bloom.Notification.Services;
+using Bloom.Notification.Sockets;
 using Bloom.Notification.Templates;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
@@ -8,6 +10,7 @@ using Google.Protobuf.Reflection;
 using Google.Rpc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using StackExchange.Redis;
 
 namespace Bloom.Notification;
 
@@ -34,6 +37,7 @@ public static class NotificationApp
         builder.Services.AddSingleton<NotificationMetrics>();
         builder.Services.AddSingleton(new TemplateRenderer(options)); // parses every template now: a bad template fails the build of the app (plan N15)
         builder.Services.AddSingleton<AfterCommitInterceptor>();
+        builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(options.Redis)); // connects on first use, so building the app needs no Redis
         builder.Services.AddDbContext<NotificationDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         if (options.Email.Provider == "resend")
         {
@@ -52,6 +56,7 @@ public static class NotificationApp
 
         if (api)
         {
+            builder.Services.AddSingleton<Tickets>();
             builder.Services.AddGrpc().AddJsonTranscoding(o =>
             {
                 o.TypeRegistry = TypeRegistry.FromMessages(ErrorInfo.Descriptor, BadRequest.Descriptor); // error details are Any(ErrorInfo) and Any(BadRequest)
@@ -64,7 +69,11 @@ public static class NotificationApp
         }
 
         var app = builder.Build();
-        if (api) app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
+        if (api)
+        {
+            app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
+            app.MapGrpcService<CustomerService>(); // transcoded to /api/notifications (spec §6)
+        }
         return app;
     }
 }
