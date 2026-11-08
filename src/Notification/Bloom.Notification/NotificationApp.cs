@@ -8,6 +8,7 @@ using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
 using Google.Rpc;
+using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using StackExchange.Redis;
@@ -48,6 +49,8 @@ public static class NotificationApp
         {
             builder.Services.AddTransient<IEmailProvider, SmtpEmailProvider>();
         }
+        builder.Services.AddSignalR(o => { o.KeepAliveInterval = TimeSpan.FromSeconds(15); o.ClientTimeoutInterval = TimeSpan.FromSeconds(30); }) // both modes: the worker pushes through IHubContext
+            .AddStackExchangeRedis(options.Redis, o => o.Configuration.ChannelPrefix = RedisChannel.Literal("bloom-notification"));
         var bloom = builder.Services.AddBloom<NotificationDbContext>(o =>
         {
             o.ServiceName = "notification";
@@ -57,6 +60,8 @@ public static class NotificationApp
         if (api)
         {
             builder.Services.AddSingleton<Tickets>();
+            builder.Services.AddSingleton<ConnectionRegistry>();
+            builder.Services.AddHostedService<DisconnectListener>();
             builder.Services.AddGrpc().AddJsonTranscoding(o =>
             {
                 o.TypeRegistry = TypeRegistry.FromMessages(ErrorInfo.Descriptor, BadRequest.Descriptor); // error details are Any(ErrorInfo) and Any(BadRequest)
@@ -71,6 +76,8 @@ public static class NotificationApp
         var app = builder.Build();
         if (api)
         {
+            app.UseMiddleware<HubGate>();
+            app.MapHub<NotificationHub>(NotificationHub.Path, o => o.Transports = HttpTransportType.WebSockets);
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
             app.MapGrpcService<CustomerService>(); // transcoded to /api/notifications (spec §6)
         }
