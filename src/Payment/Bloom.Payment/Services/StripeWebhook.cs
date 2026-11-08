@@ -125,10 +125,22 @@ public static class StripeWebhook
                 }
                 break;
 
+            case "refund.updated" or "charge.refund.updated":
+                await ApplyRefundAsync(obj, db, transitions, ct);
+                break;
+
             case "charge.dispute.created" or "charge.dispute.updated" or "charge.dispute.closed":
                 await UpsertDisputeAsync(obj, created, db, clock.GetUtcNow(), logger, ct);
                 break;
         }
+    }
+
+    /// <summary>The refund is found by its Stripe id, else by <c>metadata.refund_id</c> (the executor may have crashed before storing the id).</summary>
+    private static async Task ApplyRefundAsync(JsonElement refund, PaymentDbContext db, Transitions transitions, CancellationToken ct)
+    {
+        if (Str(refund, "id") is not { } stripeId || Str(refund, "status") is not { } status) return;
+        var id = await db.Refunds.AsNoTracking().Where(r => r.StripeRefundId == stripeId).Select(r => (Guid?)r.Id).SingleOrDefaultAsync(ct) ?? MetadataId(refund, "refund_id");
+        if (id is { } found) await transitions.ApplyRefundAsync(found, status, stripeId, Str(refund, "failure_reason"), ct);
     }
 
     private static async Task UpsertDisputeAsync(JsonElement dispute, long eventCreated, PaymentDbContext db, DateTimeOffset now, ILogger logger, CancellationToken ct)
@@ -151,8 +163,10 @@ public static class StripeWebhook
         logger.LogError("Stripe dispute {DisputeId} on payment {PaymentId} is {Status}", id, paymentId, status);
     }
 
-    private static Guid? PaymentId(JsonElement obj) =>
-        obj.TryGetProperty("metadata", out var m) && m.ValueKind == JsonValueKind.Object && Guid.TryParse(Str(m, "payment_id"), out var id) ? id : null;
+    private static Guid? PaymentId(JsonElement obj) => MetadataId(obj, "payment_id");
+
+    private static Guid? MetadataId(JsonElement obj, string key) =>
+        obj.TryGetProperty("metadata", out var m) && m.ValueKind == JsonValueKind.Object && Guid.TryParse(Str(m, key), out var id) ? id : null;
 
     private static long? Int(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : null;
 

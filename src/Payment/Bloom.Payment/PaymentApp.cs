@@ -1,8 +1,10 @@
+using Bloom.Payment.Consumers;
 using Bloom.Payment.Data;
 using Bloom.Payment.Domain;
 using Bloom.Payment.Observability;
 using Bloom.Payment.Services;
 using Bloom.Payment.Stripe;
+using Bloom.Payment.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -41,6 +43,8 @@ public static class PaymentApp
             o.RabbitMqUri = options.RabbitMq;
         });
 
+        bloom.AddConsumer<RefundPaymentConsumer>("refund-payment", RefundPaymentConsumer.Bindings); // both modes, for the DLQ catalog (plan R6)
+
         builder.Services.AddHttpClient<IPaymentProvider, StripeClient>(c => StripeClient.Configure(c, options.Stripe));
 
         if (api)
@@ -54,6 +58,7 @@ public static class PaymentApp
         else
         {
             bloom.AddWorker(); // worker only (plan R6)
+            builder.Services.AddHostedService<ProviderExecutor>();
         }
 
         var app = builder.Build();
