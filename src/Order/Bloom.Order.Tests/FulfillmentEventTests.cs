@@ -302,6 +302,17 @@ public class FulfillmentEventTests(Containers containers)
     }
 
     [Fact]
+    public async Task Refund_completed_accepts_a_zero_cent_line()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (_, orderId, _) = await PaidAsync(t); // a 100% coupon leaves lines paid at 0; fulfillment sends them unfiltered
+
+        await RefundCompletedAsync(t, orderId, (1, 0), (2, 100));
+
+        Assert.Equal([0L, 100L], (await LinesAsync(t, orderId)).Select(l => l.RefundedCents));
+    }
+
+    [Fact]
     public async Task Line_refund_above_paid_is_rejected()
     {
         await using var t = await TestOrder.StartAsync(containers);

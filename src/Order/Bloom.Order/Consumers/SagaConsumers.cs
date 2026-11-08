@@ -41,7 +41,7 @@ public sealed class RefundCompletedConsumer(OrderDbContext db, Sagas sagas) : IM
         if (refund.Lines is { Count: > 0 } lines && await db.Orders.AnyAsync(o => o.Id == refund.OrderId, ct))
             foreach (var line in lines)
             {
-                if (line.AmountCents <= 0) throw new PermanentFailureException("payment.refund-completed.v1 has a line amount that is not positive.");
+                if (line.AmountCents < 0) throw new PermanentFailureException("payment.refund-completed.v1 has a negative line amount."); // 0 is valid: a line fully discounted
                 var amount = line.AmountCents;
                 var updated = await db.OrderLines.Where(l => l.OrderId == refund.OrderId && l.LineNo == line.LineNo)
                     .ExecuteUpdateAsync(s => s.SetProperty(l => l.RefundedCents, l => l.RefundedCents + amount), ct);
