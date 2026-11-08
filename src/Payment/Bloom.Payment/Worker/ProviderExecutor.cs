@@ -33,11 +33,61 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
         while (await timer.WaitForNextTickAsync(ct));
     }
 
-    /// <summary>One pass: due <c>pending</c> refunds, oldest first.</summary>
+    /// <summary>One pass: due <c>pending</c> refunds, oldest first, then <c>open</c> payments with a cancel request.</summary>
     internal async Task RunOnceAsync(CancellationToken ct)
     {
         // A failed refund is rescheduled into the future, so it is not picked again in this pass.
         for (var handled = 0; handled < Batch && await RefundOneAsync(ct); handled++) { }
+        // A cancellation has no schedule, so each one is tried at most once per pass (spec §7: the next tick retries).
+        var tried = new List<Guid>();
+        while (tried.Count < Batch && await CancelOneAsync(tried, ct)) { }
+    }
+
+    /// <summary>
+    /// Expires the session of one cancel-requested payment (04-payment §6.4, spec §7). Success → <c>canceled</c>; transient error → unchanged, next tick; permanent error (the session is no
+    /// longer open) → retrieve it and apply its state, so a session paid in the same moment ends <c>succeeded</c> at once (owner item 4, PR-01). False when nothing is left to try.
+    /// </summary>
+    private async Task<bool> CancelOneAsync(List<Guid> tried, CancellationToken ct)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = clock.GetUtcNow();
+        var skip = tried.ToArray();
+        var payment = (await db.Payments.FromSql($"""
+            SELECT * FROM payments
+            WHERE status = {PaymentStatuses.Open} AND cancel_requested AND session_expires_at > {now} AND id <> ALL({skip})
+            ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
+            """).AsNoTracking().ToListAsync(ct)).SingleOrDefault();
+        if (payment is null) return false;
+        tried.Add(payment.Id);
+
+        try
+        {
+            var provider = scope.ServiceProvider.GetRequiredService<IPaymentProvider>();
+            var transitions = scope.ServiceProvider.GetRequiredService<Transitions>();
+            var sessionId = payment.StripeSessionId ?? throw new InvalidOperationException($"Open payment {payment.Id} has no session.");
+            try
+            {
+                await provider.ExpireSessionAsync(sessionId, ct);
+                await transitions.CancelAsync(payment.Id, ct);
+            }
+            catch (ProviderException e) when (!e.Transient)
+            {
+                await transitions.ApplySessionAsync(payment.Id, await provider.GetSessionAsync(sessionId, ct), ct);
+            }
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch (ProviderException e)
+        {
+            logger.LogWarning(e, "Stripe cancellation of payment {PaymentId} failed; retrying on the next tick", payment.Id);
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        {
+            logger.LogError(e, "Cancellation of payment {PaymentId} failed; retrying on the next tick", payment.Id);
+        }
+        return true; // the transaction rolls back on dispose when it did not commit, which releases the row
     }
 
     private async Task<bool> RefundOneAsync(CancellationToken ct)

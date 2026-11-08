@@ -44,6 +44,7 @@ public static class PaymentApp
         });
 
         bloom.AddConsumer<RefundPaymentConsumer>("refund-payment", RefundPaymentConsumer.Bindings); // both modes, for the DLQ catalog (plan R6)
+        bloom.AddConsumer<CancelPaymentConsumer>("cancel-payment", CancelPaymentConsumer.Bindings);
 
         builder.Services.AddHttpClient<IPaymentProvider, StripeClient>(c => StripeClient.Configure(c, options.Stripe));
 

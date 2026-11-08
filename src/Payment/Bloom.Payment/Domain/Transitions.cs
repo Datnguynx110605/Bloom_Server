@@ -44,6 +44,16 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
             """, ct) == 1;
     }
 
+    /// <summary><c>open</c> → <c>canceled</c> after Stripe expired the session, no event. False for any other status.</summary>
+    public async Task<bool> CancelAsync(Guid paymentId, CancellationToken ct)
+    {
+        var now = clock.GetUtcNow();
+        return await db.Database.ExecuteSqlAsync($"""
+            UPDATE payments SET status = 'canceled', version = version + 1, updated_at = {now}
+            WHERE id = {paymentId} AND status = 'open'
+            """, ct) == 1;
+    }
+
     /// <summary>Applies a Stripe session as the webhook would: <c>payment_succeeded</c>, <c>payment_expired</c>, or null when nothing changed.</summary>
     public async Task<string?> ApplySessionAsync(Guid paymentId, StripeSession session, CancellationToken ct)
     {
