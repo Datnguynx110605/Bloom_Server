@@ -7,6 +7,7 @@ using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Payment.Contracts;
 using Microsoft.EntityFrameworkCore;
+using static Bloom.Order.Tests.Seed;
 
 namespace Bloom.Order.Tests;
 
@@ -42,18 +43,6 @@ public class SweepTests(Containers containers)
         return order;
     }
 
-    private static async Task<OrderRow> OrderAsync(TestOrder t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Orders.AsNoTracking().SingleAsync(o => o.Id == id, Ct);
-    }
-
-    private static async Task<OrderSaga> SagaAsync(TestOrder t, Guid orderId, string type)
-    {
-        await using var db = t.NewDb();
-        return await db.Set<OrderSaga>().AsNoTracking().SingleAsync(s => s.OrderId == orderId && s.Type == type, Ct);
-    }
-
     [Fact]
     public async Task O03_crash_after_hold_before_tx2_is_compensated_by_the_creating_sweep()
     {
@@ -61,7 +50,7 @@ public class SweepTests(Containers containers)
         var order = await CreatingOrderAsync(t);
         t.Clock.Advance(CreatingWindow + TimeSpan.FromSeconds(1));
 
-        Assert.Equal(1, await SweepRunner.Of(t).RunCreatingAsync(Ct));
+        Assert.Equal(1, await t.Sweeps().RunCreatingAsync(Ct));
 
         var swept = await OrderAsync(t, order.Id);
         Assert.Equal((OrderStatuses.Cancelled, CancelReasons.CheckoutFailed), (swept.Status, swept.CancelReason));
@@ -94,7 +83,7 @@ public class SweepTests(Containers containers)
         var orderId = await PendingOrderAsync(t, r => r.CouponCode = "SAVE-10");
         t.Clock.Advance(PaymentWindow + TimeSpan.FromSeconds(1));
 
-        Assert.Equal(1, await SweepRunner.Of(t).RunExpiryAsync(Ct));
+        Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
 
         var order = await OrderAsync(t, orderId);
         Assert.Equal((OrderStatuses.Cancelled, CancelReasons.CheckoutExpired), (order.Status, order.CancelReason));
@@ -113,7 +102,7 @@ public class SweepTests(Containers containers)
         Assert.Null(saga.CompletedAt);
         Assert.Equal(1, metrics.Sum("checkout_expired_total"));
 
-        Assert.Equal(0, await SweepRunner.Of(t).RunExpiryAsync(Ct)); // nothing left to do
+        Assert.Equal(0, await t.Sweeps().RunExpiryAsync(Ct)); // nothing left to do
         Assert.Equal(1, metrics.Sum("checkout_expired_total"));
     }
 
@@ -124,7 +113,7 @@ public class SweepTests(Containers containers)
         var creating = await CreatingOrderAsync(t);
         var pending = await PendingOrderAsync(t);
         t.Clock.Advance(CreatingWindow - TimeSpan.FromSeconds(1));
-        var sweeps = SweepRunner.Of(t);
+        var sweeps = t.Sweeps();
 
         Assert.Equal((0, 0), (await sweeps.RunCreatingAsync(Ct), await sweeps.RunExpiryAsync(Ct)));
 
@@ -144,7 +133,7 @@ public class SweepTests(Containers containers)
             r.Launch = new LaunchSource { LaunchId = launchId.ToString("D"), PassToken = "pass-1", Lines = { new CheckoutLine { Kind = "product", SkuId = device.SkuId, Quantity = 1 } } });
         t.Clock.Advance(PaymentWindow + TimeSpan.FromSeconds(1));
 
-        Assert.Equal(1, await SweepRunner.Of(t).RunExpiryAsync(Ct));
+        Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
 
         var release = Assert.Single(await Outbox.PayloadsAsync<ReleaseAllocationHoldV1>(t, LaunchMessages.ReleaseAllocationHold));
         Assert.Equal((orderId, "checkout_expired"), (release.OrderId, release.Reason));
@@ -164,12 +153,12 @@ public class SweepTests(Containers containers)
         {
             await using var tx = await other.Database.BeginTransactionAsync(Ct);
             await other.Database.ExecuteSqlAsync($"SELECT 1 FROM orders WHERE id = {order.Id} FOR UPDATE", Ct); // Tx 2 holds the row
-            Assert.Equal(0, await SweepRunner.Of(t).RunCreatingAsync(Ct));
+            Assert.Equal(0, await t.Sweeps().RunCreatingAsync(Ct));
             Assert.Equal(OrderStatuses.Creating, (await OrderAsync(t, order.Id)).Status);
             await tx.CommitAsync(Ct);
         }
 
-        Assert.Equal(1, await SweepRunner.Of(t).RunCreatingAsync(Ct));
+        Assert.Equal(1, await t.Sweeps().RunCreatingAsync(Ct));
         Assert.Equal(OrderStatuses.Cancelled, (await OrderAsync(t, order.Id)).Status);
     }
 }

@@ -8,16 +8,13 @@ using Bloom.Order.Data;
 using Bloom.Payment.Contracts;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
+using static Bloom.Order.Tests.Seed;
 
 namespace Bloom.Order.Tests;
 
 public class CancelTests(Containers containers)
 {
     private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
-
-    private static async Task PayAsync(TestOrder t, string orderId) =>
-        await Consume.Async<PaymentSucceededConsumer>(t, PaymentMessages.Succeeded,
-            new PaymentSucceededV1(Guid.Parse(orderId), FakeUpstreams.PaymentIdOf(orderId), 0, t.Clock.GetUtcNow()));
 
     /// <summary>A paid regular order of one device (2 x 1000), with a 10% coupon when asked.</summary>
     private static async Task<(Guid Account, string OrderId)> PaidAsync(TestOrder t, bool coupon = false)
@@ -26,7 +23,7 @@ public class CancelTests(Containers containers)
         if (coupon) await t.Rpc.Staff.CreateCouponAsync(new CreateCouponRequest { Code = "SAVE-10", Type = "percent", Value = 10, Scope = "order" }, TestCaller.Staff("catalog_manager").Call());
         await Seed.CartAsync(t, account, (Seed.Device(t.Upstreams, 1000), 2, null));
         var response = await Seed.CheckoutAsync(t, account, configure: r => { if (coupon) r.CouponCode = "SAVE-10"; });
-        await PayAsync(t, response.OrderId);
+        await SucceededAsync(t, Guid.Parse(response.OrderId));
         return (account, response.OrderId);
     }
 
@@ -34,43 +31,15 @@ public class CancelTests(Containers containers)
     private static async Task<(Guid Account, string OrderId)> AwaitingStockAsync(TestOrder t)
     {
         var account = Guid.NewGuid();
-        var launchId = Guid.NewGuid();
-        var device = Seed.LaunchSku(t.Upstreams, launchId, priceCents: 1000);
-        var response = await Seed.CheckoutAsync(t, account, configure: r =>
-            r.Launch = new LaunchSource { LaunchId = launchId.ToString("D"), PassToken = "pass-1", Lines = { new CheckoutLine { Kind = "product", SkuId = device.SkuId, Quantity = 2 } } });
-        await PayAsync(t, response.OrderId);
+        var response = await LaunchCheckoutAsync(t, account, Guid.NewGuid(), 2);
+        await SucceededAsync(t, Guid.Parse(response.OrderId));
         return (account, response.OrderId);
-    }
-
-    private static async Task<OrderRow> OrderAsync(TestOrder t, string id)
-    {
-        await using var db = t.NewDb();
-        return await db.Orders.AsNoTracking().SingleAsync(o => o.Id == Guid.Parse(id), Ct);
-    }
-
-    private static async Task SetStatusAsync(TestOrder t, string orderId, string status)
-    {
-        await using var db = t.NewDb();
-        var id = Guid.Parse(orderId);
-        await db.Database.ExecuteSqlAsync($"UPDATE orders SET status = {status} WHERE id = {id}", Ct);
-    }
-
-    private static async Task<int> OutboxCountAsync(TestOrder t)
-    {
-        await using var db = t.NewDb();
-        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM outbox_messages").SingleAsync(Ct);
     }
 
     private static async Task<string[]> SagaStepsAsync(TestOrder t, string orderId)
     {
         await using var db = t.NewDb();
         return [.. (await db.Set<OrderSaga>().AsNoTracking().SingleAsync(s => s.OrderId == Guid.Parse(orderId) && s.Type == SagaTypes.Cancellation, Ct)).PendingSteps.Order()];
-    }
-
-    private static async Task<List<OrderStatusHistory>> HistoryAsync(TestOrder t, string orderId)
-    {
-        await using var db = t.NewDb();
-        return await db.OrderStatusHistory.AsNoTracking().Where(h => h.OrderId == Guid.Parse(orderId)).OrderBy(h => h.Id).ToListAsync(Ct);
     }
 
     /// <summary>Nothing changed: the row, its history, the sagas and the outbox are as before.</summary>

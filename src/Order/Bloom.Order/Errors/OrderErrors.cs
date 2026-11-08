@@ -59,6 +59,10 @@ public static class OrderErrors
     /// <summary><c>ADDRESS_INVALID</c> with <c>ErrorInfo.Metadata["field"]</c> naming the <c>ship_to</c> field (plan R9).</summary>
     public static RpcException Address(string field, string message) => WithField(AddressInvalid, field, message);
 
+    /// <summary><c>CONCURRENCY_CONFLICT</c>: the <paramref name="what"/> changed since the caller read it.</summary>
+    public static RpcException Conflict(string what) =>
+        BloomErrors.Create(StatusCode.Aborted, BloomErrors.ConcurrencyConflict, $"The {what} was changed by someone else; reload and retry.");
+
     public static RpcException NotFound(string what) => Error(NotFoundReason, $"{what} was not found.");
 
     private static RpcException WithField(string reason, string field, string message)

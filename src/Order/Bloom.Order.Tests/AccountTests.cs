@@ -50,11 +50,11 @@ public class AccountTests(Containers containers)
         foreach (var before in new[] { first, second })
         {
             var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == before.Id, Ct);
-            Assert.Equal(new ShipToV1("[deleted]", ["[deleted]", "[deleted]"], "Reno", "NV", "89501", "[deleted]"), order.ShipTo, ShipToComparer.Instance);
+            Assert.Equivalent(new ShipToV1("[deleted]", ["[deleted]", "[deleted]"], "Reno", "NV", "89501", "[deleted]"), order.ShipTo);
             Assert.Equal((before.AccountId, before.Number, before.Status, before.TotalCents, before.TaxCents, before.DeliveredAt, before.Version),
                 (order.AccountId, order.Number, order.Status, order.TotalCents, order.TaxCents, order.DeliveredAt, order.Version));
         }
-        Assert.Equal(kept.ShipTo, (await db.Orders.AsNoTracking().SingleAsync(o => o.Id == kept.Id, Ct)).ShipTo, ShipToComparer.Instance);
+        Assert.Equivalent(kept.ShipTo, (await db.Orders.AsNoTracking().SingleAsync(o => o.Id == kept.Id, Ct)).ShipTo);
         Assert.False(await db.Carts.AnyAsync(c => c.AccountId == account, Ct));
         Assert.False(await db.CartLines.AnyAsync(l => l.AccountId == account, Ct));
         Assert.True(await db.Carts.AnyAsync(c => c.AccountId == other, Ct));
@@ -99,15 +99,5 @@ public class AccountTests(Containers containers)
         var withReturn = Guid.NewGuid();
         await OrderAsync(t, withReturn, OrderStatuses.PartiallyReturned, openReturns: 1);
         Assert.True(await UnsettledAsync(t, withReturn));
-    }
-
-    private sealed class ShipToComparer : IEqualityComparer<ShipToV1>
-    {
-        public static readonly ShipToComparer Instance = new();
-
-        public bool Equals(ShipToV1? a, ShipToV1? b) =>
-            a is not null && b is not null && (a.Name, a.City, a.State, a.Zip, a.Phone) == (b.Name, b.City, b.State, b.Zip, b.Phone) && a.Lines.SequenceEqual(b.Lines);
-
-        public int GetHashCode(ShipToV1 s) => s.Name.GetHashCode();
     }
 }

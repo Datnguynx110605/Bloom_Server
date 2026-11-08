@@ -1,8 +1,7 @@
 using Bloom.Order.Contracts;
 using Bloom.Order.Data;
-using Bloom.Shared.Errors;
+using Bloom.Order.Errors;
 using Bloom.Shared.Messaging;
-using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Query;
 
@@ -38,7 +37,7 @@ public sealed class Transitions(OrderDbContext db, TimeProvider clock, OutboxWri
         var current = (await db.Database.SqlQuery<Current>($"SELECT status AS \"Status\", version AS \"Version\" FROM orders WHERE id = {orderId} FOR UPDATE").ToListAsync(ct)).SingleOrDefault();
         if (current is null || !from.Contains(current.Status)) return false;
         if (version is { } expected && expected != current.Version)
-            throw BloomErrors.Create(StatusCode.Aborted, BloomErrors.ConcurrencyConflict, "The order was changed by someone else; reload and retry.");
+            throw OrderErrors.Conflict("order");
 
         var now = clock.GetUtcNow();
         var query = db.Orders.Where(o => o.Id == orderId && from.Contains(o.Status));

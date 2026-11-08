@@ -8,15 +8,13 @@ using Bloom.Order.Data;
 using Bloom.Payment.Contracts;
 using Microsoft.EntityFrameworkCore;
 using ApiCoupon = Bloom.Order.Api.Coupon;
+using static Bloom.Order.Tests.Seed;
 
 namespace Bloom.Order.Tests;
 
 public class PaymentTests(Containers containers)
 {
     private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
-
-    private static Task SucceededAsync(TestOrder t, Guid orderId, Guid? messageId = null) =>
-        Consume.Async<PaymentSucceededConsumer>(t, PaymentMessages.Succeeded, new PaymentSucceededV1(orderId, FakeUpstreams.PaymentIdOf(orderId.ToString("D")), 0, t.Clock.GetUtcNow()), messageId);
 
     private static async Task<(Guid Account, Guid OrderId, SkuPricing Device, SkuPricing Plan)> RegularOrderAsync(TestOrder t, string? couponCode = null)
     {
@@ -30,28 +28,13 @@ public class PaymentTests(Containers containers)
 
     private static async Task<Guid> LaunchOrderAsync(TestOrder t, Guid launchId)
     {
-        var device = Seed.LaunchSku(t.Upstreams, launchId, priceCents: 1000);
-        var response = await Seed.CheckoutAsync(t, Guid.NewGuid(), configure: r =>
-            r.Launch = new LaunchSource { LaunchId = launchId.ToString("D"), PassToken = "pass-1", Lines = { new CheckoutLine { Kind = "product", SkuId = device.SkuId, Quantity = 2 } } });
-        return Guid.Parse(response.OrderId);
-    }
-
-    private static async Task<OrderRow> OrderAsync(TestOrder t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Orders.AsNoTracking().SingleAsync(o => o.Id == id, Ct);
+        return Guid.Parse((await LaunchCheckoutAsync(t, Guid.NewGuid(), launchId, 2)).OrderId);
     }
 
     private static async Task<List<(string? From, string To)>> HistoryAsync(TestOrder t, Guid orderId)
     {
         await using var db = t.NewDb();
         return (await db.OrderStatusHistory.AsNoTracking().Where(h => h.OrderId == orderId).OrderBy(h => h.Id).ToListAsync(Ct)).Select(h => (h.FromStatus, h.ToStatus)).ToList();
-    }
-
-    private static async Task<int> OutboxCountAsync(TestOrder t)
-    {
-        await using var db = t.NewDb();
-        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM outbox_messages").SingleAsync(Ct);
     }
 
     private static async Task<OrderSaga?> SagaAsync(TestOrder t, Guid orderId, string type)
@@ -122,7 +105,7 @@ public class PaymentTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var (account, orderId, _, _) = await RegularOrderAsync(t);
         t.Clock.Advance(TimeSpan.FromMinutes(15) + TimeSpan.FromSeconds(1));
-        Assert.Equal(1, await SweepRunner.Of(t).RunExpiryAsync(Ct));
+        Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
 
         await SucceededAsync(t, orderId);
 
@@ -223,7 +206,7 @@ public class PaymentTests(Containers containers)
     public async Task Paid_vs_expired_race_has_one_winner()
     {
         await using var t = await TestOrder.StartAsync(containers);
-        var sweeps = SweepRunner.Of(t);
+        var sweeps = t.Sweeps();
         for (var round = 0; round < 20; round++)
         {
             var (_, orderId, _, _) = await RegularOrderAsync(t);

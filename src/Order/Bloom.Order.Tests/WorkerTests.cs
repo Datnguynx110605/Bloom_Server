@@ -159,7 +159,7 @@ public class WorkerTests(Containers containers)
         await CancelAsync(api, account, launchOrder); // launch cancellation: release-allocation-hold, release-reservation and refund
         var (_, expiring) = await PendingAsync(api);
         api.Clock.Advance(TimeSpan.FromMinutes(16));
-        Assert.True(await SweepRunner.Of(api).RunExpiryAsync(Ct) >= 1); // expiry: release-reservation and cancel-payment
+        Assert.True(await api.Sweeps().RunExpiryAsync(Ct) >= 1); // expiry: release-reservation and cancel-payment
 
         Assert.Equal(launchOrder, (await NextAsync(channel, releaseHold, "release-allocation-hold on launch.commands")).GetPayload<ReleaseAllocationHoldV1>().OrderId);
         Assert.Equal(launchOrder, (await NextAsync(channel, refund, "refund-payment on payment.commands")).GetPayload<RefundPaymentV1>().OrderId);

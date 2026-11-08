@@ -48,13 +48,13 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Orde
                 s => s.SetProperty(o => o.CancelReason, CancelReasons.CheckoutExpired), ct);
             if (!moved) return 0;
             await scope.GetRequiredService<Coupons>().MoveUseAsync(order.Id, CouponUseStatuses.Held, CouponUseStatuses.Released, ct);
-            await scope.GetRequiredService<Sagas>().StartAsync(order.Id, SagaTypes.Expiry, order.Kind, afterPayment: false, CancelReasons.CheckoutExpired, ct);
+            await scope.GetRequiredService<Sagas>().StartAsync(order.Id, SagaTypes.Expiry, order.Kind, CancelReasons.CheckoutExpired, ct);
             scope.GetRequiredService<OutboxWriter>().PublishEvent(OrderMessages.Cancelled, new OrderCancelledV1(order.Id, order.Number, order.AccountId, CancelReasons.CheckoutExpired));
             return 1;
         }, ct, metrics.CheckoutExpired);
 
     /// <summary>Batches of 100 orders in <paramref name="status"/> past their deadline, each locked <c>FOR UPDATE SKIP LOCKED</c> and handled in one transaction, until a batch comes back short.</summary>
-    private async Task<int> RunAsync(string status, Func<IServiceProvider, OrderRow, Task<int>> handle, CancellationToken ct, Action? handled = null)
+    private async Task<int> RunAsync(string status, Func<IServiceProvider, OrderRow, Task<int>> handle, CancellationToken ct, Action<int>? committed = null)
     {
         var total = 0;
         int locked;
@@ -70,7 +70,7 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Orde
             foreach (var order in batch) done += await handle(scope.ServiceProvider, order);
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-            for (var i = 0; i < done; i++) handled?.Invoke(); // counted once the batch committed
+            committed?.Invoke(done); // counted once the batch committed
             total += done;
             locked = batch.Count;
         }

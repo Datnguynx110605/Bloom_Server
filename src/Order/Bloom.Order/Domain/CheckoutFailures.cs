@@ -17,7 +17,7 @@ public sealed class CheckoutFailures(Transitions transitions, Sagas sagas, Outbo
             s => s.SetProperty(o => o.CancelReason, CancelReasons.CheckoutFailed), ct);
         if (!moved) return false;
         outbox.PublishEvent(OrderMessages.Cancelled, new OrderCancelledV1(order.Id, order.Number, order.AccountId, CancelReasons.CheckoutFailed));
-        if (compensate) await sagas.StartAsync(order.Id, SagaTypes.CheckoutCompensation, order.Kind, afterPayment: false, CancelReasons.CheckoutFailed, ct);
+        if (compensate) await sagas.StartAsync(order.Id, SagaTypes.CheckoutCompensation, order.Kind, CancelReasons.CheckoutFailed, ct);
         return true;
     }
 }

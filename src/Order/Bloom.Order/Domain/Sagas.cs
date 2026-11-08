@@ -14,11 +14,10 @@ public sealed class Sagas(OrderDbContext db, OutboxWriter outbox, TimeProvider c
     /// Inserts the saga <paramref name="type"/> of the order (<c>ON CONFLICT DO NOTHING</c>) and sends the commands of R12 for the order's <paramref name="kind"/>.
     /// False when the saga already exists: it ran before, so nothing is sent again. The commands stay in the change tracker until the caller's <c>SaveChanges</c>.
     /// </summary>
-    /// <param name="afterPayment">A launch order paid already also owns an inventory reservation (the backorder or commitment) besides its allocation hold.</param>
     /// <param name="releaseReason">The order's cancel reason, sent with the launch release (owner item 4).</param>
-    public async Task<bool> StartAsync(Guid orderId, string type, string kind, bool afterPayment, string releaseReason, CancellationToken ct)
+    public async Task<bool> StartAsync(Guid orderId, string type, string kind, string releaseReason, CancellationToken ct)
     {
-        var steps = StepsFor(type, kind, afterPayment);
+        var steps = StepsFor(type, kind);
         var inserted = await db.Database.ExecuteSqlAsync($"""
             INSERT INTO order_sagas (order_id, type, pending_steps, started_at) VALUES ({orderId}, {type}, {steps}, {clock.GetUtcNow()})
             ON CONFLICT DO NOTHING
@@ -56,12 +55,13 @@ public sealed class Sagas(OrderDbContext db, OutboxWriter outbox, TimeProvider c
             WHERE order_id = {orderId} AND completed_at IS NULL AND {SagaSteps.Refund} = ANY(pending_steps)
             """, ct);
 
-    private static string[] StepsFor(string type, string kind, bool afterPayment)
+    private static string[] StepsFor(string type, string kind)
     {
         if (type == SagaTypes.LatePayment) return [SagaSteps.Refund];
         var steps = new List<string>();
         if (kind == OrderKinds.Launch) steps.Add(SagaSteps.LaunchRelease);
-        if (kind == OrderKinds.Regular || afterPayment) steps.Add(SagaSteps.InventoryRelease);
+        // a launch order paid already (a cancellation) also owns an inventory reservation besides its allocation hold
+        if (kind == OrderKinds.Regular || type == SagaTypes.Cancellation) steps.Add(SagaSteps.InventoryRelease);
         if (type == SagaTypes.Cancellation) steps.Add(SagaSteps.Refund);
         return [.. steps];
     }

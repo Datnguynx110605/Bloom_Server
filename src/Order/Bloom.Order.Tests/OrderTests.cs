@@ -2,6 +2,7 @@ using Bloom.Order.Api;
 using Bloom.Order.Data;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
+using static Bloom.Order.Tests.Seed;
 
 namespace Bloom.Order.Tests;
 
@@ -21,13 +22,6 @@ public class OrderTests(Containers containers)
         }
         await Seed.CartAsync(t, account, (device, 2, null), (plan, 1, 1));
         return await Seed.CheckoutAsync(t, account);
-    }
-
-    private static async Task SetStatusAsync(TestOrder t, string orderId, string status)
-    {
-        await using var db = t.NewDb();
-        var id = Guid.Parse(orderId);
-        await db.Database.ExecuteSqlAsync($"UPDATE orders SET status = {status} WHERE id = {id}", Ct);
     }
 
     [Fact]

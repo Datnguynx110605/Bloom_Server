@@ -6,6 +6,7 @@ using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Payment.Contracts;
 using Microsoft.EntityFrameworkCore;
+using static Bloom.Order.Tests.Seed;
 
 namespace Bloom.Order.Tests;
 
@@ -19,17 +20,12 @@ public class PreorderTests(Containers containers)
     private static Task AllocatedAsync(TestOrder t, Guid orderId) =>
         Consume.Async<StockAllocatedConsumer>(t, InventoryMessages.StockAllocated, new StockAllocatedV1(orderId));
 
-    private static Task PaidAsync(TestOrder t, Guid orderId) =>
-        Consume.Async<PaymentSucceededConsumer>(t, PaymentMessages.Succeeded, new PaymentSucceededV1(orderId, FakeUpstreams.PaymentIdOf(orderId.ToString("D")), 0, t.Clock.GetUtcNow()));
-
     /// <summary>A launch checkout left at <c>pending_payment</c>; <paramref name="paid"/> pays it, which leaves it <c>awaiting_stock</c>.</summary>
     private static async Task<Guid> LaunchOrderAsync(TestOrder t, Guid launchId, bool paid)
     {
-        var device = Seed.LaunchSku(t.Upstreams, launchId, priceCents: 1000);
-        var response = await Seed.CheckoutAsync(t, Guid.NewGuid(), configure: r =>
-            r.Launch = new LaunchSource { LaunchId = launchId.ToString("D"), PassToken = "pass-1", Lines = { new CheckoutLine { Kind = "product", SkuId = device.SkuId, Quantity = 1 } } });
+        var response = await LaunchCheckoutAsync(t, Guid.NewGuid(), launchId, 1);
         var id = Guid.Parse(response.OrderId);
-        if (paid) await PaidAsync(t, id);
+        if (paid) await SucceededAsync(t, id);
         return id;
     }
 
@@ -58,12 +54,6 @@ public class PreorderTests(Containers containers)
             [new Npgsql.NpgsqlParameter("launch", launchId), new Npgsql.NpgsqlParameter("status", status), new Npgsql.NpgsqlParameter("allocated", allocated),
                 new Npgsql.NpgsqlParameter("count", count), new Npgsql.NpgsqlParameter("template", template)], Ct);
 #pragma warning restore EF1003
-    }
-
-    private static async Task<OrderRow> OrderAsync(TestOrder t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Orders.AsNoTracking().SingleAsync(o => o.Id == id, Ct);
     }
 
     private static async Task<List<(string? From, string To, string Actor)>> HistoryAsync(TestOrder t, Guid orderId)
@@ -219,7 +209,7 @@ public class PreorderTests(Containers containers)
         Assert.Empty(await Outbox.PayloadsAsync<OrderPreorderDelayedV1>(t, OrderMessages.PreorderDelayed));
         Assert.Empty(await Outbox.PayloadsAsync<OrderReadyToFulfillV1>(t, OrderMessages.ReadyToFulfill));
 
-        await PaidAsync(t, pending);
+        await SucceededAsync(t, pending);
 
         open = await OrderAsync(t, pending);
         Assert.Equal((OrderStatuses.AwaitingStock, true, false), (open.Status, open.LaunchReleased, open.StockAllocated));

@@ -4,7 +4,6 @@ using Bloom.Order.Context;
 using Bloom.Order.Data;
 using Bloom.Order.Domain;
 using Bloom.Order.Errors;
-using Bloom.Shared.Errors;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using CartLine = Bloom.Order.Data.CartLine;
@@ -14,8 +13,6 @@ namespace Bloom.Order.Services;
 /// <summary>03-order §5.1 <c>Cart API</c>. The cart is the caller's own: the account id comes from the gateway headers, never from the request.</summary>
 public sealed class CartService(OrderDbContext db, Upstreams upstreams, TimeProvider clock) : OrderCart.OrderCartBase
 {
-    private const int MaxQuantity = 10;
-
     public override async Task<Api.Cart> GetCart(GetCartRequest request, ServerCallContext context)
     {
         var caller = Caller.From(context).RequireCustomer();
@@ -36,7 +33,7 @@ public sealed class CartService(OrderDbContext db, Upstreams upstreams, TimeProv
         if (request.Version < 0) throw OrderErrors.Validation("version", "version must not be negative.");
         var isPlan = request.Kind == LineKinds.WarrantyPlan;
         if (isPlan != request.HasParentLineNo) throw OrderErrors.Validation("parent_line_no", "parent_line_no is for plan lines, and they need it.");
-        if (!isPlan && request.Quantity > MaxQuantity) throw OrderErrors.Error(OrderErrors.QuantityLimit, $"A product line holds at most {MaxQuantity}.");
+        if (!isPlan && request.Quantity > Inputs.MaxQuantity) throw OrderErrors.Error(OrderErrors.QuantityLimit, $"A product line holds at most {Inputs.MaxQuantity}.");
         int? parentNo = isPlan ? request.ParentLineNo : null;
 
         IReadOnlyDictionary<Guid, SkuPricing> pricing = new Dictionary<Guid, SkuPricing>();
@@ -103,7 +100,7 @@ public sealed class CartService(OrderDbContext db, Upstreams upstreams, TimeProv
             ? await db.Database.ExecuteSqlAsync($"INSERT INTO carts (account_id, version, updated_at) VALUES ({accountId}, 1, {now}) ON CONFLICT (account_id) DO NOTHING", ct)
             : await db.Carts.Where(c => c.AccountId == accountId && c.Version == expected)
                 .ExecuteUpdateAsync(s => s.SetProperty(c => c.Version, c => c.Version + 1).SetProperty(c => c.UpdatedAt, now), ct);
-        if (affected != 1) throw BloomErrors.Create(StatusCode.Aborted, BloomErrors.ConcurrencyConflict, "The cart was changed by someone else; reload and retry.");
+        if (affected != 1) throw OrderErrors.Conflict("cart");
     }
 
     private void RemoveWithPlans(List<CartLine> lines, CartLine line) =>
@@ -114,7 +111,7 @@ public sealed class CartService(OrderDbContext db, Upstreams upstreams, TimeProv
     {
         var parent = lines.FirstOrDefault(l => l.LineNo == parentNo && l.Kind == LineKinds.Product) ?? throw OrderErrors.Validation("parent_line_no", "The cart has no such device line.");
         if (!pricing.TryGetValue(parent.SkuId, out var device)) // the device line changed after it was priced: the caller's cart is stale
-            throw BloomErrors.Create(StatusCode.Aborted, BloomErrors.ConcurrencyConflict, "The cart was changed by someone else; reload and retry.");
+            throw OrderErrors.Conflict("cart");
         if (!plan.EligibleProductIds.Contains(device.ProductId) || quantity > parent.Quantity)
             throw OrderErrors.Error(OrderErrors.WarrantyNotEligible, "The plan does not cover that device, or there are more plans than devices.");
     }

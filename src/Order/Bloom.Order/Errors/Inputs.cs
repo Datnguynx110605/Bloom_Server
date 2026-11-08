@@ -11,6 +11,9 @@ public static partial class Inputs
     private const int DefaultPageSize = 50;
     private const int MaxPageSize = 100;
 
+    /// <summary>Most units on a product line of a cart or a regular order.</summary>
+    public const int MaxQuantity = 10;
+
     private static readonly HashSet<string> States =
     [
         "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO",
@@ -56,9 +59,9 @@ public static partial class Inputs
     }
 
     /// <summary>The launch source of 03-order §6.2 step 3, no I/O: a launch id, and lines that are non-empty, with quantity at least 1, at least one product, no duplicate (kind, sku, parent).</summary>
-    public static Guid LaunchLines(LaunchSource source)
+    public static void LaunchLines(LaunchSource source)
     {
-        var launchId = Id(source.LaunchId, "launch_id");
+        Id(source.LaunchId, "launch_id");
         if (source.Lines.Count == 0) throw OrderErrors.Validation("lines", "lines must not be empty.");
         foreach (var l in source.Lines)
         {
@@ -69,7 +72,6 @@ public static partial class Inputs
         if (!source.Lines.Any(l => l.Kind == LineKinds.Product)) throw OrderErrors.Validation("lines", "A launch order needs at least one product line.");
         if (source.Lines.GroupBy(l => (l.Kind, l.SkuId, l.HasParentLineNo ? l.ParentLineNo : (int?)null)).Any(g => g.Count() > 1))
             throw OrderErrors.Validation("lines", "A line must not repeat.");
-        return launchId;
     }
 
     /// <summary>Trimmed, 3 to 32 characters of <c>A-Za-z0-9-</c>. <c>Normalized</c> is upper case (what is stored and compared), <c>Display</c> keeps the case the customer typed.</summary>

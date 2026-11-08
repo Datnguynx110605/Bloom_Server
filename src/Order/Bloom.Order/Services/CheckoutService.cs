@@ -27,7 +27,6 @@ public sealed class CheckoutService(
     OrderDbContext db, IdempotencyGuard guard, Upstreams upstreams, Transitions transitions, CheckoutFailures failures, Coupons coupons,
     OrderMetrics metrics, OrderOptions options, TimeProvider clock, ILogger<CheckoutService> logger) : OrderCheckout.OrderCheckoutBase
 {
-    private const int MaxQuantity = 10;
     private static readonly TimeSpan CreatingWindow = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan PaymentWindow = TimeSpan.FromMinutes(15);
 
@@ -44,16 +43,17 @@ public sealed class CheckoutService(
         if (!ShippingOptions.All.Contains(request.ShippingOption)) throw OrderErrors.Validation("shipping_option", "shipping_option must be standard or express.");
         if (request.HasCouponCode) Inputs.CouponCode(request.CouponCode, "coupon_code");
 
+        var kind = launch ? OrderKinds.Launch : OrderKinds.Regular;
         var started = Stopwatch.GetTimestamp();
         try
         {
             return await guard.ExecuteMultiStepAsync(request, context,
                 (claim, ct) => ClaimAsync(claim, request, shipTo, ct),
-                (claim, state, ct) => RunAsync(caller, request, shipTo, state, ct));
+                (claim, state, ct) => RunAsync(caller, request, shipTo, kind, state, ct));
         }
         finally
         {
-            metrics.CheckoutStarted(launch ? OrderKinds.Launch : OrderKinds.Regular, Stopwatch.GetElapsedTime(started).TotalSeconds);
+            metrics.CheckoutStarted(kind, Stopwatch.GetElapsedTime(started).TotalSeconds);
         }
     }
 
@@ -77,7 +77,7 @@ public sealed class CheckoutService(
         return (order.Id, false);
     }
 
-    private async Task<StartCheckoutResponse> RunAsync(Caller caller, StartCheckoutRequest request, ShipToV1 shipTo, (Guid OrderId, bool Existed) state, CancellationToken ct)
+    private async Task<StartCheckoutResponse> RunAsync(Caller caller, StartCheckoutRequest request, ShipToV1 shipTo, string kind, (Guid OrderId, bool Existed) state, CancellationToken ct)
     {
         db.ChangeTracker.Clear(); // a takeover runs this again on a context that still tracks what the lost run saved
         try
@@ -90,12 +90,12 @@ public sealed class CheckoutService(
             if (order.Status == OrderStatuses.Creating) await PlaceAsync(order, request, caller, state.Existed, ct);
 
             var response = await PayAsync(state.OrderId, ct);
-            metrics.Checkout(order.Kind, "ok");
+            metrics.Checkout(kind, "ok");
             return response;
         }
         catch (RpcException e) when (Upstreams.IsRejection(e)) // a stored outcome (once per outcome, not per transient failure)
         {
-            metrics.Checkout(request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch ? OrderKinds.Launch : OrderKinds.Regular, e.GetRpcStatus()?.Details.FirstOrDefault(d => d.Is(Google.Rpc.ErrorInfo.Descriptor))?.Unpack<Google.Rpc.ErrorInfo>().Reason ?? "");
+            metrics.Checkout(kind, Upstreams.BloomReason(e) ?? "");
             throw;
         }
     }
@@ -114,23 +114,13 @@ public sealed class CheckoutService(
         try
         {
             placement = await PriceAsync(order, request, ct);
-        }
-        catch (RpcException e) when (Upstreams.IsRejection(e))
-        {
-            // A new order holds nothing yet; a resumed one may hold from an earlier attempt that did not answer (owner item 2, extended).
-            await CancelAsync(order, compensate: existed, ct);
-            throw;
-        }
-
-        try
-        {
             var products = placement.Lines.Where(l => l.Kind == LineKinds.Product).Select(l => (l.SkuId, l.Quantity));
             if (order.Kind == OrderKinds.Launch) await upstreams.HoldAsync(order.Id, request.Launch.PassToken, products, caller, ct);
             else await upstreams.ReserveAsync(order.Id, products, ct);
         }
         catch (RpcException e) when (Upstreams.IsRejection(e))
         {
-            // A resumed order may hold from an earlier attempt that did not answer (owner item 2); a new order has nothing to release (spec §7).
+            // A new order holds nothing to release (spec §7); a resumed one may hold from an earlier attempt that did not answer (owner item 2).
             await CancelAsync(order, compensate: existed, ct);
             throw;
         }
@@ -193,8 +183,8 @@ public sealed class CheckoutService(
             }
             else if (!launch && sku.Launch is { Stage: not "released" })
                 throw OrderErrors.Error(OrderErrors.SkuNotBuyable, "An item cannot be bought any more.");
-            if (!launch && l.Kind == LineKinds.Product && l.Quantity > MaxQuantity)
-                throw OrderErrors.Error(OrderErrors.QuantityLimit, $"A product line holds at most {MaxQuantity}.");
+            if (!launch && l.Kind == LineKinds.Product && l.Quantity > Inputs.MaxQuantity)
+                throw OrderErrors.Error(OrderErrors.QuantityLimit, $"A product line holds at most {Inputs.MaxQuantity}.");
             return new PricedLine(no, l.Kind, l.SkuId, Guid.Parse(sku.ProductId), Guid.Parse(sku.CategoryId), sku.Name, sku.Serialized, l.Quantity, parentNo,
                 l.Kind == LineKinds.WarrantyPlan ? sku.CoverageMonths : null, sku.PriceCents);
         }

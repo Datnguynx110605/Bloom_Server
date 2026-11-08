@@ -12,6 +12,7 @@ using Bloom.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderLine = Bloom.Order.Data.OrderLine;
+using static Bloom.Order.Tests.Seed;
 
 namespace Bloom.Order.Tests;
 
@@ -48,33 +49,14 @@ public class FulfillmentEventTests(Containers containers)
         await Seed.CartAsync(t, account, [.. lines]);
         var response = await Seed.CheckoutAsync(t, account, configure: r => { if (coupon) r.CouponCode = "SAVE-10"; });
         var orderId = Guid.Parse(response.OrderId);
-        await Consume.Async<PaymentSucceededConsumer>(t, PaymentMessages.Succeeded,
-            new PaymentSucceededV1(orderId, FakeUpstreams.PaymentIdOf(response.OrderId), 0, t.Clock.GetUtcNow()));
+        await SucceededAsync(t, orderId);
         return (account, orderId, other is null ? [device] : [device, other]);
-    }
-
-    private static async Task<OrderRow> OrderAsync(TestOrder t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Orders.AsNoTracking().SingleAsync(o => o.Id == id, Ct);
-    }
-
-    private static async Task<List<OrderStatusHistory>> HistoryAsync(TestOrder t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.OrderStatusHistory.AsNoTracking().Where(h => h.OrderId == id).OrderBy(h => h.Id).ToListAsync(Ct);
     }
 
     private static async Task<List<OrderLine>> LinesAsync(TestOrder t, Guid id)
     {
         await using var db = t.NewDb();
         return await db.OrderLines.AsNoTracking().Where(l => l.OrderId == id).OrderBy(l => l.LineNo).ToListAsync(Ct);
-    }
-
-    private static async Task SetStatusAsync(TestOrder t, Guid id, string status)
-    {
-        await using var db = t.NewDb();
-        await db.Database.ExecuteSqlAsync($"UPDATE orders SET status = {status} WHERE id = {id}", Ct);
     }
 
     /// <summary>A paid order cancelled by its customer: the cancellation saga waits for <c>inventory_release</c> and <c>refund</c>.</summary>
@@ -84,12 +66,6 @@ public class FulfillmentEventTests(Containers containers)
         var order = await OrderAsync(t, orderId);
         await t.Rpc.Customer.CancelOrderAsync(new CancelOrderRequest { OrderId = orderId.ToString("D"), Version = order.Version }, TestCaller.Customer(account).Call());
         return orderId;
-    }
-
-    private static async Task<OrderSaga> SagaAsync(TestOrder t, Guid id)
-    {
-        await using var db = t.NewDb();
-        return await db.Set<OrderSaga>().AsNoTracking().SingleAsync(s => s.OrderId == id && s.Type == SagaTypes.Cancellation, Ct);
     }
 
     [Fact]
@@ -232,14 +208,14 @@ public class FulfillmentEventTests(Containers containers)
 
         // the order's own refund of a cancellation completes the step; the saga ends with its last step
         var orderId = await CancelledAsync(t);
-        Assert.Equal([SagaSteps.InventoryRelease, SagaSteps.Refund], (await SagaAsync(t, orderId)).PendingSteps.Order());
+        Assert.Equal([SagaSteps.InventoryRelease, SagaSteps.Refund], (await SagaAsync(t, orderId, SagaTypes.Cancellation)).PendingSteps.Order());
         await Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));
-        var open = await SagaAsync(t, orderId);
+        var open = await SagaAsync(t, orderId, SagaTypes.Cancellation);
         Assert.Equal([SagaSteps.Refund], open.PendingSteps);
         Assert.Null(open.CompletedAt);
 
         await RefundCompletedAsync(t, orderId, (1, 700));
-        var done = await SagaAsync(t, orderId);
+        var done = await SagaAsync(t, orderId, SagaTypes.Cancellation);
         Assert.Empty(done.PendingSteps);
         Assert.Equal(t.Clock.GetUtcNow(), done.CompletedAt);
         Assert.Equal(700, (await LinesAsync(t, orderId))[0].RefundedCents);
@@ -264,7 +240,7 @@ public class FulfillmentEventTests(Containers containers)
 
         await Consume.Async<RefundCompletedConsumer>(t, PaymentMessages.RefundCompleted, envelope.Payload);
 
-        var saga = await SagaAsync(t, orderId);
+        var saga = await SagaAsync(t, orderId, SagaTypes.Cancellation);
         Assert.Empty(saga.PendingSteps);
         Assert.NotNull(saga.CompletedAt);
         Assert.All(await LinesAsync(t, orderId), l => Assert.Equal(0, l.RefundedCents));
@@ -280,7 +256,7 @@ public class FulfillmentEventTests(Containers containers)
 
         await Consume.Async<HoldReleasedConsumer>(t, LaunchMessages.HoldReleased, new HoldReleasedV1(orderId));
 
-        Assert.Equal([SagaSteps.Refund], (await SagaAsync(t, orderId)).PendingSteps);
+        Assert.Equal([SagaSteps.Refund], (await SagaAsync(t, orderId, SagaTypes.Cancellation)).PendingSteps);
     }
 
     [Fact]
@@ -292,13 +268,13 @@ public class FulfillmentEventTests(Containers containers)
 
         await Consume.Async<RefundFailedConsumer>(t, PaymentMessages.RefundFailed, new RefundFailedV1(orderId, refundId, "card_closed"));
 
-        var saga = await SagaAsync(t, orderId);
+        var saga = await SagaAsync(t, orderId, SagaTypes.Cancellation);
         Assert.Equal([SagaSteps.InventoryRelease, SagaSteps.RefundFailed], saga.PendingSteps.Order());
         Assert.Null(saga.CompletedAt);
         var log = Assert.Single(t.Logs.Entries, e => e.StartsWith("[Error]"));
         Assert.All(new[] { orderId.ToString(), refundId.ToString(), "card_closed" }, part => Assert.Contains(part, log));
         await Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));
-        Assert.Null((await SagaAsync(t, orderId)).CompletedAt); // refund_failed still waits
+        Assert.Null((await SagaAsync(t, orderId, SagaTypes.Cancellation)).CompletedAt); // refund_failed still waits
     }
 
     [Fact]

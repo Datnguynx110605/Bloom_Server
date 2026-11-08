@@ -1,6 +1,8 @@
 using Bloom.Catalog.Contracts;
 using Bloom.Order.Api;
+using Bloom.Order.Consumers;
 using Bloom.Order.Data;
+using Bloom.Payment.Contracts;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Cart = Bloom.Order.Data.Cart;
@@ -78,5 +80,53 @@ public static class Seed
         var options = TestCaller.Customer(account).Call();
         options.Headers!.Add("idempotency-key", (key ?? Guid.NewGuid()).ToString("D"));
         return t.Rpc.Checkout.StartCheckoutAsync(CheckoutRequest(configure), options);
+    }
+
+    /// <summary>A launch checkout of one new launch SKU (1000 cents) x <paramref name="quantity"/>, left at <c>pending_payment</c>.</summary>
+    public static async Task<StartCheckoutResponse> LaunchCheckoutAsync(TestOrder t, Guid account, Guid launchId, int quantity)
+    {
+        var device = LaunchSku(t.Upstreams, launchId, priceCents: 1000);
+        return await CheckoutAsync(t, account, configure: r =>
+            r.Launch = new LaunchSource { LaunchId = launchId.ToString("D"), PassToken = "pass-1", Lines = { new CheckoutLine { Kind = "product", SkuId = device.SkuId, Quantity = quantity } } });
+    }
+
+    /// <summary>Consumes <c>payment.succeeded.v1</c> for the order, as payment sends it.</summary>
+    public static Task SucceededAsync(TestOrder t, Guid orderId, Guid? messageId = null) =>
+        Consume.Async<PaymentSucceededConsumer>(t, PaymentMessages.Succeeded, new PaymentSucceededV1(orderId, FakeUpstreams.PaymentIdOf(orderId.ToString("D")), 0, t.Clock.GetUtcNow()), messageId);
+
+    public static async Task<OrderRow> OrderAsync(TestOrder t, Guid id)
+    {
+        await using var db = t.NewDb();
+        return await db.Orders.AsNoTracking().SingleAsync(o => o.Id == id, TestContext.Current.CancellationToken);
+    }
+
+    public static Task<OrderRow> OrderAsync(TestOrder t, string id) => OrderAsync(t, Guid.Parse(id));
+
+    public static async Task<List<OrderStatusHistory>> HistoryAsync(TestOrder t, Guid id)
+    {
+        await using var db = t.NewDb();
+        return await db.OrderStatusHistory.AsNoTracking().Where(h => h.OrderId == id).OrderBy(h => h.Id).ToListAsync(TestContext.Current.CancellationToken);
+    }
+
+    public static Task<List<OrderStatusHistory>> HistoryAsync(TestOrder t, string id) => HistoryAsync(t, Guid.Parse(id));
+
+    public static async Task SetStatusAsync(TestOrder t, Guid id, string status)
+    {
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlAsync($"UPDATE orders SET status = {status} WHERE id = {id}", TestContext.Current.CancellationToken);
+    }
+
+    public static Task SetStatusAsync(TestOrder t, string id, string status) => SetStatusAsync(t, Guid.Parse(id), status);
+
+    public static async Task<OrderSaga> SagaAsync(TestOrder t, Guid orderId, string type)
+    {
+        await using var db = t.NewDb();
+        return await db.Set<OrderSaga>().AsNoTracking().SingleAsync(s => s.OrderId == orderId && s.Type == type, TestContext.Current.CancellationToken);
+    }
+
+    public static async Task<int> OutboxCountAsync(TestOrder t)
+    {
+        await using var db = t.NewDb();
+        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM outbox_messages").SingleAsync(TestContext.Current.CancellationToken);
     }
 }

@@ -85,7 +85,7 @@ public sealed class PaymentSucceededConsumer(OrderDbContext db, Transitions tran
     /// <summary>HLD-ADR-013: the customer paid an order that is gone; refund it in full. The saga is the once-only guard, and <c>cancel_reason</c> keeps its first value.</summary>
     private async Task LateAsync(OrderRow order, CancellationToken ct)
     {
-        if (!await sagas.StartAsync(order.Id, SagaTypes.LatePayment, order.Kind, afterPayment: false, order.CancelReason!, ct)) return;
+        if (!await sagas.StartAsync(order.Id, SagaTypes.LatePayment, order.Kind, order.CancelReason!, ct)) return;
         outbox.PublishEvent(OrderMessages.Cancelled, new OrderCancelledV1(order.Id, order.Number, order.AccountId, SagaTypes.LatePayment));
         metrics.LatePayment();
     }

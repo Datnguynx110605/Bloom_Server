@@ -3,7 +3,6 @@ using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Order.Errors;
 using Bloom.Order.Observability;
-using Bloom.Shared.Errors;
 using Bloom.Shared.Messaging;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -26,7 +25,7 @@ public sealed class Cancellations(
         var support = supportReason is not null;
         var by = support ? CancelReasons.Support : CancelReasons.Customer;
         var order = await (support ? db.Orders.AsNoTracking() : Views.OwnOrders(db, caller.UserId)).SingleOrDefaultAsync(o => o.Id == orderId, ct) ?? throw OrderErrors.NotFound("The order");
-        if (order.Version != version) throw Stale();
+        if (order.Version != version) throw OrderErrors.Conflict("order");
         var allowed = support ? SupportStatuses : CustomerStatuses;
         if (!allowed.Contains(order.Status)) throw NotAllowed(by);
 
@@ -45,7 +44,7 @@ public sealed class Cancellations(
         // A concurrent change after fulfillment agreed is answered as it is found; fulfillment's CancelPackTask is idempotent, so a retry is safe.
         if (!await transitions.MoveAsync(orderId, allowed, OrderStatuses.Cancelled, actor, supportReason, version, s => s.SetProperty(o => o.CancelReason, by), ct)) throw NotAllowed(by);
         await coupons.MoveUseAsync(orderId, CouponUseStatuses.Consumed, CouponUseStatuses.Restored, ct);
-        await sagas.StartAsync(orderId, SagaTypes.Cancellation, order.Kind, afterPayment: true, by, ct);
+        await sagas.StartAsync(orderId, SagaTypes.Cancellation, order.Kind, by, ct);
         outbox.PublishEvent(OrderMessages.Cancelled, new OrderCancelledV1(orderId, order.Number, order.AccountId, by));
         if (support) audit.Record(caller.UserId, caller.Role!, "order.support-cancel-order", "order", orderId.ToString("D"), new { reason = supportReason });
         await db.SaveChangesAsync(ct);
@@ -59,5 +58,4 @@ public sealed class Cancellations(
         return OrderErrors.Error(OrderErrors.CancelNotAllowed, "The order can no longer be cancelled.");
     }
 
-    private static RpcException Stale() => BloomErrors.Create(StatusCode.Aborted, BloomErrors.ConcurrencyConflict, "The order was changed by someone else; reload and retry.");
 }

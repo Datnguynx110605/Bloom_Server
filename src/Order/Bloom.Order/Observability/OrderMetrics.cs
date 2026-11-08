@@ -44,7 +44,7 @@ public sealed class OrderMetrics
         _checkouts.Add(1, new KeyValuePair<string, object?>("kind", kind), new KeyValuePair<string, object?>("result", Results.Contains(r) ? r : "failed"));
     }
 
-    public void CheckoutExpired() => _expired.Add(1);
+    public void CheckoutExpired(int n) => _expired.Add(n);
 
     public void LatePayment() => _latePayments.Add(1);
 
