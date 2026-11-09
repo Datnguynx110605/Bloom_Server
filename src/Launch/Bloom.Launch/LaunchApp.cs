@@ -1,5 +1,6 @@
 using Bloom.Catalog.Contracts;
 using Bloom.Launch.Data;
+using Bloom.Launch.Domain;
 using Bloom.Launch.Observability;
 using Bloom.Launch.Passes;
 using Bloom.Launch.Services;
@@ -37,6 +38,7 @@ public static class LaunchApp
         builder.Services.AddSingleton<LaunchMetrics>();
         builder.Services.AddSingleton<PassTokens>();
         builder.Services.AddSingleton<StateCache>();
+        builder.Services.AddScoped<Audit>();
         builder.Services.AddDbContext<LaunchDbContext>(o => o.UseNpgsql(options.Database));
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
         {
@@ -71,6 +73,7 @@ public static class LaunchApp
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<CustomerService>(); // transcoded to /api/launches (spec §6)
+            app.MapGrpcService<AdminService>(); // transcoded to /api/admin/launches (spec §6)
         }
         return app;
     }

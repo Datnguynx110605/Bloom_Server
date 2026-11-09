@@ -42,12 +42,15 @@ public sealed class TestLaunch : IAsyncDisposable
         _ownsCatalog = ownsCatalog;
         Internal = new(channel);
         Customer = new(channel);
+        Admin = new(channel);
     }
 
-    /// <summary>The internal gRPC client, called in-process (plan R1). Later tasks add the admin client here.</summary>
+    /// <summary>The internal gRPC client, called in-process (plan R1).</summary>
     public LaunchInternal.LaunchInternalClient Internal { get; }
 
     public LaunchCustomer.LaunchCustomerClient Customer { get; }
+
+    public LaunchAdmin.LaunchAdminClient Admin { get; }
 
     /// <summary>Counts the database commands the app runs.</summary>
     public required CommandCounter Commands { get; init; }
