@@ -33,9 +33,8 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
         try
         {
             // Step 1.
-            var launch = claims is null || claims.AccountId != caller.UserId ? null
-                : await db.Launches.AsNoTracking().SingleOrDefaultAsync(l => l.Id == claims.LaunchId, ct);
-            if (claims is null || launch is null)
+            var known = claims is not null && claims.AccountId == caller.UserId && await db.Launches.AnyAsync(l => l.Id == claims.LaunchId, ct);
+            if (claims is null || !known)
                 throw Reject(launchId, "pass_invalid", LaunchErrors.PassInvalid, "The admission pass is not valid.");
             if (claims.ExpiresAtUnixMs <= (await db.NowAsync(ct)).ToUnixTimeMilliseconds())
                 throw Reject(launchId, "pass_expired", LaunchErrors.PassExpired, "The admission pass has expired.");
@@ -52,7 +51,10 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 }
 
                 // Step 3.
-                if (launch.Stage != LaunchStages.PreorderOpen || launch.WaitingRoomClosedAt is not null)
+                // Read inside the transaction, on every attempt: a close or release may have committed since step 1. A plain read (no launches lock, §6.5).
+                var open = await db.Launches.AsNoTracking().Where(l => l.Id == launchId)
+                    .AnyAsync(l => l.Stage == LaunchStages.PreorderOpen && l.WaitingRoomClosedAt == null, ct);
+                if (!open)
                     throw LaunchErrors.Error(LaunchErrors.LaunchNotOpen, "The launch is not open for pre-orders.");
                 var skuIds = lines.Select(l => l.Sku).ToList();
                 var found = await (from s in db.LaunchSkus.AsNoTracking()
