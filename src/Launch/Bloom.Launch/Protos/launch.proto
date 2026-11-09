@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package bloom.launch.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Launch";
+
+// 01-launch §5.1, Customer API, transcoded to JSON under /api/launches (spec §6). The internal HoldAllocation is in launch_internal.proto.
+service LaunchCustomer {
+  // Public view of a launch with the derived waiting-room state (§6.1). NOT_FOUND for a draft or unknown launch.
+  rpc GetLaunch(GetLaunchRequest) returns (PublicLaunch) {
+    option (google.api.http) = { get: "/api/launches/{launch_id}" };
+  }
+
+  // §6.2. Customers only.
+  rpc JoinWaitingRoom(WaitingRoomRequest) returns (WaitingRoomStatus) {
+    option (google.api.http) = { post: "/api/launches/{launch_id}/waiting-room" };
+  }
+
+  // §6.3. Customers only; never reads Postgres on the request path (LR-04).
+  rpc GetWaitingRoomStatus(WaitingRoomRequest) returns (WaitingRoomStatus) {
+    option (google.api.http) = { get: "/api/launches/{launch_id}/waiting-room" };
+  }
+}
+
+message GetLaunchRequest {
+  string launch_id = 1;
+}
+
+message WaitingRoomRequest {
+  string launch_id = 1;
+}
+
+// No counts and no version.
+message PublicLaunch {
+  string id = 1;
+  string name = 2;
+  string stage = 3;
+  google.protobuf.Timestamp launch_time = 4;
+  google.protobuf.Timestamp release_date = 5;
+  repeated LaunchProduct products = 6;
+  repeated PublicSku skus = 7;
+  // not_open | open | sold_out | closed
+  string waiting_room_state = 8;
+}
+
+message LaunchProduct {
+  string product_id = 1;
+  int32 purchase_limit = 2;
+}
+
+message PublicSku {
+  string sku_id = 1;
+  string product_id = 2;
+}
+
+// Fields are set only in the states of 01-launch §5.1; "" and 0 mean unset.
+message WaitingRoomStatus {
+  // not_open | queued | admitted | sold_out | closed
+  string state = 1;
+  // 1-based; queued only.
+  int32 position = 2;
+  // admitted only.
+  string pass_token = 3;
+  google.protobuf.Timestamp pass_expires_at = 4;
+  // 4 to 6; not_open, queued and sold_out only.
+  int32 poll_after_seconds = 5;
+}

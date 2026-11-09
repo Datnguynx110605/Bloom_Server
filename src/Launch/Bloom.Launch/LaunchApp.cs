@@ -3,6 +3,7 @@ using Bloom.Launch.Data;
 using Bloom.Launch.Observability;
 using Bloom.Launch.Passes;
 using Bloom.Launch.Services;
+using Bloom.Launch.WaitingRoom;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -35,11 +36,14 @@ public static class LaunchApp
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)
         builder.Services.AddSingleton<LaunchMetrics>();
         builder.Services.AddSingleton<PassTokens>();
+        builder.Services.AddSingleton<StateCache>();
         builder.Services.AddDbContext<LaunchDbContext>(o => o.UseNpgsql(options.Database));
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
         {
             var redis = ConfigurationOptions.Parse(options.Redis);
             redis.AbortOnConnectFail = false; // start and serve while Redis is down (plan R3)
+            // Fail commands at once while disconnected instead of queueing them: Redis down is UNAVAILABLE, not a 5 s wait (owner item 2).
+            redis.BacklogPolicy = BacklogPolicy.FailFast;
             return ConnectionMultiplexer.Connect(redis);
         });
         builder.Services.AddGrpcClient<CatalogInternal.CatalogInternalClient>(o => o.Address = new Uri(options.Catalog));
@@ -64,7 +68,10 @@ public static class LaunchApp
 
         var app = builder.Build();
         if (api)
+        {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
+            app.MapGrpcService<CustomerService>(); // transcoded to /api/launches (spec §6)
+        }
         return app;
     }
 }

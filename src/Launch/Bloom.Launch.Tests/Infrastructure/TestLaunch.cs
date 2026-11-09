@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Bloom.Launch.Contracts;
 using Bloom.Launch.Data;
 using Grpc.Net.Client;
@@ -8,6 +9,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using StackExchange.Redis;
 
 namespace Bloom.Launch.Tests;
@@ -39,10 +41,16 @@ public sealed class TestLaunch : IAsyncDisposable
         _channel = channel;
         _ownsCatalog = ownsCatalog;
         Internal = new(channel);
+        Customer = new(channel);
     }
 
-    /// <summary>The internal gRPC client, called in-process (plan R1). Later tasks add the customer and admin clients here.</summary>
+    /// <summary>The internal gRPC client, called in-process (plan R1). Later tasks add the admin client here.</summary>
     public LaunchInternal.LaunchInternalClient Internal { get; }
+
+    public LaunchCustomer.LaunchCustomerClient Customer { get; }
+
+    /// <summary>Counts the database commands the app runs.</summary>
+    public required CommandCounter Commands { get; init; }
 
     public required HttpClient Http { get; init; }
 
@@ -71,6 +79,7 @@ public sealed class TestLaunch : IAsyncDisposable
         // PostgreSQL keeps microseconds; Linux clocks have 100 ns ticks
         var clock = new FakeTimeProvider(new DateTimeOffset(DateTime.UtcNow.Ticks / 10 * 10, TimeSpan.Zero));
         var logs = new LogCapture();
+        var commands = new CommandCounter();
         var catalog = options.Catalog ?? await FakeCatalog.StartAsync();
 
         var config = DefaultConfig(connectionString, containers.RabbitMqUri, containers.RedisConnectionString, catalog.Address.ToString());
@@ -83,6 +92,7 @@ public sealed class TestLaunch : IAsyncDisposable
             b.Configuration.AddInMemoryCollection(config);
             b.Services.AddSingleton<TimeProvider>(clock); // registered first, so the app's TryAdd keeps it
             b.Services.AddSingleton<ILoggerProvider>(logs);
+            b.Services.ConfigureDbContext<LaunchDbContext>(o => o.AddInterceptors(commands));
         });
         if (fresh)
         {
@@ -90,12 +100,19 @@ public sealed class TestLaunch : IAsyncDisposable
             await db.Database.MigrateAsync(); // the app never migrates (plan R2)
         }
         await app.StartAsync();
+        if (!options.Config.ContainsKey("Launch:Redis"))
+        {
+            // The app connects on first use and fails commands at once while disconnected, so a connect that the Docker port forwarder refuses once would fail the first calls of a test.
+            var redis = app.Services.GetRequiredService<IConnectionMultiplexer>();
+            await Poll.UntilAsync(() => Task.FromResult(redis.IsConnected), 10, "the app's Redis connection");
+        }
         var server = app.GetTestServer();
         return new TestLaunch(app, GrpcChannel.ForAddress(server.BaseAddress, new() { HttpHandler = server.CreateHandler() }), options.Catalog is null)
         {
             Http = app.GetTestClient(),
             Clock = clock,
             Logs = logs,
+            Commands = commands,
             Catalog = catalog,
             ConnectionString = connectionString,
             Redis = containers.Redis.GetDatabase(),
@@ -137,5 +154,37 @@ public sealed class TestLaunch : IAsyncDisposable
         _channel.Dispose();
         await _app.DisposeAsync();
         if (_ownsCatalog) await Catalog.DisposeAsync();
+    }
+}
+
+/// <summary>Counts every command the app's <c>DbContext</c> runs (added to the app's context options by the test host).</summary>
+public sealed class CommandCounter : DbCommandInterceptor
+{
+    private int _count;
+
+    public int Count => _count;
+
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref _count);
+        return base.ReaderExecutingAsync(command, eventData, result, ct);
+    }
+
+    public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+    {
+        Interlocked.Increment(ref _count);
+        return base.ReaderExecuting(command, eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref _count);
+        return base.NonQueryExecutingAsync(command, eventData, result, ct);
+    }
+
+    public override ValueTask<InterceptionResult<object>> ScalarExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<object> result, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref _count);
+        return base.ScalarExecutingAsync(command, eventData, result, ct);
     }
 }

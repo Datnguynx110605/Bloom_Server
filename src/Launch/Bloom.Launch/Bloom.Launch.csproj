@@ -6,7 +6,8 @@
 
   <ItemGroup>
     <Content Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
-    <Protobuf Include="Protos\*.proto" GrpcServices="Server" />
+    <!-- Both: the test project calls the customer and admin services through the generated clients. -->
+    <Protobuf Include="Protos\*.proto" GrpcServices="Both" />
     <InternalsVisibleTo Include="Bloom.Launch.Tests" />
     <ProjectReference Include="..\..\Shared\Bloom.Shared\Bloom.Shared.csproj" />
     <ProjectReference Include="..\..\Catalog\Bloom.Catalog.Contracts\Bloom.Catalog.Contracts.csproj" />
