@@ -25,8 +25,6 @@ public class AdminSetupTests(Containers containers)
     private static CreateLaunchRequest NewLaunch(string name = "Drop", int rate = 50) =>
         new() { Name = name, LaunchTime = In(TimeSpan.FromDays(10)), ReleaseDate = In(TimeSpan.FromDays(20)), AdmissionRate = rate };
 
-    private static string Id(Guid id) => id.ToString("D");
-
     private static HttpRequestMessage Request(HttpMethod method, string url, string role = "catalog_manager", object? body = null)
     {
         var request = new HttpRequestMessage(method, url) { Content = body is null ? null : JsonContent.Create(body) }.WithCaller(Guid.NewGuid(), "staff", role);
@@ -40,9 +38,6 @@ public class AdminSetupTests(Containers containers)
         Assert.True(response.IsSuccessStatusCode, text);
         return (response, JsonDocument.Parse(text).RootElement.Clone());
     }
-
-    private static async Task<StaffActionRecorded> AuditAsync(TestLaunch t, string action) =>
-        (await Outbox.PayloadsAsync<StaffActionRecorded>(t, IdentityMessages.StaffActionRecorded)).Single(a => a.Action == action);
 
     private static async Task<long> VersionAsync(TestLaunch t, Guid launch)
     {
@@ -80,8 +75,8 @@ public class AdminSetupTests(Containers containers)
         await using var db = t.NewDb();
         var row = await db.Launches.AsNoTracking().SingleAsync(l => l.Id == id, Ct);
         Assert.Equal(("draft", 0L, "Spring drop"), (row.Stage, row.Version, row.Name));
-        var audit = await AuditAsync(t, "launch.created");
-        Assert.Equal((actor, "admin", "launch", "launch", Id(id)), (audit.ActorId, audit.ActorRole, audit.Service, audit.TargetType, audit.TargetId));
+        var audit = await Outbox.AuditAsync(t, "launch.created");
+        Assert.Equal((actor, "admin", "launch", "launch", id.ToString()), (audit.ActorId, audit.ActorRole, audit.Service, audit.TargetType, audit.TargetId));
         Assert.Empty(await Outbox.EnvelopesAsync(t, LaunchMessages.StageChanged));
     }
 
@@ -105,6 +100,17 @@ public class AdminSetupTests(Containers containers)
         await FieldFailsAsync(t.Admin.CreateLaunchAsync(NewLaunch(rate: 0), staff, cancellationToken: Ct), "admission_rate");
         await FieldFailsAsync(t.Admin.CreateLaunchAsync(NewLaunch(rate: 201), staff, cancellationToken: Ct), "admission_rate"); // L-22 on create
         Assert.Equal(200, (await t.Admin.CreateLaunchAsync(NewLaunch(rate: 200), staff, cancellationToken: Ct).ResponseAsync).AdmissionRate);
+    }
+
+    [Fact]
+    public async Task Release_less_than_a_microsecond_after_launch_is_a_validation_failure()
+    {
+        await using var t = await StartAsync();
+        var request = NewLaunch();
+        request.LaunchTime = new Timestamp { Seconds = request.LaunchTime.Seconds }; // PostgreSQL keeps whole microseconds: 500 ns later is the same instant there
+        request.ReleaseDate = new Timestamp { Seconds = request.LaunchTime.Seconds, Nanos = 500 };
+
+        await FieldFailsAsync(t.Admin.CreateLaunchAsync(request, Api.Staff(), cancellationToken: Ct), "release_date");
 
         await using var wider = await StartAsync(o => o.Config["Launch:AdmissionCeiling"] = "300");
         Assert.Equal(201, (await wider.Admin.CreateLaunchAsync(NewLaunch(rate: 201), Api.Staff(), cancellationToken: Ct).ResponseAsync).AdmissionRate);
@@ -129,13 +135,13 @@ public class AdminSetupTests(Containers containers)
         Assert.Equal("7", o.GetProperty("version").GetString());
         Assert.Equal(JsonValueKind.String, o.GetProperty("waitingRoomClosedAt").ValueKind);
         var products = o.GetProperty("products").EnumerateArray().ToDictionary(p => p.GetProperty("productId").GetString()!, p => p.GetProperty("purchaseLimit").GetInt32());
-        Assert.Equal(new Dictionary<string, int> { [Id(open.Products[0])] = 3, [Id(open.Products[1])] = 1 }, products);
+        Assert.Equal(new Dictionary<string, int> { [open.Products[0].ToString()] = 3, [open.Products[1].ToString()] = 1 }, products);
         var skus = o.GetProperty("skus").EnumerateArray().ToList();
-        Assert.Equal(open.Skus.Select(Id).Order(StringComparer.Ordinal), skus.Select(s => s.GetProperty("skuId").GetString()!)); // by sku_id
-        var first = skus.Single(s => s.GetProperty("skuId").GetString() == Id(open.Skus[0]));
-        Assert.Equal((Id(open.Products[0]), 10, 2, 3), (first.GetProperty("productId").GetString(), first.GetProperty("allocation").GetInt32(), first.GetProperty("held").GetInt32(), first.GetProperty("sold").GetInt32()));
+        Assert.Equal(open.Skus.Select(s => s.ToString()).Order(StringComparer.Ordinal), skus.Select(s => s.GetProperty("skuId").GetString()!)); // by sku_id
+        var first = skus.Single(s => s.GetProperty("skuId").GetString() == open.Skus[0].ToString());
+        Assert.Equal((open.Products[0].ToString(), 10, 2, 3), (first.GetProperty("productId").GetString(), first.GetProperty("allocation").GetInt32(), first.GetProperty("held").GetInt32(), first.GetProperty("sold").GetInt32()));
 
-        await Rpc.FailsAsync(t.Admin.AdminGetLaunchAsync(new() { LaunchId = Id(Guid.NewGuid()) }, Api.Staff(), cancellationToken: Ct), LaunchErrors.NotFoundReason);
+        await Rpc.FailsAsync(t.Admin.AdminGetLaunchAsync(new() { LaunchId = Guid.NewGuid().ToString() }, Api.Staff(), cancellationToken: Ct), LaunchErrors.NotFoundReason);
         await FieldFailsAsync(t.Admin.AdminGetLaunchAsync(new() { LaunchId = "x" }, Api.Staff(), cancellationToken: Ct), "launch_id"); // R8
     }
 
@@ -146,7 +152,7 @@ public class AdminSetupTests(Containers containers)
         var ids = new List<string>();
         for (var i = 0; i < 5; i++)
         {
-            ids.Add(Id((await Seed.LaunchAsync(t, i % 2 == 0 ? LaunchStages.Draft : LaunchStages.Announced)).Id));
+            ids.Add((await Seed.LaunchAsync(t, i % 2 == 0 ? LaunchStages.Draft : LaunchStages.Announced)).Id.ToString());
             t.Clock.Advance(TimeSpan.FromSeconds(1)); // distinct created_at
         }
         ids.Reverse();
@@ -193,14 +199,14 @@ public class AdminSetupTests(Containers containers)
         var launch = await Seed.LaunchAsync(t, LaunchStages.Draft);
         var product = Guid.NewGuid();
 
-        var view = await t.Admin.AddLaunchProductAsync(new() { LaunchId = Id(launch.Id), ProductId = Id(product), PurchaseLimit = 3 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+        var view = await t.Admin.AddLaunchProductAsync(new() { LaunchId = launch.Id.ToString(), ProductId = product.ToString(), PurchaseLimit = 3 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
 
         Assert.Equal(1, view.Version);
         Assert.Equal(2, view.Products.Count);
-        Assert.Contains(view.Products, p => p.ProductId == Id(product) && p.PurchaseLimit == 3);
+        Assert.Contains(view.Products, p => p.ProductId == product.ToString() && p.PurchaseLimit == 3);
         Assert.Equal(1, await VersionAsync(t, launch.Id));
-        var audit = await AuditAsync(t, "launch.product-added");
-        Assert.Equal(("launch", Id(launch.Id)), (audit.TargetType, audit.TargetId));
+        var audit = await Outbox.AuditAsync(t, "launch.product-added");
+        Assert.Equal(("launch", launch.Id.ToString()), (audit.TargetType, audit.TargetId));
         Assert.Empty(await Outbox.EnvelopesAsync(t, LaunchMessages.StageChanged));
     }
 
@@ -212,7 +218,7 @@ public class AdminSetupTests(Containers containers)
         var other = await Seed.LaunchAsync(t, LaunchStages.Draft);
 
         foreach (var product in new[] { launch.Products[0], other.Products[0] })
-            await FieldFailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = Id(launch.Id), ProductId = Id(product), PurchaseLimit = 1 }, Api.Staff(), cancellationToken: Ct), "product_id");
+            await FieldFailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = launch.Id.ToString(), ProductId = product.ToString(), PurchaseLimit = 1 }, Api.Staff(), cancellationToken: Ct), "product_id");
 
         Assert.Equal(0, await VersionAsync(t, launch.Id));
     }
@@ -223,15 +229,15 @@ public class AdminSetupTests(Containers containers)
         await using var t = await StartAsync();
         var launch = await Seed.LaunchAsync(t, LaunchStages.Draft);
         var staff = Api.Staff();
-        var l = Id(launch.Id);
+        var l = launch.Id.ToString();
 
-        await FieldFailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = "x", ProductId = Id(Guid.NewGuid()), PurchaseLimit = 1 }, staff, cancellationToken: Ct), "launch_id");
+        await FieldFailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = "x", ProductId = Guid.NewGuid().ToString(), PurchaseLimit = 1 }, staff, cancellationToken: Ct), "launch_id");
         await FieldFailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = l, ProductId = "x", PurchaseLimit = 1 }, staff, cancellationToken: Ct), "product_id");
-        await FieldFailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = l, ProductId = Id(Guid.NewGuid()), PurchaseLimit = 0 }, staff, cancellationToken: Ct), "purchase_limit");
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = l, SkuId = "x", ProductId = Id(launch.Products[0]), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = l, SkuId = Id(Guid.NewGuid()), ProductId = "x", Allocation = 1 }, staff, cancellationToken: Ct), "product_id");
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = l, SkuId = Id(Guid.NewGuid()), ProductId = Id(launch.Products[0]), Allocation = -1 }, staff, cancellationToken: Ct), "allocation");
-        await Rpc.FailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = Id(Guid.NewGuid()), ProductId = Id(Guid.NewGuid()), PurchaseLimit = 1 }, staff, cancellationToken: Ct), LaunchErrors.NotFoundReason);
+        await FieldFailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = l, ProductId = Guid.NewGuid().ToString(), PurchaseLimit = 0 }, staff, cancellationToken: Ct), "purchase_limit");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = l, SkuId = "x", ProductId = launch.Products[0].ToString(), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = l, SkuId = Guid.NewGuid().ToString(), ProductId = "x", Allocation = 1 }, staff, cancellationToken: Ct), "product_id");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = l, SkuId = Guid.NewGuid().ToString(), ProductId = launch.Products[0].ToString(), Allocation = -1 }, staff, cancellationToken: Ct), "allocation");
+        await Rpc.FailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = Guid.NewGuid().ToString(), ProductId = Guid.NewGuid().ToString(), PurchaseLimit = 1 }, staff, cancellationToken: Ct), LaunchErrors.NotFoundReason);
         Assert.Equal(0, t.Catalog.Count);
     }
 
@@ -246,32 +252,32 @@ public class AdminSetupTests(Containers containers)
 
         var sku = Guid.NewGuid();
         t.Catalog.Sku(sku, product);
-        var view = await t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(sku), ProductId = Id(product), Allocation = 25 }, staff, cancellationToken: Ct).ResponseAsync;
+        var view = await t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), ProductId = product.ToString(), Allocation = 25 }, staff, cancellationToken: Ct).ResponseAsync;
 
         Assert.Equal(1, view.Version);
         var added = Assert.Single(view.Skus);
-        Assert.Equal((Id(sku), Id(product), 25, 0, 0), (added.SkuId, added.ProductId, added.Allocation, added.Held, added.Sold));
-        var audit = await AuditAsync(t, "launch.sku-added");
-        Assert.Equal(Id(launch.Id), audit.TargetId);
-        Assert.Equal(25, metrics.Latest("allocation_available", ("launch", Id(launch.Id)), ("sku", Id(sku))));
+        Assert.Equal((sku.ToString(), product.ToString(), 25, 0, 0), (added.SkuId, added.ProductId, added.Allocation, added.Held, added.Sold));
+        var audit = await Outbox.AuditAsync(t, "launch.sku-added");
+        Assert.Equal(launch.Id.ToString(), audit.TargetId);
+        Assert.Equal(25, metrics.Latest("allocation_available", ("launch", launch.Id.ToString()), ("sku", sku.ToString())));
         Assert.Empty(await Outbox.EnvelopesAsync(t, LaunchMessages.StageChanged)); // draft
 
         var calls = t.Catalog.Count;
         var unknown = Guid.NewGuid(); // catalog NOT_FOUND
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(unknown), ProductId = Id(product), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = unknown.ToString(), ProductId = product.ToString(), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
         var otherProduct = Guid.NewGuid();
         t.Catalog.Sku(otherProduct, Guid.NewGuid()); // belongs to another product
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(otherProduct), ProductId = Id(product), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = otherProduct.ToString(), ProductId = product.ToString(), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
         var taken = Guid.NewGuid();
         t.Catalog.Sku(taken, product, launchId: Guid.NewGuid()); // catalog says it is in a launch
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(taken), ProductId = Id(product), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = taken.ToString(), ProductId = product.ToString(), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
         Assert.Equal(calls + 3, t.Catalog.Count);
 
         // a product that is not in this launch: no catalog call
         var stranger = Guid.NewGuid();
         t.Catalog.Sku(stranger, Guid.NewGuid());
         calls = t.Catalog.Count;
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(stranger), ProductId = Id(Guid.NewGuid()), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = stranger.ToString(), ProductId = Guid.NewGuid().ToString(), Allocation = 1 }, staff, cancellationToken: Ct), "sku_id");
         Assert.Equal(calls, t.Catalog.Count);
         Assert.Equal(1, await VersionAsync(t, launch.Id));
     }
@@ -283,7 +289,7 @@ public class AdminSetupTests(Containers containers)
         var launch = await Seed.LaunchAsync(t, LaunchStages.Draft, products: new SeedProduct(2));
         var sku = Guid.NewGuid();
         t.Catalog.Sku(sku, launch.Products[0]);
-        var request = new AddLaunchSkuRequest { LaunchId = Id(launch.Id), SkuId = Id(sku), ProductId = Id(launch.Products[0]), Allocation = 5 };
+        var request = new AddLaunchSkuRequest { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), ProductId = launch.Products[0].ToString(), Allocation = 5 };
 
         t.Catalog.Fail(StatusCode.Unavailable);
         var failed = await Assert.ThrowsAsync<RpcException>(() => t.Admin.AddLaunchSkuAsync(request, Api.Staff(), cancellationToken: Ct).ResponseAsync);
@@ -310,7 +316,7 @@ public class AdminSetupTests(Containers containers)
         var second = await Seed.LaunchAsync(t, LaunchStages.Draft, products: new SeedProduct(2));
         t.Catalog.Sku(first.Skus[0], second.Products[0]); // catalog knows no launch for it, but the first launch has it
 
-        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(second.Id), SkuId = Id(first.Skus[0]), ProductId = Id(second.Products[0]), Allocation = 5 }, Api.Staff(), cancellationToken: Ct), "sku_id");
+        await FieldFailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = second.Id.ToString(), SkuId = first.Skus[0].ToString(), ProductId = second.Products[0].ToString(), Allocation = 5 }, Api.Staff(), cancellationToken: Ct), "sku_id");
 
         Assert.Equal(0, await VersionAsync(t, second.Id));
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.StaffActionRecorded));
@@ -324,7 +330,7 @@ public class AdminSetupTests(Containers containers)
         var sku = Guid.NewGuid();
         t.Catalog.Sku(sku, launch.Products[1]);
 
-        await t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(sku), ProductId = Id(launch.Products[1]), Allocation = 5 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+        await t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), ProductId = launch.Products[1].ToString(), Allocation = 5 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
 
         var events = await Outbox.PayloadsAsync<LaunchStageChangedV1>(t, LaunchMessages.StageChanged);
         var e = Assert.Single(events);
@@ -333,7 +339,7 @@ public class AdminSetupTests(Containers containers)
         Assert.Equal(new[] { (launch.Skus[0], launch.Products[0]), (sku, launch.Products[1]) }.OrderBy(s => s.Item1), e.Skus.Select(s => (s.SkuId, s.ProductId)).OrderBy(s => s.SkuId));
 
         var product = Guid.NewGuid();
-        await t.Admin.AddLaunchProductAsync(new() { LaunchId = Id(launch.Id), ProductId = Id(product), PurchaseLimit = 6 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+        await t.Admin.AddLaunchProductAsync(new() { LaunchId = launch.Id.ToString(), ProductId = product.ToString(), PurchaseLimit = 6 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
 
         events = await Outbox.PayloadsAsync<LaunchStageChangedV1>(t, LaunchMessages.StageChanged);
         Assert.Equal(2, events.Count);
@@ -351,8 +357,8 @@ public class AdminSetupTests(Containers containers)
         var sku = Guid.NewGuid();
         t.Catalog.Sku(sku, launch.Products[0]);
 
-        await Rpc.FailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(sku), ProductId = Id(launch.Products[0]), Allocation = 5 }, Api.Staff(), cancellationToken: Ct), LaunchErrors.InvalidStage);
-        await Rpc.FailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = Id(launch.Id), ProductId = Id(Guid.NewGuid()), PurchaseLimit = 1 }, Api.Staff(), cancellationToken: Ct), LaunchErrors.InvalidStage);
+        await Rpc.FailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), ProductId = launch.Products[0].ToString(), Allocation = 5 }, Api.Staff(), cancellationToken: Ct), LaunchErrors.InvalidStage);
+        await Rpc.FailsAsync(t.Admin.AddLaunchProductAsync(new() { LaunchId = launch.Id.ToString(), ProductId = Guid.NewGuid().ToString(), PurchaseLimit = 1 }, Api.Staff(), cancellationToken: Ct), LaunchErrors.InvalidStage);
 
         Assert.Equal(0, t.Catalog.Count);
         Assert.Equal(0, await VersionAsync(t, launch.Id));
@@ -366,10 +372,10 @@ public class AdminSetupTests(Containers containers)
         var launch = await Seed.LaunchAsync(t, LaunchStages.Announced, products: new SeedProduct(2));
         var sku = Guid.NewGuid();
         t.Catalog.Sku(sku, launch.Products[0]);
-        await t.Customer.GetLaunchAsync(new() { LaunchId = Id(launch.Id) }, cancellationToken: Ct).ResponseAsync; // fills wr:{L}:state
+        await t.Customer.GetLaunchAsync(new() { LaunchId = launch.Id.ToString() }, cancellationToken: Ct).ResponseAsync; // fills wr:{L}:state
         Assert.True(await t.Redis.KeyExistsAsync(RedisKeys.State(launch.Id)));
 
-        await t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(sku), ProductId = Id(launch.Products[0]), Allocation = 5 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+        await t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), ProductId = launch.Products[0].ToString(), Allocation = 5 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
 
         Assert.False(await t.Redis.KeyExistsAsync(RedisKeys.State(launch.Id)));
     }
@@ -392,10 +398,10 @@ public class AdminSetupTests(Containers containers)
         }
 
         await Denied(t.Admin.CreateLaunchAsync(NewLaunch(), caller, cancellationToken: Ct));
-        await Denied(t.Admin.AdminGetLaunchAsync(new() { LaunchId = Id(launch.Id) }, caller, cancellationToken: Ct));
+        await Denied(t.Admin.AdminGetLaunchAsync(new() { LaunchId = launch.Id.ToString() }, caller, cancellationToken: Ct));
         await Denied(t.Admin.AdminListLaunchesAsync(new(), caller, cancellationToken: Ct));
-        await Denied(t.Admin.AddLaunchProductAsync(new() { LaunchId = Id(launch.Id), ProductId = Id(Guid.NewGuid()), PurchaseLimit = 1 }, caller, cancellationToken: Ct));
-        await Denied(t.Admin.AddLaunchSkuAsync(new() { LaunchId = Id(launch.Id), SkuId = Id(Guid.NewGuid()), ProductId = Id(launch.Products[0]), Allocation = 1 }, caller, cancellationToken: Ct));
+        await Denied(t.Admin.AddLaunchProductAsync(new() { LaunchId = launch.Id.ToString(), ProductId = Guid.NewGuid().ToString(), PurchaseLimit = 1 }, caller, cancellationToken: Ct));
+        await Denied(t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = Guid.NewGuid().ToString(), ProductId = launch.Products[0].ToString(), Allocation = 1 }, caller, cancellationToken: Ct));
         Assert.Equal(0, t.Catalog.Count);
     }
 }

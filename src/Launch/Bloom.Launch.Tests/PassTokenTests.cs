@@ -23,7 +23,7 @@ public class PassTokenTests
         return new PassTokens(options);
     }
 
-    private static string Token(byte[] payload, byte[] key) =>
+    internal static string Token(byte[] payload, byte[] key) =>
         Base64Url.EncodeToString(payload) + "." + Base64Url.EncodeToString(HMACSHA256.HashData(key, payload));
 
     private static readonly Guid Pid = Guid.NewGuid(), Aid = Guid.NewGuid(), Lid = Guid.NewGuid();

@@ -8,6 +8,8 @@ using Bloom.Shared.Errors;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 
+using static Bloom.Launch.Tests.WaitingRooms;
+
 namespace Bloom.Launch.Tests;
 
 public class CustomerTests(Containers containers)
@@ -16,15 +18,7 @@ public class CustomerTests(Containers containers)
 
     private Task<TestLaunch> StartAsync() => TestLaunch.StartAsync(containers);
 
-    private static WaitingRoomRequest Room(Guid launch) => new() { LaunchId = launch.ToString("D") };
-
     private static GetLaunchRequest Get(Guid launch) => new() { LaunchId = launch.ToString("D") };
-
-    private static Task<WaitingRoomStatus> Join(TestLaunch t, Guid launch, Guid account) =>
-        t.Customer.JoinWaitingRoomAsync(Room(launch), Api.Customer(account), cancellationToken: Ct).ResponseAsync;
-
-    private static Task<WaitingRoomStatus> Status(TestLaunch t, Guid launch, Guid account) =>
-        t.Customer.GetWaitingRoomStatusAsync(Room(launch), Api.Customer(account), cancellationToken: Ct).ResponseAsync;
 
     /// <summary>The cache is dropped as an admin write or the scheduler would after commit.</summary>
     private static Task DropCache(TestLaunch t, Guid launch) => t.Redis.KeyDeleteAsync(RedisKeys.State(launch));
@@ -396,5 +390,9 @@ public class CustomerTests(Containers containers)
         }
 
         Assert.Equal(before, t.Commands.Count); // never falls back to Postgres (LR-04)
+        var warnings = t.Logs.Entries.Where(e => e.StartsWith("[Warning]", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(warnings);
+        Assert.All(warnings, w => Assert.DoesNotContain("wr:", w)); // no Redis key, no stack trace
+        Assert.All(warnings, w => Assert.DoesNotContain("   at ", w));
     }
 }

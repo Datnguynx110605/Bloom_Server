@@ -54,31 +54,6 @@ public class WorkerTests(Containers containers)
         return Envelope.Parse(got!.Body.Span);
     }
 
-    /// <summary>A launch (one product, limit 5, one SKU of 10) with a <c>held</c> hold of 2 for a new account.</summary>
-    private static async Task<(SeededLaunch Launch, Guid Order)> HeldAsync(TestLaunch t, SeededLaunch? on = null)
-    {
-        var launch = on ?? await Seed.LaunchAsync(t, products: new SeedProduct(5, 10));
-        var (account, order) = (Guid.NewGuid(), Guid.NewGuid());
-        await Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, launch.Id, account), (launch.Skus[0], 2)));
-        return (launch, order);
-    }
-
-    private static async Task<HoldRow> HoldAsync(TestLaunch t, Guid order)
-    {
-        await using var db = t.NewDb();
-        return await db.Holds.AsNoTracking().SingleAsync(h => h.OrderId == order, Ct);
-    }
-
-    private static async Task<(int Held, int Sold)> SkuAsync(TestLaunch t, Guid sku)
-    {
-        await using var db = t.NewDb();
-        var row = await db.LaunchSkus.AsNoTracking().SingleAsync(s => s.SkuId == sku, Ct);
-        return (row.Held, row.Sold);
-    }
-
-    private static OrderPaidV1 Paid(Guid order, Guid launch) =>
-        new(order, "BL-1", Guid.NewGuid(), launch, DateTimeOffset.UtcNow, 100, [new(Guid.NewGuid(), 99)]);
-
     [Fact]
     public async Task Every_queue_is_bound()
     {
@@ -114,26 +89,26 @@ public class WorkerTests(Containers containers)
         await using var ___ = connection;
         await using var ____ = channel;
         var released = await QueueOnAsync(channel, "launch.events", LaunchMessages.HoldReleased);
-        var (launch, paidOrder) = await HeldAsync(api);
-        var (_, sentinelOrder) = await HeldAsync(api, launch);
-        var (_, releasedOrder) = await HeldAsync(api, launch);
-        var paid = NewEnvelope(OrderMessages.Paid, MessageKinds.Event, "order", Paid(paidOrder, launch.Id));
+        var (launch, _, paidOrder) = await Holds.HeldAsync(api);
+        var (_, _, sentinelOrder) = await Holds.HeldAsync(api, on: launch);
+        var (_, _, releasedOrder) = await Holds.HeldAsync(api, on: launch);
+        var paid = NewEnvelope(OrderMessages.Paid, MessageKinds.Event, "order", Holds.Paid(paidOrder, launch.Id));
 
         await PublishAsync(channel, "order.events", paid);
         await PublishAsync(channel, "order.events", paid); // same messageId: the inbox drops it
-        await PublishAsync(channel, "order.events", NewEnvelope(OrderMessages.Paid, MessageKinds.Event, "order", Paid(sentinelOrder, launch.Id))); // queued after the duplicate
+        await PublishAsync(channel, "order.events", NewEnvelope(OrderMessages.Paid, MessageKinds.Event, "order", Holds.Paid(sentinelOrder, launch.Id))); // queued after the duplicate
 
-        await Poll.UntilAsync(async () => (await HoldAsync(api, sentinelOrder)).Status == HoldStatuses.Sold, 15, "sentinel hold sold");
-        var hold = await HoldAsync(api, paidOrder);
+        await Poll.UntilAsync(async () => (await Holds.HoldAsync(api, sentinelOrder)).Status == HoldStatuses.Sold, 15, "sentinel hold sold");
+        var hold = await Holds.HoldAsync(api, paidOrder);
         Assert.Equal(HoldStatuses.Sold, hold.Status);
         Assert.Equal(1, hold.Version);
-        Assert.Equal((2, 4), await SkuAsync(api, launch.Skus[0])); // 3 holds of 2: two sold once each, one still held
+        Assert.Equal((2, 4), await Holds.SkuAsync(api, launch.Skus[0])); // 3 holds of 2: two sold once each, one still held
 
         await PublishAsync(channel, "launch.commands", NewEnvelope(LaunchMessages.ReleaseAllocationHold, MessageKinds.Command, "order", new ReleaseAllocationHoldV1(releasedOrder, "checkout_expired")));
 
-        await Poll.UntilAsync(async () => (await HoldAsync(api, releasedOrder)).Status == HoldStatuses.Released, 15, "hold released");
+        await Poll.UntilAsync(async () => (await Holds.HoldAsync(api, releasedOrder)).Status == HoldStatuses.Released, 15, "hold released");
         Assert.Equal(releasedOrder, (await NextAsync(channel, released, "launch.hold-released.v1 on launch.events")).GetPayload<HoldReleasedV1>().OrderId);
-        Assert.Equal((0, 4), await SkuAsync(api, launch.Skus[0]));
+        Assert.Equal((0, 4), await Holds.SkuAsync(api, launch.Skus[0]));
         await Holds.InvariantAsync(api, launch.Id);
     }
 

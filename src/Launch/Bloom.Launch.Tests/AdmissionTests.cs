@@ -7,6 +7,8 @@ using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using StackExchange.Redis;
 
+using static Bloom.Launch.Tests.WaitingRooms;
+
 namespace Bloom.Launch.Tests;
 
 public class AdmissionTests(Containers containers)
@@ -15,26 +17,12 @@ public class AdmissionTests(Containers containers)
 
     private Task<TestLaunch> StartAsync() => TestLaunch.StartAsync(containers);
 
-    private static WaitingRoomRequest Room(Guid launch) => new() { LaunchId = launch.ToString("D") };
-
-    private static Task<WaitingRoomStatus> Join(TestLaunch t, Guid launch, Guid account) =>
-        t.Customer.JoinWaitingRoomAsync(Room(launch), Api.Customer(account), cancellationToken: Ct).ResponseAsync;
-
-    private static Task<WaitingRoomStatus> Status(TestLaunch t, Guid launch, Guid account) =>
-        t.Customer.GetWaitingRoomStatusAsync(Room(launch), Api.Customer(account), cancellationToken: Ct).ResponseAsync;
-
     /// <summary>Queues <paramref name="n"/> accounts straight in Redis with the scores <paramref name="scores"/> (default 1, 2, …).</summary>
     private static async Task<List<Guid>> QueueAsync(TestLaunch t, Guid launch, int n, Func<int, double>? scores = null)
     {
         var accounts = Enumerable.Range(0, n).Select(_ => Guid.NewGuid()).ToList();
         await t.Redis.SortedSetAddAsync(RedisKeys.Queue(launch), [.. accounts.Select((a, i) => new SortedSetEntry(a.ToString("D"), (scores ?? (x => x + 1))(i)))]);
         return accounts;
-    }
-
-    private static async Task<LaunchRow> RowAsync(TestLaunch t, Guid launch)
-    {
-        await using var db = t.NewDb();
-        return await db.Launches.AsNoTracking().SingleAsync(l => l.Id == launch, Ct);
     }
 
     private static async Task<long> StageEventsAsync(TestLaunch t, string stage, Guid? launch = null) =>
@@ -219,6 +207,7 @@ public class AdmissionTests(Containers containers)
     public async Task L12_sold_out_and_no_holds_left_closes_the_room()
     {
         await using var t = await StartAsync();
+        using var metrics = new MetricCapture(t.Services);
         var launch = await Seed.LaunchAsync(t, products: new SeedProduct(2, 3));
         var queued = Guid.NewGuid();
         Assert.Equal("queued", (await Join(t, launch.Id, queued)).State);
@@ -229,12 +218,14 @@ public class AdmissionTests(Containers containers)
         var result = await t.TickAsync(launch.Id);
 
         Assert.Equal("none", result.Result);
-        var row = await RowAsync(t, launch.Id);
+        var row = await t.RowAsync(launch.Id);
         Assert.NotNull(row.WaitingRoomClosedAt);
         Assert.Equal(1, row.Version);
         Assert.False(await t.Redis.KeyExistsAsync(RedisKeys.Queue(launch.Id)));
         Assert.False(await t.Redis.KeyExistsAsync(RedisKeys.Passes(launch.Id)));
         Assert.False(await t.Redis.KeyExistsAsync(RedisKeys.State(launch.Id)));
+        Assert.Equal(0, metrics.Latest("waiting_room_size", ("launch", launch.Id.ToString())));
+        Assert.Equal(0, metrics.Latest("passes_outstanding", ("launch", launch.Id.ToString())));
         Assert.Equal("closed", (await Status(t, launch.Id, queued)).State);
         await Rpc.FailsAsync(t.Customer.JoinWaitingRoomAsync(Room(launch.Id), Api.Customer(Guid.NewGuid()), cancellationToken: Ct), LaunchErrors.WaitingRoomClosed);
     }
@@ -255,7 +246,7 @@ public class AdmissionTests(Containers containers)
         var result = await t.TickAsync(launch.Id);
 
         Assert.Equal("none", result.Result);
-        Assert.Null((await RowAsync(t, launch.Id)).WaitingRoomClosedAt);
+        Assert.Null((await t.RowAsync(launch.Id)).WaitingRoomClosedAt);
         Assert.True(await t.Redis.KeyExistsAsync(RedisKeys.Queue(launch.Id)));
         await t.Redis.KeyDeleteAsync(RedisKeys.State(launch.Id)); // the cached state may predate the hold
         Assert.Equal("sold_out", (await Status(t, launch.Id, Guid.NewGuid())).State);
@@ -276,7 +267,7 @@ public class AdmissionTests(Containers containers)
 
         // Units came back (available 3): no close.
         Assert.False(await TryClose());
-        Assert.Null((await RowAsync(t, launch.Id)).WaitingRoomClosedAt);
+        Assert.Null((await t.RowAsync(launch.Id)).WaitingRoomClosedAt);
 
         // Sold out but a hold is still held: no close.
         await t.SqlAsync($"UPDATE launch_skus SET held = 3 WHERE launch_id = {launch.Id}");
@@ -287,13 +278,13 @@ public class AdmissionTests(Containers containers)
         await t.SqlAsync($"UPDATE holds SET status = 'released' WHERE launch_id = {launch.Id}");
         await t.SqlAsync($"UPDATE launch_skus SET held = 0 WHERE launch_id = {launch.Id}");
         Assert.False(await TryClose());
-        Assert.Null((await RowAsync(t, launch.Id)).WaitingRoomClosedAt);
+        Assert.Null((await t.RowAsync(launch.Id)).WaitingRoomClosedAt);
 
         // Sold out and no held hold: closes once, and only once.
         await t.SqlAsync($"UPDATE launch_skus SET sold = allocation WHERE launch_id = {launch.Id}");
         Assert.True(await TryClose());
         Assert.False(await TryClose());
-        var row = await RowAsync(t, launch.Id);
+        var row = await t.RowAsync(launch.Id);
         Assert.NotNull(row.WaitingRoomClosedAt);
         Assert.Equal(1, row.Version);
     }
@@ -322,16 +313,16 @@ public class AdmissionTests(Containers containers)
 
         await t.RunSchedulerAsync();
 
-        var row = await RowAsync(t, due.Id);
+        var row = await t.RowAsync(due.Id);
         Assert.Equal(LaunchStages.PreorderOpen, row.Stage);
         Assert.Equal(1, row.Version);
-        Assert.Equal(LaunchStages.Announced, (await RowAsync(t, later.Id)).Stage);
+        Assert.Equal(LaunchStages.Announced, (await t.RowAsync(later.Id)).Stage);
         Assert.Equal(1, await StageEventsAsync(t, LaunchStages.PreorderOpen, due.Id));
         Assert.False(await t.Redis.KeyExistsAsync(RedisKeys.State(due.Id)));
 
         await t.RunSchedulerAsync();
 
-        Assert.Equal(1, (await RowAsync(t, due.Id)).Version);
+        Assert.Equal(1, (await t.RowAsync(due.Id)).Version);
         Assert.Equal(1, await StageEventsAsync(t, LaunchStages.PreorderOpen));
     }
 
@@ -347,7 +338,7 @@ public class AdmissionTests(Containers containers)
 
         await t.RunSchedulerAsync();
 
-        var row = await RowAsync(t, launch.Id);
+        var row = await t.RowAsync(launch.Id);
         Assert.Equal(LaunchStages.Released, row.Stage);
         Assert.NotNull(row.WaitingRoomClosedAt);
         Assert.Equal(1, row.Version);
@@ -372,7 +363,7 @@ public class AdmissionTests(Containers containers)
         {
             Assert.Equal(1, await StageEventsAsync(t, LaunchStages.PreorderOpen, l.Id));
             Assert.Equal(1, await StageEventsAsync(t, LaunchStages.Released, l.Id));
-            var row = await RowAsync(t, l.Id);
+            var row = await t.RowAsync(l.Id);
             Assert.Equal(LaunchStages.Released, row.Stage);
             Assert.Equal(2, row.Version);
         }

@@ -1,4 +1,5 @@
 using System.Text;
+using Bloom.Identity.Contracts;
 using Bloom.Shared.DeadLetters;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Persistence;
@@ -11,6 +12,9 @@ public static class Outbox
     /// <summary>The payloads of every outbox message of <paramref name="messageType"/>, oldest first.</summary>
     public static async Task<IReadOnlyList<T>> PayloadsAsync<T>(TestLaunch t, string messageType) =>
         (await EnvelopesAsync(t, messageType)).Select(e => e.GetPayload<T>()).ToList();
+
+    public static async Task<StaffActionRecorded> AuditAsync(TestLaunch t, string action) =>
+        (await PayloadsAsync<StaffActionRecorded>(t, IdentityMessages.StaffActionRecorded)).Single(a => a.Action == action);
 
     /// <summary>The envelopes of every outbox message of <paramref name="messageType"/>, oldest first.</summary>
     public static async Task<List<Envelope>> EnvelopesAsync(TestLaunch t, string messageType)

@@ -144,6 +144,12 @@ public sealed class TestLaunch : IAsyncDisposable
     private static LaunchDbContext NewDb(string connectionString) =>
         new(new DbContextOptionsBuilder<LaunchDbContext>().UseNpgsql(connectionString).Options);
 
+    public async Task<LaunchRow> RowAsync(Guid launch)
+    {
+        await using var db = NewDb();
+        return await db.Launches.AsNoTracking().SingleAsync(l => l.Id == launch, TestContext.Current.CancellationToken);
+    }
+
     public async Task SqlAsync(FormattableString sql)
     {
         await using var db = NewDb();

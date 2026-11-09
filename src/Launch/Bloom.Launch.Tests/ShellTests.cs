@@ -48,6 +48,15 @@ public class ShellTests(Containers containers)
         }
     }
 
+    [Theory, InlineData("localhost:6379,password=SECRET,bogus=1"), InlineData("localhost:notaport,password=SECRET")]
+    public void Malformed_redis_fails_at_build_without_the_value(string redis)
+    {
+        var e = Assert.Throws<InvalidOperationException>(() => Build("api", new() { ["Launch:Redis"] = redis }));
+
+        Assert.Contains("Launch:Redis", e.Message);
+        Assert.DoesNotContain("SECRET", e.Message);
+    }
+
     [Fact]
     public void Relative_catalog_url_fails_at_build()
     {

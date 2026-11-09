@@ -1,3 +1,4 @@
+using Bloom.Launch.Contracts;
 using Google.Rpc;
 using Grpc.Core;
 
@@ -36,4 +37,16 @@ public static class Rpc
     }
 
     public static Task<ErrorInfo> FailsAsync<T>(AsyncUnaryCall<T> call, string reason) => FailsAsync(call.ResponseAsync, reason);
+}
+
+/// <summary>The customer waiting-room calls, as the caller account.</summary>
+public static class WaitingRooms
+{
+    public static WaitingRoomRequest Room(Guid launch) => new() { LaunchId = launch.ToString() };
+
+    public static Task<WaitingRoomStatus> Join(TestLaunch t, Guid launch, Guid account) =>
+        t.Customer.JoinWaitingRoomAsync(Room(launch), Api.Customer(account), cancellationToken: TestContext.Current.CancellationToken).ResponseAsync;
+
+    public static Task<WaitingRoomStatus> Status(TestLaunch t, Guid launch, Guid account) =>
+        t.Customer.GetWaitingRoomStatusAsync(Room(launch), Api.Customer(account), cancellationToken: TestContext.Current.CancellationToken).ResponseAsync;
 }
