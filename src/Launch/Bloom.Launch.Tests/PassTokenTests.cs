@@ -96,7 +96,8 @@ public class PassTokenTests
             P($$"""{"pid":"{{p}}","aid":"{{a}}","lid":"{{l}}","exp":123,"kid":"nope"}"""),
             P($$"""{"pid":"{{p}}","aid":"{{a}}","lid":"{{l}}","exp":1.5,"kid":"k1"}"""),
             P($$"""{"pid":"{{p}}","aid":"{{a}}","lid":"{{l}}","exp":123,"kid":7}"""),
-            P("[]"), P("null"), P("\"k1\""));
+            P("[]"), P("null"), P("\"k1\""),
+            Token([.. "{\"kid\":\""u8, 0xFF, 0xFE, .. "\"}"u8], K1)); // invalid UTF-8 in the kid
     }
 
     [Theory, MemberData(nameof(Garbage))]

@@ -39,9 +39,9 @@ public sealed class PassTokens(LaunchOptions options)
                 || !root.TryGetProperty("exp", out var exp) || exp.ValueKind != JsonValueKind.Number || !exp.TryGetInt64(out var expMs)) return null;
             return new PassClaims(pid, aid, lid, expMs, kidEl.GetString()!);
         }
-        catch (JsonException)
+        catch (Exception e) when (e is JsonException or InvalidOperationException)
         {
-            return null; // not JSON
+            return null; // not JSON, or a string with invalid UTF-8 (GetString throws InvalidOperationException)
         }
     }
 
