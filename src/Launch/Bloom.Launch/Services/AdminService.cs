@@ -7,6 +7,7 @@ using Bloom.Launch.Domain;
 using Bloom.Launch.Errors;
 using Bloom.Launch.Observability;
 using Bloom.Launch.WaitingRoom;
+using Bloom.Shared.Concurrency;
 using Bloom.Shared.Messaging;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -20,7 +21,7 @@ namespace Bloom.Launch.Services;
 /// <c>version + 1</c>, the audit row and, from <c>announced</c> on, the stage-changed event (R10); after commit the state cache is dropped.
 /// </summary>
 public sealed class AdminService(
-    LaunchDbContext db, OutboxWriter outbox, Audit audit, StateCache cache, LaunchMetrics metrics, LaunchOptions options,
+    LaunchDbContext db, OutboxWriter outbox, Audit audit, ConcurrentUpdates concurrent, StateCache cache, LaunchMetrics metrics, LaunchOptions options,
     CatalogInternal.CatalogInternalClient catalog, ILogger<AdminService> logger) : LaunchAdmin.LaunchAdminBase
 {
     private const int DefaultPageSize = 20, MaxPageSize = 100;
@@ -124,13 +125,116 @@ public sealed class AdminService(
         return await Views.AdminAsync(db, launchId, ct) ?? throw LaunchErrors.NotFound("The launch");
     }
 
-    // The six edit and publish methods are built in the next task.
-    public override Task<AdminLaunch> SetAllocation(SetAllocationRequest request, ServerCallContext context) => throw new NotImplementedException();
-    public override Task<AdminLaunch> SetPurchaseLimit(SetPurchaseLimitRequest request, ServerCallContext context) => throw new NotImplementedException();
-    public override Task<AdminLaunch> SetReleaseDate(SetReleaseDateRequest request, ServerCallContext context) => throw new NotImplementedException();
-    public override Task<AdminLaunch> SetLaunchTime(SetLaunchTimeRequest request, ServerCallContext context) => throw new NotImplementedException();
-    public override Task<AdminLaunch> SetAdmissionRate(SetAdmissionRateRequest request, ServerCallContext context) => throw new NotImplementedException();
-    public override Task<AdminLaunch> PublishLaunch(PublishLaunchRequest request, ServerCallContext context) => throw new NotImplementedException();
+    public override async Task<AdminLaunch> SetAllocation(SetAllocationRequest request, ServerCallContext context)
+    {
+        var caller = Caller.From(context).RequireStaff(Caller.Staff);
+        var ct = context.CancellationToken;
+        var launchId = LaunchId(request.LaunchId);
+        var skuId = Uuid(request.SkuId, "sku_id");
+        var allocation = request.Allocation;
+        if (allocation < 0) throw LaunchErrors.Validation("allocation", "allocation must be 0 or more.");
+
+        long available = 0;
+        var view = await EditAsync(launchId, request.Version, publishes: false, async row =>
+        {
+            var sku = await db.LaunchSkus.AsNoTracking().SingleOrDefaultAsync(s => s.LaunchId == launchId && s.SkuId == skuId, ct) ?? throw LaunchErrors.NotFound("The SKU");
+            if (row.Stage == LaunchStages.Released) throw StageError(row);
+            if (row.Stage != LaunchStages.Draft && allocation < sku.Allocation)
+                throw LaunchErrors.Error(LaunchErrors.AllocationDecreaseNotAllowed, "Allocation can only increase once a launch is announced.");
+            // R11: the guard computes in bigint; LR-01 holds whatever a concurrent hold does.
+            var returned = await db.Database.SqlQuery<long>(
+                $"UPDATE launch_skus SET allocation = {allocation} WHERE launch_id = {launchId} AND sku_id = {skuId} AND held::bigint + sold <= {allocation} RETURNING allocation - held - sold AS \"Value\"")
+                .ToListAsync(ct);
+            if (returned.Count != 1) throw LaunchErrors.Error(LaunchErrors.AllocationDecreaseNotAllowed, "Allocation can't go below what is held or sold.");
+            available = returned[0];
+            audit.Record(caller, "launch.allocation-changed", launchId, new { skuId, before = sku.Allocation, after = allocation });
+        }, ct);
+        metrics.SetAvailable(launchId, skuId, available);
+        return view;
+    }
+
+    public override async Task<AdminLaunch> SetPurchaseLimit(SetPurchaseLimitRequest request, ServerCallContext context)
+    {
+        var caller = Caller.From(context).RequireStaff(Caller.Staff);
+        var ct = context.CancellationToken;
+        var launchId = LaunchId(request.LaunchId);
+        var productId = Uuid(request.ProductId, "product_id");
+        if (request.PurchaseLimit <= 0) throw LaunchErrors.Validation("purchase_limit", "purchase_limit must be greater than 0.");
+
+        return await EditAsync(launchId, request.Version, publishes: true, async row =>
+        {
+            var product = await db.LaunchProducts.SingleOrDefaultAsync(p => p.LaunchId == launchId && p.ProductId == productId, ct) ?? throw LaunchErrors.NotFound("The product");
+            if (!Editable.Contains(row.Stage)) throw LaunchErrors.Error(LaunchErrors.PurchaseLimitLocked, $"The purchase limit is locked in stage {row.Stage}.");
+            audit.Record(caller, "launch.purchase-limit-changed", launchId, new { productId, before = product.PurchaseLimit, after = request.PurchaseLimit });
+            product.PurchaseLimit = request.PurchaseLimit;
+        }, ct);
+    }
+
+    public override async Task<AdminLaunch> SetReleaseDate(SetReleaseDateRequest request, ServerCallContext context)
+    {
+        var caller = Caller.From(context).RequireStaff(Caller.Staff);
+        var launchId = LaunchId(request.LaunchId);
+        var date = Time(request.ReleaseDate, "release_date");
+
+        return await EditAsync(launchId, request.Version, publishes: true, async (row, now) =>
+        {
+            RequireBeforeReleased(row);
+            if (date <= now || date <= row.LaunchTime) throw LaunchErrors.Validation("release_date", "release_date must be in the future and after launch_time.");
+            audit.Record(caller, "launch.release-date-changed", launchId, new { before = row.ReleaseDate, after = date });
+            row.ReleaseDate = date;
+        }, context.CancellationToken);
+    }
+
+    public override async Task<AdminLaunch> SetLaunchTime(SetLaunchTimeRequest request, ServerCallContext context)
+    {
+        var caller = Caller.From(context).RequireStaff(Caller.Staff);
+        var launchId = LaunchId(request.LaunchId);
+        var time = Time(request.LaunchTime, "launch_time");
+
+        return await EditAsync(launchId, request.Version, publishes: false, async row =>
+        {
+            if (row.Stage != LaunchStages.Draft) throw StageError(row);
+            if (time >= row.ReleaseDate) throw LaunchErrors.Validation("launch_time", "launch_time must be before release_date.");
+            audit.Record(caller, "launch.launch-time-changed", launchId, new { before = row.LaunchTime, after = time });
+            row.LaunchTime = time;
+        }, context.CancellationToken);
+    }
+
+    public override async Task<AdminLaunch> SetAdmissionRate(SetAdmissionRateRequest request, ServerCallContext context)
+    {
+        var caller = Caller.From(context).RequireStaff(Caller.Staff);
+        var launchId = LaunchId(request.LaunchId);
+        if (request.AdmissionRate < 1 || request.AdmissionRate > options.AdmissionCeiling)
+            throw LaunchErrors.Validation("admission_rate", $"admission_rate must be from 1 to {options.AdmissionCeiling}.");
+
+        return await EditAsync(launchId, request.Version, publishes: false, async row =>
+        {
+            RequireBeforeReleased(row);
+            audit.Record(caller, "launch.admission-rate-changed", launchId, new { before = row.AdmissionRate, after = request.AdmissionRate });
+            row.AdmissionRate = request.AdmissionRate;
+        }, context.CancellationToken);
+    }
+
+    public override async Task<AdminLaunch> PublishLaunch(PublishLaunchRequest request, ServerCallContext context)
+    {
+        var caller = Caller.From(context).RequireStaff(Caller.Staff);
+        var ct = context.CancellationToken;
+        var launchId = LaunchId(request.LaunchId);
+
+        return await EditAsync(launchId, request.Version, publishes: true, async (row, now) =>
+        {
+            if (row.Stage != LaunchStages.Draft) throw StageError(row);
+            // Owner item 3: at least one SKU, and every product has one.
+            var products = await db.LaunchProducts.AsNoTracking().Where(p => p.LaunchId == launchId).Select(p => p.ProductId).ToListAsync(ct);
+            var withSkus = await db.LaunchSkus.AsNoTracking().Where(s => s.LaunchId == launchId).Select(s => s.ProductId).Distinct().ToListAsync(ct);
+            if (withSkus.Count == 0) throw LaunchErrors.Validation("skus", "A launch needs at least one SKU.");
+            if (products.FirstOrDefault(p => !withSkus.Contains(p)) is var bare && bare != default)
+                throw LaunchErrors.Validation("skus", $"Product {bare:D} has no SKU.");
+            if (row.LaunchTime <= now) throw LaunchErrors.Validation("launch_time", "launch_time must be in the future.");
+            row.Stage = LaunchStages.Announced;
+            audit.Record(caller, "launch.published", launchId);
+        }, ct);
+    }
 
     /// <summary>Catalog must know the SKU, under this product, in no launch. Anything else catalog says, or a timeout, is <c>UNAVAILABLE</c> (§5.2).</summary>
     private async Task CheckCatalogAsync(Guid skuId, Guid productId, CancellationToken ct)
@@ -179,9 +283,44 @@ public sealed class AdminService(
         }
     }
 
+    /// <summary>
+    /// Plan R9 for a write that takes a <c>version</c>, in one transaction: the launch row locked, then the version check
+    /// (<see cref="ConcurrentUpdates.UpdateVersionedAsync"/> adds 1 and sets <c>updated_at</c> to the database's <c>now()</c>), then <paramref name="change"/>
+    /// (stage rule first, then the change; a throw rolls the bump back). <paramref name="publishes"/>: a launch that is no longer a draft gets the stage-changed event (R10).
+    /// After commit the state cache is dropped.
+    /// </summary>
+    private async Task<AdminLaunch> EditAsync(Guid launchId, long version, bool publishes, Func<LaunchRow, DateTimeOffset, Task> change, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var row = await LockAsync(launchId, ct);
+        var now = await db.NowAsync(ct);
+        await concurrent.UpdateVersionedAsync("launch", db.Launches.Where(l => l.Id == launchId), version, s => s.SetProperty(l => l.UpdatedAt, now), LaunchErrors.NotFoundReason, ct);
+        await change(row, now);
+        await db.SaveChangesAsync(ct);
+        if (publishes && row.Stage != LaunchStages.Draft)
+        {
+            await StageEvents.WriteAsync(db, outbox, launchId, ct);
+            await db.SaveChangesAsync(ct);
+        }
+        await tx.CommitAsync(ct);
+
+        await cache.DropAsync(launchId);
+        return await Views.AdminAsync(db, launchId, ct) ?? throw LaunchErrors.NotFound("The launch");
+    }
+
+    private Task<AdminLaunch> EditAsync(Guid launchId, long version, bool publishes, Func<LaunchRow, Task> change, CancellationToken ct) =>
+        EditAsync(launchId, version, publishes, (row, _) => change(row), ct);
+
+    private static RpcException StageError(LaunchRow row) => LaunchErrors.Error(LaunchErrors.InvalidStage, $"A launch in stage {row.Stage} can't take this change.");
+
+    private static void RequireBeforeReleased(LaunchRow row)
+    {
+        if (row.Stage == LaunchStages.Released) throw StageError(row);
+    }
+
     private static void RequireEditable(LaunchRow row)
     {
-        if (!Editable.Contains(row.Stage)) throw LaunchErrors.Error(LaunchErrors.InvalidStage, $"A launch in stage {row.Stage} can't take this change.");
+        if (!Editable.Contains(row.Stage)) throw StageError(row);
     }
 
     private async Task RequireProductAsync(Guid launchId, Guid productId, CancellationToken ct)
