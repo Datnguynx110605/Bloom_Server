@@ -37,6 +37,15 @@ public sealed class Containers : IAsyncLifetime
         await _redis.DisposeAsync();
     }
 
+    /// <summary>Runs <c>rabbitmqctl</c> inside the broker container and returns its stdout.</summary>
+    public async Task<string> RabbitCtlAsync(params string[] args)
+    {
+        var result = await _rabbit.ExecAsync(["rabbitmqctl", .. args]);
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException($"rabbitmqctl {string.Join(' ', args)} failed ({result.ExitCode}): {result.Stderr}");
+        return result.Stdout;
+    }
+
     /// <summary>Creates an empty database and returns its owner connection string (what the app and the test side both use).</summary>
     public async Task<string> CreateDatabaseAsync()
     {

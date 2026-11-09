@@ -41,9 +41,9 @@ public static class LaunchApp
         builder.Services.AddSingleton<PassTokens>();
         builder.Services.AddSingleton<StateCache>();
         builder.Services.AddSingleton<RoomCleanup>();
-        builder.Services.AddSingleton<AdmissionWorker>(); // hosted only in the worker (Task 10); tests drive RunOnceAsync
+        builder.Services.AddSingleton<AdmissionWorker>(); // hosted in the worker only; tests drive RunOnceAsync
         builder.Services.AddSingleton<StageScheduler>();
-        builder.Services.AddSingleton<StuckHoldMonitor>(); // hosted only in the worker (Task 10); tests drive RunOnceAsync
+        builder.Services.AddSingleton<StuckHoldMonitor>(); // hosted in the worker only; tests drive RunOnceAsync
         builder.Services.AddScoped<Audit>();
         builder.Services.AddDbContext<LaunchDbContext>(o => o.UseNpgsql(options.Database));
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
@@ -76,6 +76,10 @@ public static class LaunchApp
         else
         {
             bloom.AddWorker(); // worker only (plan R5)
+            // The jobs are plain singletons so tests can drive RunOnceAsync; the worker hosts those same instances.
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<AdmissionWorker>());
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<StageScheduler>());
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<StuckHoldMonitor>());
         }
 
         var app = builder.Build();
@@ -84,6 +88,7 @@ public static class LaunchApp
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)
             app.MapGrpcService<CustomerService>(); // transcoded to /api/launches (spec §6)
             app.MapGrpcService<AdminService>(); // transcoded to /api/admin/launches (spec §6)
+            app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
         return app;
     }
