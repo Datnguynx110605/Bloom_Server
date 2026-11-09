@@ -26,6 +26,8 @@
   </Folder>
   <Folder Name="/src/Launch/">
     <Project Path="src/Launch/Bloom.Launch.Contracts/Bloom.Launch.Contracts.csproj" />
+    <Project Path="src/Launch/Bloom.Launch.Tests/Bloom.Launch.Tests.csproj" />
+    <Project Path="src/Launch/Bloom.Launch/Bloom.Launch.csproj" />
   </Folder>
   <Folder Name="/src/Notification/">
     <Project Path="src/Notification/Bloom.Notification.Tests/Bloom.Notification.Tests.csproj" />
