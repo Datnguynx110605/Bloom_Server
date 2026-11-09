@@ -1,4 +1,5 @@
 using Bloom.Catalog.Contracts;
+using Bloom.Launch.Consumers;
 using Bloom.Launch.Data;
 using Bloom.Launch.Domain;
 using Bloom.Launch.Observability;
@@ -42,6 +43,7 @@ public static class LaunchApp
         builder.Services.AddSingleton<RoomCleanup>();
         builder.Services.AddSingleton<AdmissionWorker>(); // hosted only in the worker (Task 10); tests drive RunOnceAsync
         builder.Services.AddSingleton<StageScheduler>();
+        builder.Services.AddSingleton<StuckHoldMonitor>(); // hosted only in the worker (Task 10); tests drive RunOnceAsync
         builder.Services.AddScoped<Audit>();
         builder.Services.AddDbContext<LaunchDbContext>(o => o.UseNpgsql(options.Database));
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
@@ -58,6 +60,10 @@ public static class LaunchApp
             o.ServiceName = "launch";
             o.RabbitMqUri = options.RabbitMq;
         });
+
+        // Both modes, for the DLQ admin (plan R5).
+        bloom.AddConsumer<OrderPaidConsumer>("order-paid", OrderPaidConsumer.Bindings);
+        bloom.AddConsumer<ReleaseAllocationHoldConsumer>("release-allocation-hold", ReleaseAllocationHoldConsumer.Bindings);
 
         if (api)
         {

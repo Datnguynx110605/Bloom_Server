@@ -157,6 +157,8 @@ public sealed class TestLaunch : IAsyncDisposable
 
     public Task RunSchedulerAsync() => Services.GetRequiredService<StageScheduler>().RunOnceAsync(TestContext.Current.CancellationToken);
 
+    public Task RunMonitorAsync() => Services.GetRequiredService<StuckHoldMonitor>().RunOnceAsync(TestContext.Current.CancellationToken);
+
     public int ErrorLogs => Logs.Entries.Count(e => e.StartsWith("[Error]", StringComparison.Ordinal));
 
     public async ValueTask DisposeAsync()
