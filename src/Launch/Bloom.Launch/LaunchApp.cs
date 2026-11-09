@@ -5,6 +5,7 @@ using Bloom.Launch.Observability;
 using Bloom.Launch.Passes;
 using Bloom.Launch.Services;
 using Bloom.Launch.WaitingRoom;
+using Bloom.Launch.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
 using Google.Protobuf.Reflection;
@@ -38,6 +39,9 @@ public static class LaunchApp
         builder.Services.AddSingleton<LaunchMetrics>();
         builder.Services.AddSingleton<PassTokens>();
         builder.Services.AddSingleton<StateCache>();
+        builder.Services.AddSingleton<RoomCleanup>();
+        builder.Services.AddSingleton<AdmissionWorker>(); // hosted only in the worker (Task 10); tests drive RunOnceAsync
+        builder.Services.AddSingleton<StageScheduler>();
         builder.Services.AddScoped<Audit>();
         builder.Services.AddDbContext<LaunchDbContext>(o => o.UseNpgsql(options.Database));
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>

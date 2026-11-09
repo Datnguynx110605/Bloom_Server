@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Bloom.Launch.Contracts;
 using Bloom.Launch.Data;
+using Bloom.Launch.Worker;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -148,6 +149,13 @@ public sealed class TestLaunch : IAsyncDisposable
         await using var db = NewDb();
         await db.Database.ExecuteSqlAsync(sql, TestContext.Current.CancellationToken);
     }
+
+    public Task<AdmissionResult> TickAsync(Guid launch) =>
+        Services.GetRequiredService<AdmissionWorker>().TickLaunchAsync(launch, TestContext.Current.CancellationToken);
+
+    public Task RunAdmissionAsync() => Services.GetRequiredService<AdmissionWorker>().RunOnceAsync(TestContext.Current.CancellationToken);
+
+    public Task RunSchedulerAsync() => Services.GetRequiredService<StageScheduler>().RunOnceAsync(TestContext.Current.CancellationToken);
 
     public int ErrorLogs => Logs.Entries.Count(e => e.StartsWith("[Error]", StringComparison.Ordinal));
 
