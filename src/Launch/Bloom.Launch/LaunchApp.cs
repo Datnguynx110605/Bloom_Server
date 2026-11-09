@@ -1,6 +1,7 @@
 using Bloom.Catalog.Contracts;
 using Bloom.Launch.Data;
 using Bloom.Launch.Observability;
+using Bloom.Launch.Passes;
 using Bloom.Launch.Services;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
@@ -33,6 +34,7 @@ public static class LaunchApp
         builder.Services.AddSingleton(options);
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)
         builder.Services.AddSingleton<LaunchMetrics>();
+        builder.Services.AddSingleton<PassTokens>();
         builder.Services.AddDbContext<LaunchDbContext>(o => o.UseNpgsql(options.Database));
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
         {
