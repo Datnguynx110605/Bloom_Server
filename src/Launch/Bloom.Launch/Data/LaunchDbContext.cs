@@ -54,6 +54,8 @@ public sealed partial class LaunchDbContext(DbContextOptions<LaunchDbContext> op
             e.Property(x => x.Sold).HasDefaultValue(0);
             e.HasOne<LaunchProductRow>().WithMany().HasForeignKey(x => new { x.LaunchId, x.ProductId }).OnDelete(DeleteBehavior.Restrict);
             e.HasIndex(x => x.SkuId).IsUnique().HasDatabaseName("ux_launch_skus_sku_id");
+            // The composite FK's columns are not a prefix of the PK, so EF indexes them; only the name is ours.
+            e.HasIndex(x => new { x.LaunchId, x.ProductId }).HasDatabaseName("ix_launch_skus_launch_id_product_id");
         });
 
         mb.Entity<LimitUsageRow>(e =>

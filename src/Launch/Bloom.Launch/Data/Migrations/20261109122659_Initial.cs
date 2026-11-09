@@ -238,7 +238,7 @@ namespace Bloom.Launch.Data.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_launch_skus_launch_id_product_id",
+                name: "ix_launch_skus_launch_id_product_id",
                 table: "launch_skus",
                 columns: new[] { "launch_id", "product_id" });
 

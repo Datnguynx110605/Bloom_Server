@@ -256,7 +256,8 @@ namespace Bloom.Launch.Data.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_launch_skus_sku_id");
 
-                    b.HasIndex("LaunchId", "ProductId");
+                    b.HasIndex("LaunchId", "ProductId")
+                        .HasDatabaseName("ix_launch_skus_launch_id_product_id");
 
                     b.ToTable("launch_skus", null, t =>
                         {

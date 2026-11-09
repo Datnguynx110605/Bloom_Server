@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Bloom.Launch.Data.Migrations
 {
     [DbContext(typeof(LaunchDbContext))]
-    [Migration("20261109122327_Initial")]
+    [Migration("20261109122659_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -259,7 +259,8 @@ namespace Bloom.Launch.Data.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_launch_skus_sku_id");
 
-                    b.HasIndex("LaunchId", "ProductId");
+                    b.HasIndex("LaunchId", "ProductId")
+                        .HasDatabaseName("ix_launch_skus_launch_id_product_id");
 
                     b.ToTable("launch_skus", null, t =>
                         {

@@ -85,6 +85,12 @@ public class SchemaTests(Containers containers)
             WHERE l.id = {launch.Id} AND s.sku_id = {sku.SkuId} AND u.launch_id = {launch.Id} AND h.id = {holdId}
             """).SingleAsync(Ct);
         Assert.Equal("0,0,0,0,0,0", defaults);
+
+        // EF adds this index for the composite FK (its columns are not a prefix of the PK); it must follow the ix_ naming.
+        Assert.Equal(1, await db.Database.SqlQuery<int>($"""
+            SELECT count(*)::int AS "Value" FROM pg_indexes
+            WHERE tablename = 'launch_skus' AND indexname = 'ix_launch_skus_launch_id_product_id'
+            """).SingleAsync(Ct));
     }
 
     [Fact]
