@@ -2,6 +2,7 @@ using Bloom.Launch.Contracts;
 using Bloom.Launch.Data;
 using Bloom.Launch.Errors;
 using Bloom.Launch.WaitingRoom;
+using Bloom.Launch.Worker;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using StackExchange.Redis;
@@ -259,6 +260,42 @@ public class AdmissionTests(Containers containers)
         await t.Redis.KeyDeleteAsync(RedisKeys.State(launch.Id)); // the cached state may predate the hold
         Assert.Equal("sold_out", (await Status(t, launch.Id, Guid.NewGuid())).State);
         Assert.Equal("queued", (await Status(t, launch.Id, waiting)).State);
+    }
+
+    [Fact]
+    public async Task Close_statement_rechecks_stock_and_holds_itself()
+    {
+        // The tick reads "available = 0" in one statement and closes in another; the close must not trust the earlier read (a release may commit in between).
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, products: new SeedProduct(2, 3));
+        async Task<bool> TryClose()
+        {
+            await using var db = t.NewDb();
+            return await AdmissionWorker.TryCloseAsync(db, launch.Id, Ct);
+        }
+
+        // Units came back (available 3): no close.
+        Assert.False(await TryClose());
+        Assert.Null((await RowAsync(t, launch.Id)).WaitingRoomClosedAt);
+
+        // Sold out but a hold is still held: no close.
+        await t.SqlAsync($"UPDATE launch_skus SET held = 3 WHERE launch_id = {launch.Id}");
+        await t.SqlAsync($"INSERT INTO holds (id, order_id, launch_id, account_id, pass_id, status, version, created_at, updated_at) VALUES ({Guid.NewGuid()}, {Guid.NewGuid()}, {launch.Id}, {Guid.NewGuid()}, {Guid.NewGuid()}, 'held', 0, now(), now())");
+        Assert.False(await TryClose());
+
+        // The hold is released and its units return: still no close.
+        await t.SqlAsync($"UPDATE holds SET status = 'released' WHERE launch_id = {launch.Id}");
+        await t.SqlAsync($"UPDATE launch_skus SET held = 0 WHERE launch_id = {launch.Id}");
+        Assert.False(await TryClose());
+        Assert.Null((await RowAsync(t, launch.Id)).WaitingRoomClosedAt);
+
+        // Sold out and no held hold: closes once, and only once.
+        await t.SqlAsync($"UPDATE launch_skus SET sold = allocation WHERE launch_id = {launch.Id}");
+        Assert.True(await TryClose());
+        Assert.False(await TryClose());
+        var row = await RowAsync(t, launch.Id);
+        Assert.NotNull(row.WaitingRoomClosedAt);
+        Assert.Equal(1, row.Version);
     }
 
     [Fact]

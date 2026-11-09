@@ -93,9 +93,7 @@ public sealed class AdmissionWorker(
         // 5. Sold out: closed for good when no hold is left to be released (LCH-R23); otherwise it waits for releases.
         if (available == 0)
         {
-            var close = !await db.Holds.AnyAsync(h => h.LaunchId == launchId && h.Status == HoldStatuses.Held, ct);
-            if (close)
-                await db.Database.ExecuteSqlAsync($"UPDATE launches SET waiting_room_closed_at = now(), version = version + 1, updated_at = now() WHERE id = {launchId}", ct);
+            var close = await TryCloseAsync(db, launchId, ct);
             await tx.CommitAsync(ct);
             if (close)
             {
@@ -121,6 +119,18 @@ public sealed class AdmissionWorker(
         metrics.SetQueue(launchId, queued - admitted.Count, outstanding + admitted.Count);
         return Done(launchId, admitted.Count > 0 ? "admitted" : "none", admitted);
     }
+
+    /// <summary>
+    /// The close of §6.4 step 5 as one statement that judges for itself: with READ COMMITTED a release can commit between the tick's reads
+    /// and this statement, and a close is permanent (LCH-R23), so both conditions are checked again here. Zero rows: do not close.
+    /// </summary>
+    internal static async Task<bool> TryCloseAsync(LaunchDbContext db, Guid launchId, CancellationToken ct) =>
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE launches SET waiting_room_closed_at = now(), version = version + 1, updated_at = now()
+            WHERE id = {launchId} AND waiting_room_closed_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM holds WHERE launch_id = {launchId} AND status = {HoldStatuses.Held})
+              AND (SELECT COALESCE(SUM(allocation - held - sold), 0) FROM launch_skus WHERE launch_id = {launchId}) = 0
+            """, ct) == 1;
 
     private AdmissionResult Done(Guid launchId, string result, IReadOnlyList<Guid>? admitted = null)
     {
