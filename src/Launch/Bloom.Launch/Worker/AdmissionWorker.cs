@@ -14,8 +14,6 @@ public sealed record AdmissionResult(string Result, IReadOnlyList<Guid> Admitted
 public sealed class AdmissionWorker(
     IServiceScopeFactory scopes, IConnectionMultiplexer redis, RoomCleanup cleanup, StateCache cache, LaunchMetrics metrics, ILogger<AdmissionWorker> logger) : BackgroundService
 {
-    private static readonly IReadOnlyList<Guid> Nobody = [];
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
@@ -97,6 +95,7 @@ public sealed class AdmissionWorker(
             await tx.CommitAsync(ct);
             if (close)
             {
+                metrics.SetQueue(launchId, 0, 0);
                 await cleanup.RunAsync(launchId);
                 await cache.DropAsync(launchId);
             }
@@ -135,6 +134,6 @@ public sealed class AdmissionWorker(
     private AdmissionResult Done(Guid launchId, string result, IReadOnlyList<Guid>? admitted = null)
     {
         metrics.Tick(launchId, result);
-        return new(result, admitted ?? Nobody);
+        return new(result, admitted ?? []);
     }
 }

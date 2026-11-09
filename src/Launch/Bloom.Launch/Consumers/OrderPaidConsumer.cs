@@ -21,11 +21,9 @@ public sealed class OrderPaidConsumer(LaunchDbContext db, LaunchMetrics metrics)
 
         // The conditional update is the single winner against a duplicate and against a release of the same hold (a release that locked the row first leaves 0 rows here).
         var moved = (await db.Database.SqlQuery<Moved>($"""
-            WITH moved AS (
-                UPDATE holds SET status = {HoldStatuses.Sold}, version = version + 1, updated_at = now()
-                WHERE order_id = {paid.OrderId} AND status = {HoldStatuses.Held}
-                RETURNING id AS "Id", launch_id AS "LaunchId", account_id AS "AccountId")
-            SELECT "Id", "LaunchId", "AccountId" FROM moved
+            UPDATE holds SET status = {HoldStatuses.Sold}, version = version + 1, updated_at = now()
+            WHERE order_id = {paid.OrderId} AND status = {HoldStatuses.Held}
+            RETURNING id AS "Id", launch_id AS "LaunchId", account_id AS "AccountId"
             """).ToListAsync(ct)).SingleOrDefault();
         if (moved is null) return;
 

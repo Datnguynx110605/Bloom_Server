@@ -135,7 +135,7 @@ public sealed class AdminService(
         if (allocation < 0) throw LaunchErrors.Validation("allocation", "allocation must be 0 or more.");
 
         long available = 0;
-        var view = await EditAsync(launchId, request.Version, publishes: false, async row =>
+        var view = await EditAsync(launchId, request.Version, publishes: false, async (row, _) =>
         {
             var sku = await db.LaunchSkus.AsNoTracking().SingleOrDefaultAsync(s => s.LaunchId == launchId && s.SkuId == skuId, ct) ?? throw LaunchErrors.NotFound("The SKU");
             if (row.Stage == LaunchStages.Released) throw StageError(row);
@@ -161,7 +161,7 @@ public sealed class AdminService(
         var productId = Uuid(request.ProductId, "product_id");
         if (request.PurchaseLimit <= 0) throw LaunchErrors.Validation("purchase_limit", "purchase_limit must be greater than 0.");
 
-        return await EditAsync(launchId, request.Version, publishes: true, async row =>
+        return await EditAsync(launchId, request.Version, publishes: true, async (row, _) =>
         {
             var product = await db.LaunchProducts.SingleOrDefaultAsync(p => p.LaunchId == launchId && p.ProductId == productId, ct) ?? throw LaunchErrors.NotFound("The product");
             if (!Editable.Contains(row.Stage)) throw LaunchErrors.Error(LaunchErrors.PurchaseLimitLocked, $"The purchase limit is locked in stage {row.Stage}.");
@@ -191,7 +191,7 @@ public sealed class AdminService(
         var launchId = LaunchId(request.LaunchId);
         var time = Time(request.LaunchTime, "launch_time");
 
-        return await EditAsync(launchId, request.Version, publishes: false, async row =>
+        return await EditAsync(launchId, request.Version, publishes: false, async (row, _) =>
         {
             if (row.Stage != LaunchStages.Draft) throw StageError(row);
             if (time >= row.ReleaseDate) throw LaunchErrors.Validation("launch_time", "launch_time must be before release_date.");
@@ -207,7 +207,7 @@ public sealed class AdminService(
         if (request.AdmissionRate < 1 || request.AdmissionRate > options.AdmissionCeiling)
             throw LaunchErrors.Validation("admission_rate", $"admission_rate must be from 1 to {options.AdmissionCeiling}.");
 
-        return await EditAsync(launchId, request.Version, publishes: false, async row =>
+        return await EditAsync(launchId, request.Version, publishes: false, async (row, _) =>
         {
             RequireBeforeReleased(row);
             audit.Record(caller, "launch.admission-rate-changed", launchId, new { before = row.AdmissionRate, after = request.AdmissionRate });
@@ -308,9 +308,6 @@ public sealed class AdminService(
         return await Views.AdminAsync(db, launchId, ct) ?? throw LaunchErrors.NotFound("The launch");
     }
 
-    private Task<AdminLaunch> EditAsync(Guid launchId, long version, bool publishes, Func<LaunchRow, Task> change, CancellationToken ct) =>
-        EditAsync(launchId, version, publishes, (row, _) => change(row), ct);
-
     private static RpcException StageError(LaunchRow row) => LaunchErrors.Error(LaunchErrors.InvalidStage, $"A launch in stage {row.Stage} can't take this change.");
 
     private static void RequireBeforeReleased(LaunchRow row)
@@ -340,7 +337,8 @@ public sealed class AdminService(
         if (value is null) throw LaunchErrors.Validation(field, $"{field} is required.");
         try
         {
-            return value.ToDateTimeOffset();
+            var t = value.ToDateTimeOffset();
+            return t.AddTicks(-(t.Ticks % 10)); // PostgreSQL keeps whole microseconds; compare what it will store
         }
         catch (ArgumentOutOfRangeException)
         {

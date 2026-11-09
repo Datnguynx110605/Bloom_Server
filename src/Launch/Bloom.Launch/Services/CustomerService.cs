@@ -14,7 +14,7 @@ namespace Bloom.Launch.Services;
 /// <summary>01-launch §5.1 customer API: <c>GetLaunch</c>, join (§6.2) and status (§6.3). Redis trouble is plain <c>UNAVAILABLE</c> and never falls back to Postgres (owner item 2, LR-04).</summary>
 public sealed class CustomerService(StateCache cache, IConnectionMultiplexer redis, PassTokens tokens, TimeProvider time, LaunchMetrics metrics, ILogger<CustomerService> logger) : LaunchCustomer.LaunchCustomerBase
 {
-    public override Task<PublicLaunch> GetLaunch(GetLaunchRequest request, ServerCallContext context) => Guarded(async () =>
+    public override Task<PublicLaunch> GetLaunch(GetLaunchRequest request, ServerCallContext context) => Guarded(request.LaunchId, async () =>
     {
         var launch = await FindAsync(request.LaunchId, context.CancellationToken);
         var view = new PublicLaunch
@@ -31,7 +31,7 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         return view;
     });
 
-    public override Task<WaitingRoomStatus> JoinWaitingRoom(WaitingRoomRequest request, ServerCallContext context) => Guarded(async () =>
+    public override Task<WaitingRoomStatus> JoinWaitingRoom(WaitingRoomRequest request, ServerCallContext context) => Guarded(request.LaunchId, async () =>
     {
         var account = Caller.From(context).RequireCustomer().UserId;
         var launch = await FindAsync(request.LaunchId, context.CancellationToken);
@@ -48,7 +48,7 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         return await StatusAsync(launch, account, room);
     });
 
-    public override Task<WaitingRoomStatus> GetWaitingRoomStatus(WaitingRoomRequest request, ServerCallContext context) => Guarded(async () =>
+    public override Task<WaitingRoomStatus> GetWaitingRoomStatus(WaitingRoomRequest request, ServerCallContext context) => Guarded(request.LaunchId, async () =>
     {
         var start = Stopwatch.GetTimestamp();
         try
@@ -102,7 +102,7 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         return launch is { Stage: not LaunchStages.Draft } ? launch : throw LaunchErrors.NotFound("The launch");
     }
 
-    private async Task<T> Guarded<T>(Func<Task<T>> call)
+    private async Task<T> Guarded<T>(string launch, Func<Task<T>> call)
     {
         try
         {
@@ -110,7 +110,7 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         }
         catch (Exception e) when (e is RedisException or RedisTimeoutException)
         {
-            logger.LogWarning(e, "Redis failed; answering UNAVAILABLE.");
+            logger.LogWarning("Redis failed ({Error}) for launch {LaunchId}; answering UNAVAILABLE.", e.GetType().Name, launch); // no exception object: no stack trace per request, no Redis key
             throw LaunchErrors.Unavailable("The waiting room is unavailable.");
         }
     }

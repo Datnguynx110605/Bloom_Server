@@ -33,8 +33,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
         try
         {
             // Step 1.
-            var known = claims is not null && claims.AccountId == caller.UserId && await db.Launches.AnyAsync(l => l.Id == claims.LaunchId, ct);
-            if (claims is null || !known)
+            if (claims is null || claims.AccountId != caller.UserId || !await db.Launches.AnyAsync(l => l.Id == claims.LaunchId, ct))
                 throw Reject(launchId, "pass_invalid", LaunchErrors.PassInvalid, "The admission pass is not valid.");
             if (claims.ExpiresAtUnixMs <= (await db.NowAsync(ct)).ToUnixTimeMilliseconds())
                 throw Reject(launchId, "pass_expired", LaunchErrors.PassExpired, "The admission pass has expired.");
@@ -168,7 +167,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
         }
         catch (Exception e)
         {
-            logger.LogWarning(e, "Could not remove the consumed pass {PassId} of launch {LaunchId} from Redis; it expires on its own.", pass, launch);
+            logger.LogWarning("Could not remove the consumed pass {PassId} of launch {LaunchId} from Redis ({Error}); it expires on its own.", pass, launch, e.GetType().Name);
         }
     }
 

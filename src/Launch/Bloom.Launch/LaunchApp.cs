@@ -83,6 +83,7 @@ public static class LaunchApp
         }
 
         var app = builder.Build();
+        _ = app.Services.GetRequiredService<IConnectionMultiplexer>(); // connect now, so no request or tick ever pays for it
         if (api)
         {
             app.MapGrpcService<InternalService>(); // internal, no HTTP route (spec §6)

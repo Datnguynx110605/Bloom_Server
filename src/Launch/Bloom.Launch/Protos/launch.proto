@@ -70,7 +70,7 @@ message WaitingRoomStatus {
 }
 
 // 01-launch §5.1, Admin API (staff: catalog_manager, admin), transcoded to JSON under /api/admin/launches (spec §6).
-// Every write returns the admin view with the new version. Only the first five methods are built in the setup task; the rest follow.
+// Every write returns the admin view with the new version.
 service LaunchAdmin {
   rpc AdminListLaunches(AdminListLaunchesRequest) returns (AdminListLaunchesResponse) {
     option (google.api.http) = { get: "/api/admin/launches" };

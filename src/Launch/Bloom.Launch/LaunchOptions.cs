@@ -1,3 +1,5 @@
+using StackExchange.Redis;
+
 namespace Bloom.Launch;
 
 /// <summary>Section <c>Launch</c> (plan R4). Both modes need every key: the DLQ admin of the API needs the same consumers as the worker.</summary>
@@ -15,7 +17,7 @@ public sealed class LaunchOptions
     /// <summary>The HMAC keys that verify admission passes (01-launch §4.3); the one named by <see cref="CurrentPassKid"/> signs.</summary>
     public List<PassKey> PassKeys { get; set; } = [];
     public string CurrentPassKid { get; set; } = "";
-    /// <summary>Cap on outstanding passes per launch.</summary>
+    /// <summary>Cap on <c>admission_rate</c> (passes admitted per tick) of a launch.</summary>
     public int AdmissionCeiling { get; set; } = 200;
 
     public sealed class PassKey
@@ -38,6 +40,14 @@ public sealed class LaunchOptions
         Require("Launch:Database", Database);
         Require("Launch:RabbitMq", RabbitMq);
         Require("Launch:Redis", Redis);
+        try
+        {
+            if (ConfigurationOptions.Parse(Redis).EndPoints.Count == 0) throw new ArgumentException("no endpoint");
+        }
+        catch (ArgumentException)
+        {
+            throw Bad("Launch:Redis", "is not a valid Redis configuration string"); // never the value: it may hold a password
+        }
         Require("Launch:Catalog", Catalog);
         if (!Uri.TryCreate(Catalog, UriKind.Absolute, out _)) throw Bad("Launch:Catalog", "must be an absolute URL");
         if (PassKeys.Count == 0) throw Bad("Launch:PassKeys", "needs at least one key");
