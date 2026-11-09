@@ -275,6 +275,23 @@ public class AdminEditTests(Containers containers)
         await Rpc.FailsAsync(t.Admin.SetReleaseDateAsync(new() { LaunchId = Id(released.Id), ReleaseDate = At(now.AddYears(1)), Version = 0 }, Api.Staff(), cancellationToken: Ct), LaunchErrors.InvalidStage);
     }
 
+    [Fact]
+    public async Task Release_date_must_be_after_the_database_now_even_when_after_launch_time()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, LaunchStages.Announced);
+        await SetTimesAsync(t, launch.Id, TimeSpan.FromHours(-2), TimeSpan.FromDays(7)); // launch_time in the past
+        var now = await DbNowAsync(t);
+        var l = Id(launch.Id);
+
+        // after launch_time, before now(): only the "> now()" rule can reject it
+        await FieldFailsAsync(t.Admin.SetReleaseDateAsync(new() { LaunchId = l, ReleaseDate = At(now.AddHours(-1)), Version = 0 }, Api.Staff(), cancellationToken: Ct), "release_date");
+        Assert.Equal(0, (await RowAsync(t, launch.Id)).Version);
+
+        var ok = await t.Admin.SetReleaseDateAsync(new() { LaunchId = l, ReleaseDate = At(now.AddHours(1)), Version = 0 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+        Assert.Equal(1, ok.Version);
+    }
+
     [Theory]
     [InlineData(LaunchStages.Announced)]
     [InlineData(LaunchStages.PreorderOpen)]
