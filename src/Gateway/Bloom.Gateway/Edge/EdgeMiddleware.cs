@@ -53,19 +53,20 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
         Caller? caller = null;
         if (route.Auth is not (AuthMode.Public or AuthMode.None))
         {
-            // No Authorization header on a public-optional-user route is an anonymous caller.
-            if (authorization.Length > 0 || route.Auth != AuthMode.PublicOptionalUser)
+            // No Authorization header on a public-optional-user route is an anonymous caller; one that isn't Bearer is TOKEN_INVALID everywhere (LLD 07 §5.3).
+            if (authorization.Length == 0)
             {
-                if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                if (route.Auth != AuthMode.PublicOptionalUser)
                 {
                     await FailAsync(context, GatewayErrors.TokenMissing);
                     return;
                 }
-                if ((caller = await validator.ValidateAsync(authorization["Bearer ".Length..].Trim())) is null)
-                {
-                    await FailAsync(context, GatewayErrors.TokenInvalid);
-                    return;
-                }
+            }
+            else if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                || (caller = await validator.ValidateAsync(authorization["Bearer ".Length..].Trim())) is null)
+            {
+                await FailAsync(context, GatewayErrors.TokenInvalid);
+                return;
             }
         }
 

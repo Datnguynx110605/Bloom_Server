@@ -48,6 +48,20 @@ public class EdgeLimitTests(Containers containers)
         Assert.Equal(0, gateway.Upstream.RequestCount);
         Assert.Empty(Keys($"fw:global:{gateway.ClientIp}:*"));
         Assert.Equal(1, metrics.Sum("gateway_auth_failures_total", ("reason", "TOKEN_REVOKED")));
+    [Fact]
+    public async Task D12_token_issued_same_second_as_revoke_all_is_revoked()
+    {
+        await using var gateway = await TestGateway.StartAsync(containers);
+        var sub = Guid.NewGuid();
+        var token = TestTokens.Issue(gateway.DefaultKey, sub: sub);
+        var iat = gateway.Clock.GetUtcNow().ToUnixTimeSeconds();
+        await containers.Redis.GetDatabase().StringSetAsync($"rev:{sub:D}", iat * 1000 + 500); // revoked 500 ms into the second the token was issued
+
+        using var response = await SendAsync(gateway, "GET", "/api/cart", token);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, 16, "TOKEN_REVOKED");
+    }
+
     }
 
     [Fact]
@@ -270,6 +284,32 @@ public class EdgeLimitTests(Containers containers)
             Assert.Empty(Keys("fw:global:6.6.6.7:*"));
             Assert.NotEmpty(Keys("fw:global:127.0.0.1:*"));
         }
+    [Fact]
+    public async Task D14_client_x_forwarded_for_is_replaced()
+    {
+        // From an untrusted hop the header is replaced with the connection's address.
+        await using (var gateway = await TestGateway.StartAsync(containers, o => o.Config.Remove("Gateway:TrustedProxies:0")))
+        {
+            using var request = Request("GET", "/api/catalog/x");
+            request.Headers.Add("X-Forwarded-For", "6.6.6.6");
+
+            var seen = await EchoHeadersAsync(gateway, request);
+
+            Assert.Equal("127.0.0.1", seen["x-forwarded-for"]);
+        }
+
+        // From the trusted proxy the existing processing applies: the middleware consumes the hop it trusts and leaves the rest.
+        await using (var gateway = await TestGateway.StartAsync(containers))
+        {
+            using var request = Request("GET", "/api/catalog/x");
+            request.Headers.Add("X-Forwarded-For", $"6.6.6.6, {gateway.ClientIp}");
+
+            var seen = await EchoHeadersAsync(gateway, request);
+
+            Assert.Equal("6.6.6.6", seen["x-forwarded-for"]);
+        }
+    }
+
     }
 
     /// <summary>The next 60 s fixed-window boundary after the gateway's clock; the clock can only move forward.</summary>

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.Options;
 using Yarp.ReverseProxy.Model;
 
 namespace Bloom.Gateway;
@@ -9,6 +11,36 @@ namespace Bloom.Gateway;
 /// </summary>
 public sealed class RequestHygiene(RequestDelegate next, GatewayMetrics metrics)
 {
+    /// <summary>
+    /// Runs before <c>UseForwardedHeaders</c>: a client that isn't a trusted proxy (<c>Gateway:TrustedProxies</c>) must not feed the services
+    /// its own <c>X-Forwarded-*</c> (LLD 07 §6.4, D14). They are replaced with the connection's values, or dropped when there is no such value.
+    /// </summary>
+    public static Task ReplaceUntrustedForwarded(HttpContext context, RequestDelegate next)
+    {
+        var networks = context.RequestServices.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value.KnownIPNetworks;
+        var remote = context.Connection.RemoteIpAddress;
+        remote = remote is { IsIPv4MappedToIPv6: true } ? remote.MapToIPv4() : remote;
+        if (remote is null || !networks.Any(n => n.Contains(remote)))
+        {
+            var headers = context.Request.Headers;
+            foreach (var name in headers.Keys.Where(k => k.StartsWith("x-forwarded-", StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                var actual = name.ToLowerInvariant() switch
+                {
+                    "x-forwarded-for" => remote?.ToString(),
+                    "x-forwarded-proto" => context.Request.Scheme,
+                    "x-forwarded-host" => context.Request.Host.Value,
+                    _ => null,
+                };
+                if (actual is null)
+                    headers.Remove(name);
+                else
+                    headers[name] = actual;
+            }
+        }
+        return next(context);
+    }
+
     public async Task InvokeAsync(HttpContext context)
     {
         var start = Stopwatch.GetTimestamp();

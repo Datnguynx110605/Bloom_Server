@@ -2,6 +2,8 @@ using Bloom.Shared.Observability;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using OpenTelemetry.Instrumentation.AspNetCore;
+using OpenTelemetry.Instrumentation.Http;
 using StackExchange.Redis;
 using Yarp.ReverseProxy;
 
@@ -31,6 +33,14 @@ public static class GatewayApp
 
         builder.AddBloomTelemetry(api ? "api-gateway" : "gateway-worker");
         builder.Services.AddOpenTelemetry().WithMetrics(m => m.AddMeter(GatewayMetrics.MeterName));
+        builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(o => // the request span and the forwarded request's span both carry the secret
+        {
+            o.EnrichWithHttpRequest = (activity, _) => ShippoSecretRedaction.Redact(activity);
+        });
+        builder.Services.Configure<HttpClientTraceInstrumentationOptions>(o =>
+        {
+            o.EnrichWithHttpRequestMessage = (activity, _) => ShippoSecretRedaction.Redact(activity);
+        });
 
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
         {
@@ -82,6 +92,7 @@ public static class GatewayApp
         var app = builder.Build();
         if (api)
         {
+            app.Use(RequestHygiene.ReplaceUntrustedForwarded);
             app.UseForwardedHeaders();
             app.UseMiddleware<RequestHygiene>();
             app.UseCors(); // before route matching, so error responses carry CORS headers too (§3 step 3)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -65,13 +66,24 @@ public class AuthTests(Containers containers)
     public async Task Missing_token_is_TOKEN_MISSING()
     {
         await using var gateway = await TestGateway.StartAsync(containers);
-        using var basic = new HttpRequestMessage(HttpMethod.Get, "/api/cart") { Headers = { Authorization = new("Basic", "x") } };
 
         using var none = await gateway.Client.GetAsync("/api/cart", Ct);
-        using var notBearer = await gateway.Client.SendAsync(basic, Ct);
 
         await AssertErrorAsync(none, HttpStatusCode.Unauthorized, 16, "TOKEN_MISSING");
-        await AssertErrorAsync(notBearer, HttpStatusCode.Unauthorized, 16, "TOKEN_MISSING");
+        Assert.Equal(0, gateway.Upstream.RequestCount);
+    }
+
+    [Theory]
+    [InlineData("/api/cart")] // token required
+    [InlineData("/api/catalog/products")] // public, token optional
+    public async Task D13_non_bearer_authorization_is_token_invalid(string path)
+    {
+        await using var gateway = await TestGateway.StartAsync(containers);
+        using var request = new HttpRequestMessage(HttpMethod.Get, path) { Headers = { Authorization = new("Basic", "abc") } };
+
+        using var response = await gateway.Client.SendAsync(request, Ct);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, 16, "TOKEN_INVALID");
         Assert.Equal(0, gateway.Upstream.RequestCount);
     }
 
@@ -382,6 +394,40 @@ public class AuthTests(Containers containers)
     /// <summary>The header and signature of <paramref name="signed"/> with the payload of <paramref name="other"/>.</summary>
     private static string TamperedPayload(string signed, string other)
     {
+    [Fact]
+    public async Task D15_shippo_secret_absent_from_spans()
+    {
+        await using var gateway = await TestGateway.StartAsync(containers);
+        var secret = $"s3cret-{Guid.NewGuid():N}";
+        var gatewayPort = gateway.Address.Port.ToString();
+        var upstreamPort = gateway.Upstream.Address.Port.ToString();
+        var seen = new List<(ActivityKind Kind, string[] Tags)>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name is "Microsoft.AspNetCore" or "System.Net.Http",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = a =>
+            {
+                // The gateway's own request span and its outbound span: not the test client's, not the echo upstream's.
+                var port = a.GetTagItem("server.port")?.ToString();
+                if (a.Kind == (port == gatewayPort ? ActivityKind.Server : ActivityKind.Client) && (port == gatewayPort || port == upstreamPort))
+                    lock (seen) seen.Add((a.Kind, [.. a.TagObjects.Select(t => t.Key + "=" + t.Value)]));
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        using var response = await gateway.Client.PostAsync($"/webhooks/shippo/{secret}", new ByteArrayContent([]), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await Poll.UntilAsync(() => { lock (seen) return Task.FromResult(seen.Any(s => s.Kind == ActivityKind.Server) && seen.Any(s => s.Kind == ActivityKind.Client)); }, 5, "the request spans to stop");
+        lock (seen)
+        {
+            foreach (var tag in seen.SelectMany(s => s.Tags))
+                Assert.DoesNotContain(secret, tag);
+            Assert.Contains("url.path=/webhooks/shippo/***", seen.Single(s => s.Kind == ActivityKind.Server).Tags);
+        }
+    }
+
         var (a, b) = (signed.Split('.'), other.Split('.'));
         return $"{a[0]}.{b[1]}.{a[2]}";
     }
