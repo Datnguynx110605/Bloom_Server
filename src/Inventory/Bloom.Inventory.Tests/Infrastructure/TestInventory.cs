@@ -63,7 +63,8 @@ public sealed class TestInventory : IAsyncDisposable
         var fresh = options.ConnectionString is null;
         var connectionString = options.ConnectionString ?? await containers.CreateDatabaseAsync();
         var catalog = await FakeCatalog.StartAsync();
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        // PostgreSQL keeps microseconds; Linux clocks have 100 ns ticks
+        var clock = new FakeTimeProvider(new DateTimeOffset(DateTime.UtcNow.Ticks / 10 * 10, TimeSpan.Zero));
         var logs = new LogCapture();
 
         var config = new Dictionary<string, string?>

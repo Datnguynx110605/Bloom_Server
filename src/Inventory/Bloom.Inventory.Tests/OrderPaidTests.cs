@@ -84,7 +84,7 @@ public class OrderPaidTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var sku = Seed.Sku(t);
-        var paidAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var paidAt = t.Clock.GetUtcNow().AddMinutes(-5);
         var orderId = Guid.CreateVersion7();
 
         await Seed.PaidAsync(t, Seed.Paid(orderId, Guid.CreateVersion7(), paidAt, (sku, 2), (sku, 1)));
