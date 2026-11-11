@@ -9,10 +9,12 @@ public sealed class GatewayMetrics
 
     private readonly Counter<long> _requests, _authFailures, _rateLimited, _jwksRefreshes;
     private readonly Histogram<double> _overhead, _upstream;
+    private readonly ILogger<GatewayMetrics> _logger;
     private long _redisDegraded;
 
-    public GatewayMetrics(IMeterFactory meterFactory)
+    public GatewayMetrics(IMeterFactory meterFactory, ILogger<GatewayMetrics> logger)
     {
+        _logger = logger;
         var meter = meterFactory.Create(MeterName);
         _requests = meter.CreateCounter<long>("gateway_requests_total");
         _overhead = meter.CreateHistogram<double>("gateway_overhead_seconds", "s");
@@ -27,7 +29,15 @@ public sealed class GatewayMetrics
     public void AuthFailure(string reason) => _authFailures.Add(1, new KeyValuePair<string, object?>("reason", reason));
 
     /// <summary>1 while requests are served from the in-memory fallback because Redis is unreachable.</summary>
-    public void SetRedisDegraded(bool degraded) => Volatile.Write(ref _redisDegraded, degraded ? 1 : 0);
+    public void SetRedisDegraded(bool degraded)
+    {
+        if (Interlocked.Exchange(ref _redisDegraded, degraded ? 1 : 0) == (degraded ? 1 : 0))
+            return;
+        if (degraded)
+            _logger.LogWarning("Redis is unreachable; entering degraded mode (per-pod limits, no revocation check)");
+        else
+            _logger.LogInformation("Redis is reachable again; leaving degraded mode");
+    }
 
     public void RateLimited(string policy) => _rateLimited.Add(1, new KeyValuePair<string, object?>("policy", policy));
 

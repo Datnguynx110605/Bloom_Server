@@ -3,6 +3,8 @@ using Bloom.Identity.Contracts;
 using Bloom.Shared.Messaging;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Bloom.Gateway.Tests;
 
@@ -15,7 +17,8 @@ public sealed class TestWorker : IAsyncDisposable
 
     /// <summary>Returns once the worker is consuming, so a message published next is not lost for want of a binding.</summary>
     /// <param name="redis">Redis connection string; the shared test Redis when null.</param>
-    public static async Task<TestWorker> StartAsync(Containers containers, string? redis = null)
+    /// <param name="clock">The worker's <see cref="TimeProvider"/>; the real clock when null.</param>
+    public static async Task<TestWorker> StartAsync(Containers containers, string? redis = null, TimeProvider? clock = null, LogCapture? logs = null)
     {
         var config = new Dictionary<string, string?>
         {
@@ -24,7 +27,14 @@ public sealed class TestWorker : IAsyncDisposable
             ["Gateway:RabbitMq"] = containers.RabbitMqUri,
             ["urls"] = "http://127.0.0.1:0",
         };
-        var app = GatewayApp.Build([], b => b.Configuration.AddInMemoryCollection(config));
+        var app = GatewayApp.Build([], b =>
+        {
+            b.Configuration.AddInMemoryCollection(config);
+            if (clock is not null)
+                b.Services.AddSingleton(clock);
+            if (logs is not null)
+                b.Services.AddSingleton<ILoggerProvider>(logs);
+        });
         await app.StartAsync();
         var worker = new TestWorker(app);
         await Poll.UntilAsync(async () => (await QueueAsync(containers, "consumers")).FirstOrDefault() == "1", 15, "the worker is consuming");

@@ -67,6 +67,35 @@ public class ShellTests(Containers containers)
             GatewayApp.Build([], b => b.Configuration["Gateway:Mode"] = "edge"));
 
     [Theory]
+    [InlineData("Auth", "bogus")]
+    [InlineData("Policy", "bogus")]
+    public void Bad_route_auth_metadata_fails_startup(string key, string value) =>
+        Assert.Contains("Route 'bad-route'", Assert.Throws<InvalidOperationException>(() =>
+            GatewayApp.Build([], b =>
+            {
+                b.Configuration["ReverseProxy:Routes:bad-route:ClusterId"] = "catalog";
+                b.Configuration["ReverseProxy:Routes:bad-route:Match:Path"] = "/bad";
+                b.Configuration["ReverseProxy:Routes:bad-route:Metadata:Auth"] = "public";
+                b.Configuration[$"ReverseProxy:Routes:bad-route:Metadata:{key}"] = value;
+            })).Message);
+
+    [Theory]
+    [InlineData("api", "Gateway:Redis")]
+    [InlineData("worker", "Gateway:Redis")]
+    [InlineData("worker", "Gateway:RabbitMq")]
+    public void Missing_redis_config_fails_build(string mode, string key)
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            GatewayApp.Build([], b =>
+            {
+                b.Configuration["Gateway:Mode"] = mode;
+                b.Configuration[key] = null;
+            }));
+
+        Assert.Contains(key, error.Message);
+    }
+
+    [Theory]
     [InlineData(1.2, "2")]
     [InlineData(0.1, "1")]
     public async Task Retry_after_is_whole_seconds_rounded_up(double seconds, string expected)

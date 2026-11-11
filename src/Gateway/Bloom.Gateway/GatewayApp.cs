@@ -6,6 +6,7 @@ using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Instrumentation.Http;
 using StackExchange.Redis;
 using Yarp.ReverseProxy;
+using Yarp.ReverseProxy.Configuration;
 
 namespace Bloom.Gateway;
 
@@ -31,6 +32,10 @@ public static class GatewayApp
             var mode => throw new InvalidOperationException($"Gateway:Mode must be 'api' or 'worker', not '{mode}'."),
         };
 
+        // A missing key fails the build and names the key, never its value (GW-4).
+        string Required(string key) => builder.Configuration[key] is { Length: > 0 } value ? value : throw new InvalidOperationException($"{key} is required.");
+        var redisConnection = Required("Gateway:Redis");
+
         builder.AddBloomTelemetry(api ? "api-gateway" : "gateway-worker");
         builder.Services.AddOpenTelemetry().WithMetrics(m => m.AddMeter(GatewayMetrics.MeterName));
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(o => // the request span and the forwarded request's span both carry the secret
@@ -44,16 +49,17 @@ public static class GatewayApp
 
         builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
         {
-            var options = ConfigurationOptions.Parse(builder.Configuration["Gateway:Redis"]!);
+            var options = ConfigurationOptions.Parse(redisConnection);
             options.AbortOnConnectFail = false; // start and serve while Redis is down (P16)
             options.BacklogPolicy = BacklogPolicy.FailFast; // an outage fails requests at once instead of queueing them
             return ConnectionMultiplexer.Connect(options);
         });
 
+        builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first
         if (api)
         {
-            builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first
             builder.Services.AddSingleton<GatewayMetrics>();
+            builder.Services.AddHostedService<RedisDegradedProbe>();
             builder.Services.AddSingleton(RateLimitPolicy.Bind(builder.Configuration));
             builder.Services.AddSingleton<EdgeStore>();
             builder.Services.AddSingleton<FallbackLimiters>();
@@ -85,6 +91,7 @@ public static class GatewayApp
         }
         else
         {
+            Required("Gateway:RabbitMq");
             builder.Services.AddSingleton<RevocationWriter>();
             builder.Services.AddHostedService<RevocationConsumer>();
         }
@@ -92,6 +99,10 @@ public static class GatewayApp
         var app = builder.Build();
         if (api)
         {
+            // A route with a bad Auth or Policy fails here, naming the route, not on its first request (GW-4).
+            var policies = app.Services.GetRequiredService<IReadOnlyDictionary<string, RateLimitPolicy>>();
+            foreach (var route in app.Services.GetRequiredService<IProxyConfigProvider>().GetConfig().Routes)
+                EdgeRoute.From(route, policies);
             app.Use(RequestHygiene.ReplaceUntrustedForwarded);
             app.UseForwardedHeaders();
             app.UseMiddleware<RequestHygiene>();

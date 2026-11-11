@@ -10,7 +10,10 @@ public sealed record EdgeDecision(bool Revoked, bool Allowed, TimeSpan RetryAfte
 /// <summary>Revocation and rate limits in one Redis round trip (LLD 07 §6.2).</summary>
 public sealed class EdgeStore(IConnectionMultiplexer redis, TimeProvider time, IReadOnlyDictionary<string, RateLimitPolicy> policies)
 {
-    private static readonly string Script = ReadScript();
+    private static readonly LuaScript Script = LuaScript.Prepare(ReadScript());
+
+    // Loaded on first use, not at startup: the gateway starts while Redis is down (P16). Two first requests may both load; that is harmless.
+    private LoadedLuaScript? _loaded;
 
     /// <param name="caller">Null when anonymous.</param>
     /// <param name="routePolicy">Null when the route has no policy, or the route is public-optional-user and the caller anonymous.</param>
@@ -42,9 +45,25 @@ public sealed class EdgeStore(IConnectionMultiplexer redis, TimeProvider time, I
         }
 
         RedisValue[] args = [now, caller is null ? RedisValue.EmptyString : caller.IssuedAt * 1000, requestId, globalLimit, global.WindowSeconds * 1000, .. route];
-        var result = (RedisResult[])(await redis.GetDatabase().ScriptEvaluateAsync(Script, keys.ToArray(), args))!;
+        var result = (RedisResult[])(await EvaluateAsync(keys.ToArray(), args))!;
         var denied = (string?)result[3];
         return new((int)result[0] == 1, (int)result[1] == 1, TimeSpan.FromMilliseconds((long)result[2]), denied is { Length: > 0 } ? denied : null);
+    }
+
+    /// <summary>EVALSHA of the loaded script; after Redis lost its script cache (a restart) the script is loaded again, once per call.</summary>
+    private async Task<RedisResult> EvaluateAsync(RedisKey[] keys, RedisValue[] args)
+    {
+        var db = redis.GetDatabase();
+        var script = _loaded ??= await Script.LoadAsync(redis.GetServers()[0]);
+        try
+        {
+            return await db.ScriptEvaluateAsync(script.Hash, keys, args);
+        }
+        catch (RedisServerException e) when (e.Message.StartsWith("NOSCRIPT", StringComparison.Ordinal))
+        {
+            script = _loaded = await Script.LoadAsync(redis.GetServers()[0]);
+            return await db.ScriptEvaluateAsync(script.Hash, keys, args);
+        }
     }
 
     // fw:{policy}:{subject}:{floor(now / window)} (plan P18)

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using static Bloom.Gateway.Tests.Http;
 
@@ -253,6 +254,35 @@ public class AuthTests(Containers containers)
 
         Assert.Equal(HttpStatusCode.OK, third.StatusCode);
         Assert.Equal(before + 2, gateway.Jwks.FetchCount);
+    }
+
+    [Fact]
+    public async Task Validation_parameters_rebuilt_only_on_jwks_change()
+    {
+        await using var gateway = await TestGateway.StartAsync(containers);
+        var validator = gateway.Services.GetRequiredService<TokenValidator>();
+        var rotated = TestKeys.Create("rotated", gateway.Clock);
+        for (var i = 0; i < 3; i++)
+            (await SendAsync(gateway, "GET", "/api/cart", TestTokens.Issue(gateway.DefaultKey))).Dispose();
+        Assert.Equal(1, validator.ParameterBuilds);
+
+        // A scheduled refresh that returns the same key set keeps the parameters.
+        var fetches = gateway.Jwks.FetchCount;
+        gateway.Clock.Advance(TimeSpan.FromMinutes(10));
+        await Poll.UntilAsync(() => gateway.Jwks.FetchCount > fetches, 10, "the scheduled JWKS refresh");
+        await Poll.UntilAsync(async () =>
+        {
+            using var response = await SendAsync(gateway, "GET", "/api/cart", TestTokens.Issue(gateway.DefaultKey));
+            return response.StatusCode == HttpStatusCode.OK;
+        }, 10, "the token is valid after the refresh");
+        Assert.Equal(1, validator.ParameterBuilds);
+
+        // A changed key set rebuilds them once.
+        gateway.Jwks.SetKeys(gateway.DefaultKey, rotated);
+        for (var i = 0; i < 3; i++)
+            using (var response = await SendAsync(gateway, "GET", "/api/cart", TestTokens.Issue(rotated)))
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, validator.ParameterBuilds);
     }
 
     [Fact]

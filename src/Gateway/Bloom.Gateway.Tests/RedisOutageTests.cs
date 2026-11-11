@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using Testcontainers.Redis;
 using static Bloom.Gateway.Tests.Http;
@@ -121,6 +122,51 @@ public class RedisOutageTests(Containers containers)
         var server = inspector.GetServers().Single();
         Assert.NotEmpty(server.Keys(pattern: $"fw:global:{gateway.ClientIp}:*"));
     }
+
+    [Fact]
+    public async Task Degraded_gauge_updates_while_idle()
+    {
+        await using var gateway = await StartDuringOutageAsync();
+        using var metrics = new MetricCapture(gateway.Services);
+        Assert.Equal(0, metrics.Gauge("gateway_redis_degraded")); // no request has noticed the outage yet
+
+        gateway.Clock.Advance(TimeSpan.FromMinutes(1));
+
+        await Poll.UntilAsync(() => metrics.Gauge("gateway_redis_degraded") == 1, 10, "the gauge is 1 with no requests");
+    }
+
+    [Fact]
+    public async Task Degraded_logs_once_on_enter_and_leave()
+    {
+        await using var redis = new RedisBuilder("redis:8.2.3").Build();
+        await redis.StartAsync(Ct);
+        var connection = $"{redis.GetConnectionString()},asyncTimeout=500";
+        await using var gateway = await TestGateway.StartAsync(containers, o => o.Config["Gateway:Redis"] = connection);
+        var token = TestTokens.Issue(gateway.DefaultKey, typ: "staff", role: "admin");
+        using (var healthy = await SendAsync(gateway, "GET", "/api/admin/orders/x", token))
+            Assert.Equal(HttpStatusCode.OK, healthy.StatusCode);
+        Assert.Empty(Degraded(gateway));
+
+        await redis.PauseAsync(Ct);
+        for (var i = 0; i < 3; i++)
+            using (var down = await SendAsync(gateway, "GET", "/api/admin/orders/x", token))
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, down.StatusCode);
+        Assert.Equal([LogLevel.Warning], Degraded(gateway).Select(e => e.Level));
+
+        await redis.UnpauseAsync(Ct);
+        await Poll.UntilAsync(async () =>
+        {
+            using var response = await SendAsync(gateway, "GET", "/api/admin/orders/x", token);
+            return response.StatusCode == HttpStatusCode.OK;
+        }, 10, "staff request is 200 again");
+        for (var i = 0; i < 3; i++)
+            (await SendAsync(gateway, "GET", "/api/admin/orders/x", token)).Dispose();
+
+        Assert.Equal([LogLevel.Warning, LogLevel.Information], Degraded(gateway).Select(e => e.Level)); // one entry per transition, not per request
+    }
+
+    private static IReadOnlyList<LogCapture.Entry> Degraded(TestGateway gateway) =>
+        gateway.Logs.Entries.Where(e => e.Category == typeof(GatewayMetrics).FullName).ToList();
 
     private Task<TestGateway> StartDuringOutageAsync() =>
         TestGateway.StartAsync(containers, o => o.Config["Gateway:Redis"] = Outage);

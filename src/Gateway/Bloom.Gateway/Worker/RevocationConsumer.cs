@@ -10,10 +10,10 @@ namespace Bloom.Gateway;
 
 /// <summary>
 /// Applies <c>identity.tokens-revoked.v1</c> to Redis (LLD 07 §6.3). One channel, prefetch 1, ACK only after the write.
-/// On a Redis error it holds the delivery and retries every second; it never NACKs. On a lost connection it reconnects
+/// On a Redis error it holds the delivery and retries every second; any other failure NACKs it with requeue after 1 s. On a lost connection it reconnects
 /// after 1 s and declares the topology again (plan P17).
 /// </summary>
-public sealed class RevocationConsumer(IConfiguration config, RevocationWriter writer, ILogger<RevocationConsumer> logger) : BackgroundService
+public sealed class RevocationConsumer(IConfiguration config, RevocationWriter writer, TimeProvider time, ILogger<RevocationConsumer> logger) : BackgroundService
 {
     internal const string Queue = "api-gateway.tokens-revoked";
     private const string MessageType = "identity.tokens-revoked.v1";
@@ -75,9 +75,19 @@ public sealed class RevocationConsumer(IConfiguration config, RevocationWriter w
     {
         try
         {
-            if (Parse(delivery.Body) is { } message)
-                await WriteHoldingAsync(message, ct);
-            await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
+            try
+            {
+                if (Parse(delivery.Body) is { } message)
+                    await WriteHoldingAsync(message, ct);
+                await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
+            }
+            catch (Exception e) when (e is not (OperationCanceledException or AlreadyClosedException))
+            {
+                // Anything unforeseen: NACK with requeue after 1 s, so the prefetch-1 channel never stalls on this delivery (GW-7).
+                logger.LogError(e, "The revocation consumer failed on a delivery; requeuing it after 1 s");
+                await Task.Delay(Retry, time, ct);
+                await channel.BasicNackAsync(delivery.DeliveryTag, false, requeue: true, ct);
+            }
         }
         catch (Exception e) when (e is OperationCanceledException or AlreadyClosedException)
         {

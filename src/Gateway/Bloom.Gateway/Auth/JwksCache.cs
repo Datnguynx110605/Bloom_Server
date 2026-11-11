@@ -12,6 +12,7 @@ public sealed class JwksCache(IConfiguration configuration, TimeProvider time, G
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
     private readonly SemaphoreSlim _fetch = new(1, 1); // single-flight: one fetch at a time
+    private string? _json; // the last key set applied; an unchanged set keeps the same Keys instance
     private DateTimeOffset _lastUnknownKidFetch = DateTimeOffset.MinValue;
 
     public bool IsLoaded { get; private set; }
@@ -63,7 +64,11 @@ public sealed class JwksCache(IConfiguration configuration, TimeProvider time, G
             var keys = new JsonWebKeySet(json).GetSigningKeys().OfType<ECDsaSecurityKey>().ToList();
             if (keys.Count == 0)
                 throw new InvalidOperationException("the key set has no EC signing key");
-            Keys = keys;
+            if (json != _json)
+            {
+                Keys = keys;
+                _json = json;
+            }
             IsLoaded = true;
             metrics.JwksRefresh("success");
         }

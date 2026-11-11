@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.Extensions.Configuration;
 using StackExchange.Redis;
+using Testcontainers.Redis;
 using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
@@ -308,6 +309,59 @@ public class EdgeLimitTests(Containers containers)
 
             Assert.Equal("6.6.6.6", seen["x-forwarded-for"]);
         }
+    }
+
+    [Fact]
+    public async Task Lua_script_loaded_once()
+    {
+        await using var redis = new RedisBuilder("redis:8.2.3").Build(); // its own Redis: the command counts must not include other tests
+        await redis.StartAsync(Ct);
+        await using var gateway = await TestGateway.StartAsync(containers, o => o.Config["Gateway:Redis"] = redis.GetConnectionString());
+        await using var inspector = await ConnectionMultiplexer.ConnectAsync(redis.GetConnectionString() + ",allowAdmin=true");
+
+        for (var i = 0; i < 5; i++)
+            (await SendAsync(gateway, "GET", "/api/catalog/x")).Dispose();
+
+        Assert.Equal(1, await CallsAsync(inspector, "script|load"));
+        Assert.Equal(5, await CallsAsync(inspector, "evalsha"));
+        Assert.Equal(0, await CallsAsync(inspector, "eval"));
+    }
+
+    [Fact]
+    public async Task Script_cache_flush_is_recovered()
+    {
+        await using var redis = new RedisBuilder("redis:8.2.3").Build();
+        await redis.StartAsync(Ct);
+        await using var gateway = await TestGateway.StartAsync(containers, o => o.Config["Gateway:Redis"] = redis.GetConnectionString());
+        await using var inspector = await ConnectionMultiplexer.ConnectAsync(redis.GetConnectionString() + ",allowAdmin=true");
+        (await SendAsync(gateway, "GET", "/api/catalog/x")).Dispose();
+
+        await inspector.GetServers().Single().ScriptFlushAsync(); // what a Redis restart does to the script cache
+        using var response = await SendAsync(gateway, "GET", "/api/catalog/x");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Redis_server_error_is_500_not_outage()
+    {
+        await using var gateway = await TestGateway.StartAsync(containers);
+        using var metrics = new MetricCapture(gateway.Services);
+        var sub = Guid.NewGuid();
+        await containers.Redis.GetDatabase().ListRightPushAsync($"rev:{sub:D}", "x"); // GET on a list: the script fails with WRONGTYPE
+        var token = TestTokens.Issue(gateway.DefaultKey, sub: sub);
+
+        using var response = await SendAsync(gateway, "GET", "/api/cart", token);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal(0, metrics.Gauge("gateway_redis_degraded"));
+        Assert.Equal(0, gateway.Upstream.RequestCount);
+    }
+
+    private static async Task<long> CallsAsync(IConnectionMultiplexer redis, string command)
+    {
+        var stats = (await redis.GetServers().Single().InfoAsync("commandstats")).SelectMany(g => g).ToList();
+        return stats.FirstOrDefault(p => p.Key == $"cmdstat_{command}").Value is { } value ? long.Parse(value.Split(',')[0]["calls=".Length..]) : 0;
     }
 
     /// <summary>The next 60 s fixed-window boundary after the gateway's clock; the clock can only move forward.</summary>

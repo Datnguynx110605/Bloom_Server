@@ -79,7 +79,7 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
             decision = await store.CheckAsync(caller, clientIp, routePolicy, context.Request.Headers["x-bloom-request-id"].ToString());
             metrics.SetRedisDegraded(false);
         }
-        catch (Exception e) when (e is RedisException or TimeoutException) // RedisTimeoutException is a TimeoutException, not a RedisException
+        catch (Exception e) when (e is RedisException and not RedisServerException or TimeoutException) // RedisTimeoutException is a TimeoutException, not a RedisException; a server error (a Lua error) means Redis answered, so it is a 500, not an outage
         {
             // Redis is unreachable or not answering (§6.2): staff fail closed, everyone else gets per-pod limits and no revocation check.
             metrics.SetRedisDegraded(true);

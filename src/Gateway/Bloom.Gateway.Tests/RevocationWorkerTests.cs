@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using RabbitMQ.Client;
 using StackExchange.Redis;
 using Testcontainers.Redis;
@@ -120,6 +122,34 @@ public class RevocationWorkerTests(Containers containers)
 
         await Poll.UntilAsync(async () => (string?)await inspector.GetDatabase().StringGetAsync($"rev:{id:D}") == "3000", 15, "the mark is written");
         await Poll.UntilAsync(async () => (await TestWorker.QueueAsync(containers, "messages")).FirstOrDefault() == "0", 15, "the queue is drained");
+    }
+
+    [Fact]
+    public async Task Worker_unexpected_exception_nacks_and_requeues_after_1s()
+    {
+        var clock = new FakeTimeProvider();
+        var logs = new LogCapture();
+        // The command map disables EVAL, so the write throws a RedisCommandException, which is not a RedisException.
+        var worker = await TestWorker.StartAsync(containers, $"{containers.RedisConnectionString},$EVAL=", clock, logs);
+        int Failures() => logs.Entries.Count(e => e.Category == typeof(RevocationConsumer).FullName && e.Level == LogLevel.Error);
+        try
+        {
+            await PublishAsync(TestWorker.RevocationEnvelope(Guid.NewGuid(), 6000));
+            await Poll.UntilAsync(() => Failures() == 1, 15, "the failure is logged");
+
+            // The fake clock is frozen: the delivery is held, not yet NACKed.
+            await Poll.UntilAsync(async () => await TestWorker.QueueAsync(containers, "messages_ready", "messages_unacknowledged") is ["0", "1"], 15, "the delivery is held unacknowledged");
+            Assert.Equal(1, Failures());
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+
+            await Poll.UntilAsync(() => Failures() == 2, 15, "the requeued message is delivered and fails again");
+        }
+        finally
+        {
+            await worker.DisposeAsync();
+            await containers.RabbitCtlAsync("purge_queue", RevocationConsumer.Queue); // the poison message must not reach the next test's worker
+        }
     }
 
     [Fact]
