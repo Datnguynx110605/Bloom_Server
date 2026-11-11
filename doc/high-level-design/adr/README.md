@@ -26,3 +26,4 @@ Architecture decisions for Bloom's backend. Conventions and the MADR template ar
 | [HLD-ADR-016](HLD-ADR-016-audit-log.md) | Audit log ownership | Accepted | 2026-10-31 |
 | [HLD-ADR-017](HLD-ADR-017-postgres-full-text-search.md) | Catalog search on PostgreSQL | Accepted | 2026-10-31 |
 | [HLD-ADR-018](HLD-ADR-018-external-providers.md) | External providers behind interfaces | Accepted | 2026-10-31 |
+| [HLD-ADR-019](HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage | Accepted | 2026-11-12 |
