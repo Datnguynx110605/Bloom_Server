@@ -64,7 +64,8 @@ public sealed class TestCatalog : IAsyncDisposable
         var connectionString = options.ConnectionString ?? await containers.CreateDatabaseAsync();
         var bucket = await containers.CreateBucketAsync();
         var redisDatabase = containers.NextRedisDatabase();
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        // PostgreSQL keeps microseconds; Linux clocks have 100 ns ticks
+        var clock = new FakeTimeProvider(new DateTimeOffset(DateTime.UtcNow.Ticks / 10 * 10, TimeSpan.Zero));
         var logs = new LogCapture();
 
         var config = new Dictionary<string, string?>
