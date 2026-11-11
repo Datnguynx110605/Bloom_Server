@@ -56,7 +56,8 @@ public sealed class TestGateway : IAsyncDisposable
     public static async Task<TestGateway> StartAsync(Containers containers, Action<TestGatewayOptions>? configure = null)
     {
         var upstream = await EchoUpstream.StartAsync();
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        // PostgreSQL keeps microseconds; Linux clocks have 100 ns ticks
+        var clock = new FakeTimeProvider(new DateTimeOffset(DateTime.UtcNow.Ticks / 10 * 10, TimeSpan.Zero));
         var defaultKey = TestKeys.Create("test-key-1", clock);
         var jwks = await FakeJwks.StartAsync(defaultKey);
         var logs = new LogCapture();

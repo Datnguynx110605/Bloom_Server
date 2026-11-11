@@ -97,7 +97,8 @@ public class ShellTests(Containers containers)
     [Fact]
     public void Recent_auth_boundary_is_five_minutes()
     {
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        // PostgreSQL keeps microseconds; Linux clocks have 100 ns ticks
+        var clock = new FakeTimeProvider(new DateTimeOffset(DateTime.UtcNow.Ticks / 10 * 10, TimeSpan.Zero));
         var caller = new TrustedCaller(Guid.NewGuid(), "customer", null, clock.GetUtcNow() - TimeSpan.FromSeconds(300));
 
         Assert.Same(caller, caller.RequireRecentAuth(clock));
