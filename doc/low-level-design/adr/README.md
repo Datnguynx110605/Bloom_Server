@@ -20,3 +20,4 @@ Component-level decisions. Conventions and the MADR template are defined once in
 | [LLD-ADR-010](LLD-ADR-010-dlq-busy-advisory-lock.md) | One DLQ operation at a time, enforced by a PostgreSQL advisory lock | reliability | Superseded by LLD-ADR-011 | 2026-10-31 |
 | [LLD-ADR-011](LLD-ADR-011-dlq-pass-lock-transaction-scoped.md) | DLQ pass lock is transaction-scoped | reliability | Accepted | 2026-11-12 |
 | [LLD-ADR-013](LLD-ADR-013-revoked-refresh-not-reuse.md) | A revoked refresh token is not reuse | identity | Accepted | 2026-11-12 |
+| [LLD-ADR-014](LLD-ADR-014-release-tombstone.md) | Release tombstone | inventory | Accepted | 2026-11-12 |

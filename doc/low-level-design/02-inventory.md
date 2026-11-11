@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-05) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [03-inventory](../product-design/03-inventory.md) (INV-R01 … R20), BI-02, BI-06, BI-07, LCH-R19, R20 |
 | **HLD** | [high-level-design.md §5, §8.5](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-013 |
@@ -121,6 +121,15 @@ Index: `(sku_id, status)`.
 
 **Adjustment reason codes:** `damaged_in_warehouse` (−), `lost_in_warehouse` (−), `found` (+), `count_correction` (±), `other` (±).
 
+### 4.5 `released_orders`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `order_id` | `uuid` | PK |
+| `released_at` | `timestamptz` | not null |
+
+A tombstone for every order that had an order-level release command (§6.5, LLD-ADR-014). Purged after 30 days.
+
 ## 5. Interfaces
 
 ### 5.1 gRPC
@@ -152,7 +161,7 @@ Index: `(sku_id, status)`.
 | `inventory.stock-allocated.v1` | Published → order | `orderId`; emitted when **every** pre-order line of the order is `committed` |
 | `identity.staff-action-recorded.v1` | Published | Receipts, adjustments, serial changes |
 | `order.paid.v1` | Consumed (`inventory.order-paid`) | Payload includes `launchId` (null for regular), `paidAt`, lines |
-| `inventory.release-reservation.v1` | Consumed (`inventory.release-reservation`) | Command from order: `orderId` |
+| `inventory.release-reservation.v1` | Consumed (`inventory.release-reservation`) | Command from order: `orderId`. Optional `reshipId` (sent by fulfillment; additive, stays v1 per LLD-ADR-004): release by reship id, §6.5 |
 | `inventory.reservation-released.v1` | Published → order | `orderId`. Written in the same transaction as **every** applied release command, including no-ops (saga completion, [03-order](03-order.md)) |
 | `fulfillment.shipment-shipped.v1` | Consumed (`inventory.shipment-shipped`) | `refId`, lines |
 | `inventory.receive-customer-return.v1` | Consumed | Command from fulfillment: `orderId`, accepted units `[{skuId, serial?, quantity}]` |
@@ -172,6 +181,7 @@ Index: `(sku_id, status)`.
 | `RECEIPT_INVALID` | `INVALID_ARGUMENT` | Bad receipt; details list every bad serial / line |
 | `ADJUSTMENT_EXCEEDS_AVAILABLE` | `FAILED_PRECONDITION` | Decrease larger than `available` (IR-06) |
 | `SERIAL_ASSIGNED` | `FAILED_PRECONDITION` | Adjusting a serial that's assigned to an order |
+| `ORDER_RELEASED` | `FAILED_PRECONDITION` | `ReserveStock` for an order in `released_orders`; nothing reserved (LLD-ADR-014) |
 | `CATALOG_UNAVAILABLE` | `UNAVAILABLE` | Catalog `LockSkuForStock` failed on a first receipt (§5.2); nothing written |
 | `NOT_FOUND` | `NOT_FOUND` | `GetSerial` for an unknown serial |
 | `VALIDATION_FAILED` | `INVALID_ARGUMENT` | Bad request field, named in `ErrorInfo` metadata (e.g. empty `lines`, quantity ≤ 0, `delta = 0`, `page_size` out of range, reason code not allowed in that direction or for a serialized unit (§6.8), bad serial / IMEI format outside a receipt) |
@@ -190,6 +200,7 @@ All counter changes are guarded single-statement updates ([00-reliability.md §7
 
 ### 6.2 `order.paid.v1`
 
+- **Tombstone check:** if the order is in `released_orders`, create no allocations and log a warning (LLD-ADR-014).
 - **Regular** (`launchId` null): for each `reserved` allocation: `reserved −= q, on_hand −= q, committed += q`; status `committed`; ledger `committed`. Allocations not `reserved` → no-op.
 - **Pre-order** (`launchId` set): insert `backordered` allocations with `paid_at`; then run the allocator (§6.4) for each SKU.
 
@@ -225,6 +236,10 @@ For each allocation of the order:
 | `shipped`, `released` | No-op |
 
 Status → `released`. The same transaction writes `inventory.reservation-released.v1` to the outbox, also when nothing needed releasing, so `order`'s saga can complete.
+
+**Tombstone.** Every order-level release command inserts `released_orders(order_id)` (`ON CONFLICT DO NOTHING`); `ReserveStock` (§5.4 `ORDER_RELEASED`) and `order.paid.v1` (§6.2) check it (LLD-ADR-014).
+
+**`reshipId` branch.** If the command carries `reshipId`, release only the allocations with `ref_id = reshipId`, write **no** tombstone, and still publish `reservation-released {orderId}`.
 
 ### 6.6 Packing serial operations
 
@@ -269,7 +284,7 @@ Every adjustment requires a note, writes `stock_adjustments` + ledger `adjusted`
 | Deadlocks | Ascending `sku_id` lock order everywhere |
 | Duplicate / reordered messages | Inbox + allocation-status guards (§6.5, §6.7 tables) |
 | Serial double-assigned | Primary key + status check in a guarded update (`WHERE status = 'in_stock'`) |
-| Delayed "paid" after a release | Not impossible: `order.paid.v1` (`inventory.order-paid`) and the release command (`inventory.release-reservation`) travel on different queues, so a retried `order.paid` (1 s … 2 min) can arrive after the release. Inventory then finds nothing to release and the late `order.paid` creates backorders for a cancelled order, which block strict FIFO for that SKU. A fix needs a design change with an ADR |
+| Delayed "paid" after a release | Release tombstone: every order-level release command inserts `released_orders(order_id)`; a later `order.paid.v1` for that order creates no allocations and logs a warning; tombstones are purged after 30 days (§4.5, §6.5, LLD-ADR-014) |
 
 ## 8. Edge cases
 
