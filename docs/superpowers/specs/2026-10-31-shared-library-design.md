@@ -131,7 +131,7 @@ Each module follows 00-reliability exactly. This section only says what the libr
 
 ### 6.9 Error mapping (§8, LLD-ADR-003)
 
-- A gRPC server interceptor that turns library failures into gRPC status + `google.rpc.ErrorInfo` (`domain = "bloom"`) with the §8 reasons.
+- No interceptor (plan R1, owner approved). Library code throws an `RpcException` that already carries `google.rpc.Status` + `google.rpc.ErrorInfo` (`domain = "bloom"`) with the §8 reasons, built by `BloomErrors`.
 - A helper services use to raise `FAILED_PRECONDITION` with their own reason (for example `SOLD_OUT`).
 
 ### 6.10 Retention purger (§13)
@@ -141,7 +141,7 @@ Each module follows 00-reliability exactly. This section only says what the libr
 ### 6.11 DLQ admin (§7.7, LLD-ADR-009)
 
 - A `DeadLetterAdmin` gRPC service in a `.proto` shipped by the library, with HTTP annotations under `/api/admin/dlq/{service}/…`. A service hosts it with one registration call in its API. Exact HTTP paths and verbs under the prefix: builder's call.
-- Everything else exactly as §7.7: Admin check from trusted headers, `{service}` must match, one pass with an exclusive consumer and no requeue, replay strips `x-attempt` / `x-failure-reason` / `x-failed-at`, the publish → audit commit → ACK order, the error reasons, the peek limit.
+- Everything else exactly as §7.7: Admin check from trusted headers, `{service}` must match, one pass with no requeue, with one operation at a time per DLQ enforced by a PostgreSQL advisory lock (LLD-ADR-010; quorum queues ignore the exclusive-consumer flag), replay strips `x-attempt` / `x-failure-reason` / `x-failed-at`, the publish → audit commit → ACK order, the error reasons, the peek limit.
 - The API process needs a RabbitMQ connection for this (previously workers only).
 - *My call:* the library holds the payload record for `identity.staff-action-recorded.v1` (fields from 06-identity §4.1 `audit_log`: actor ID and role, service, action, target type and ID, details). A service publishes it on its own `<service>.events` exchange with routing key `identity.staff-action-recorded.v1`. How identity binds to every service's exchange belongs to the identity project.
 

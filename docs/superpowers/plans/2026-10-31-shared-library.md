@@ -24,7 +24,7 @@
 
 ## Review Focus
 
-1. **Relay publishes to a missing exchange** (broker closes the channel with 404): the batch's unconfirmed rows get `attempts + 1` and a `last_error`, stay `pending`, and the relay opens a new channel and publishes the next valid row. Test in Task 6.
+1. **Relay publishes to a missing exchange** (broker closes the channel with 404): only the row in flight gets `attempts + 1` and a `last_error` and stays `pending`; the relay disposes the channel, opens a new one before the next row, and later rows keep publishing. Rows never tried (broker down, channel can't be opened) are not counted. Test in Task 6.
 2. **Malformed deliveries** (non-JSON body, envelope missing `messageId`, unknown `messageType`, payload missing a required field): straight to the DLQ with `x-failure-reason`, original ACKed, no inbox row, handler never called (§10). Tests in Task 7.
 3. **Idempotency-Key header edge forms** (37+ chars, `{braced}` GUID, non-hex, empty string; uppercase vs lowercase of the same UUID): malformed ones rejected before any row exists; case variants are the same key. Tests in Task 8.
 4. **Broker connection dropped while the worker runs**: consumers and the relay reconnect on their own and keep processing without a restart. Test in Task 7.
@@ -294,9 +294,9 @@ public void Message_type_format(string type, bool valid) => Assert.Equal(valid, 
 
 **Interfaces:**
 - Consumes: `RabbitMqConnection.CreateConfirmChannelAsync`, `OutboxMessage`, `BloomMetrics.OutboxPublish`, `BloomActivity.Source`.
-- Produces: `internal sealed class OutboxRelay : BackgroundService` with `internal Task<int> RunOnceAsync(CancellationToken ct)` returning the number of rows claimed. Loop: `RunOnceAsync`; if it returned 100 loop immediately, else wait 200 ms; on exception log, dispose channel, wait 1 s (R7).
+- Produces: `internal sealed class OutboxRelay : BackgroundService` with `internal Task<int> RunOnceAsync(CancellationToken ct)` returning the number of rows claimed. Loop: `RunOnceAsync`; if it returned 100 loop immediately, else wait 200 ms; after a pass with a channel failure wait 1 s even with a full backlog; on exception log, dispose channel, wait 1 s (R7).
 
-`RunOnceAsync`, exactly §7.2: own scope + `DbContext`; `BEGIN`; `SELECT * FROM outbox_messages WHERE status = 'pending' ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED` (`FromSql`); publish each row in `id` order to `exchange`/`routing_key` with body = `payload` column bytes as stored, properties `MessageId = id`, `Type = message_type`, `ContentType = "application/json"`, `DeliveryMode = Persistent`, header `traceparent` = the relay's producer activity id (activity `"<exchange> publish"`, kind Producer, parent parsed from the row's `traceparent`), or the stored value when no activity is created; await confirms with a **5 s** timeout for the batch; confirmed → `status='sent'`, `sent_at=now()`, `outbox_publish_total{result=confirmed}`; nacked / timed out / channel error → `attempts=attempts+1`, `last_error=<exception message>`, `{result=failed}`; `COMMIT`. Failure logs carry `message_id`, `message_type`, `correlation_id` scope.
+`RunOnceAsync`, exactly §7.2: own scope + `DbContext`; `BEGIN`; `SELECT * FROM outbox_messages WHERE status = 'pending' ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED` (`FromSql`); publish each row in `id` order to `exchange`/`routing_key` with body = `payload` column bytes as stored, properties `MessageId = id`, `Type = message_type`, `ContentType = "application/json"`, `DeliveryMode = Persistent`, header `traceparent` = the relay's producer activity id (activity `"<exchange> publish"`, kind Producer, parent parsed from the row's `traceparent`), or the stored value when no activity is created; await the confirm of each row with a **5 s** timeout (per row, not per batch); confirmed → `status='sent'`, `sent_at=now()`, `outbox_publish_total{result=confirmed}`; for the row in flight only: nacked / timed out / channel error → `attempts=attempts+1`, `last_error=<exception message>`, `{result=failed}`, and a closed channel is replaced before the next row (if opening a channel fails, the pass stops and the remaining rows are untouched); `COMMIT`. Rows never tried are not counted. Failure logs carry `message_id`, `message_type`, `correlation_id` scope.
 
 - [ ] **Step 1: Write the failing tests** (test queue `q` bound to `<svc>.events` with `#`; `TopologyInitializer` run first)
 
@@ -312,8 +312,8 @@ public void Message_type_format(string type, bool valid) => Assert.Equal(valid, 
 // 200 committed rows; two OutboxRelay instances call RunOnceAsync concurrently in loops until both return 0;
 // q receives exactly 200 messages with 200 distinct MessageIds; all rows "sent"
 [Fact] public async Task Missing_exchange_counts_as_failure_and_relay_recovers()   // Review Focus 1
-// row A with exchange "nope.events" → RunOnce: A pending, attempts 1, last_error not null;
-// then mark A sent manually, insert valid row B → RunOnce publishes B
+// row A with exchange "nope.events" and a newer valid row B → one RunOnce claims 2: A pending, attempts >= 1,
+// last_error contains "404"; B sent and published (A does not block B)
 [Fact] public async Task Full_batch_is_100_rows()   // 150 rows → first RunOnce == 100, second == 50
 ```
 
