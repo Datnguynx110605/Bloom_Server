@@ -188,10 +188,11 @@ public class OutboxRelayTests(Containers containers)
                 .ExecuteSqlAsync($"UPDATE outbox_messages SET exchange = 'nope.events'", ct);
 
         await s.Relay.StartAsync(ct);
+        await Poll.UntilAsync(async () => (await RowsAsync(s.Host)).Max(r => r.Attempts) >= 1, 30, "the first failed pass");
         await Task.Delay(TimeSpan.FromSeconds(1.5), ct);
         await s.Relay.StopAsync(ct);
 
-        // Passes at ~0 s and ~1 s only; a hot loop would burn attempts many times faster.
+        // One more pass at most (~1 s after the first); a hot loop would burn attempts many times faster.
         Assert.InRange((await RowsAsync(s.Host)).Max(r => r.Attempts), 1, 2);
     }
 

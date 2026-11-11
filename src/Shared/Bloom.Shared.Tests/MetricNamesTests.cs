@@ -64,7 +64,7 @@ public class MetricNamesTests
             try { lines = (await http.GetStringAsync(url, ct)).Split('\n'); }
             catch (HttpRequestException) { /* exporter not listening yet */ }
             return expected.All(Has);
-        }, 30, "every §12 metric on the Prometheus endpoint");
+        }, 30, () => "metric " + string.Join(" / ", expected.First(e => !Has(e))) + " on the Prometheus endpoint");
         Assert.DoesNotContain(lines, l => l.StartsWith("outbox_publish_total_total") || l.StartsWith("consumer_handle_seconds_seconds"));
     }
 
