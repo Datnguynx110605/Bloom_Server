@@ -26,6 +26,7 @@ Decision records for business and product decisions that are **hard to reverse o
 | [PD-ADR-006](PD-ADR-006-per-product-serial-tracking.md) | Serial tracking per product flag; returned units never resold | Accepted | 2026-10-31 |
 | [PD-ADR-007](PD-ADR-007-coupon-allocation-and-holding.md) | Coupon discount split per line; coupon uses held at checkout | Accepted | 2026-10-31 |
 | [PD-ADR-008](PD-ADR-008-account-required-staff-mfa.md) | Account required to buy; staff invited with required MFA | Accepted | 2026-10-31 |
+| [PD-ADR-009](PD-ADR-009-no-price-change-flag-in-cart.md) | No price-change flag in the cart | Accepted | 2026-11-12 |
 
 ## Template (MADR-style)
 

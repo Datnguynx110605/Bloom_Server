@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Related ADRs** | [PD-ADR-006](adr/PD-ADR-006-per-product-serial-tracking.md), [PD-ADR-007](adr/PD-ADR-007-coupon-allocation-and-holding.md), [PD-ADR-003](adr/PD-ADR-003-charge-at-checkout-online-only.md) |
 
@@ -25,7 +25,7 @@ Customers can return delivered units within 14 days. Bloom inspects each returne
 | RET-R01 | A customer can return units of a *Delivered* order within **14 days of delivery**, for any reason. |
 | RET-R02 | Returns are per unit. An order can be partly returned. |
 | RET-R03 | Bloom issues a **prepaid return label** through the carrier API. |
-| RET-R15 | If the carrier hasn't scanned the return label within **14 days of the request**, the request expires and the units stay with the customer. A new request is only possible while the 14-day return window is still open. |
+| RET-R15 | If the carrier hasn't scanned the return label within **14 days of the request**, the request expires and the units stay with the customer. A new request is only possible while the 14-day return window is still open. If the parcel reaches the warehouse anyway, Warehouse receives it and it is inspected and decided as usual. |
 
 ### 2.2 Inspection and decision
 
