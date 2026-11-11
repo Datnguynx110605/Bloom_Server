@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Accepted |
+| **Status** | Superseded by LLD-ADR-011 |
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
 | **Related** | LLD-ADR-002, LLD-ADR-009, [00-reliability.md §7.7](../00-reliability.md#77-dlq-admin) |

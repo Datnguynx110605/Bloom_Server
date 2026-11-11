@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-05) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Component** | Shared reliability library used by every domain service (plumbing only, no domain code) |
 | **HLD** | [high-level-design.md §9.2](../high-level-design/high-level-design.md#92-reliability-patterns), HLD-ADR-005 … 009 |
@@ -230,7 +230,7 @@ The consumer host uses manual ACK with a bounded prefetch.
 5. 0 rows inserted → **duplicate**: `COMMIT`, ACK, stop.
 6. Invoke the handler in the same transaction. The handler may write outbox rows (§7.1).
 7. `COMMIT`, then ACK. Done.
-8. On exception: `ROLLBACK`, then classify:
+8. On exception: `ROLLBACK`, then classify. **Exception:** if `BEGIN`, `COMMIT` or the inbox insert (step 4) failed because the service's own PostgreSQL can't be reached, NACK the delivery with requeue and do **not** count an attempt; stop consuming, probe the database with `SELECT 1` every 1 s, and resume consuming when the probe succeeds ([HLD-ADR-019](../high-level-design/adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md)). The pause is per process and covers consumers only; the outbox relay (§7.2) keeps its own loop. Every other failure is classified as follows:
    - **Permanent** (thrown as a permanent failure by the handler, unknown message type, invalid payload): publish to `<queue>.dlq` with headers `x-failure-reason`, `x-failed-at`; ACK the original.
    - **Transient** (anything else): if `attempt < 5`, publish to `<queue>.retry.<delay>` with `x-attempt = attempt + 1`, where delay = `1s`, `5s`, `30s`, `2m` for attempts 1, 2, 3, 4; ACK the original. If `attempt = 5`, publish to the DLQ as above; ACK the original.
 
@@ -246,7 +246,7 @@ Retry and DLQ publishes use publisher confirms. If the host crashes before ACK, 
 
 ### 7.4 Idempotency guard ([LLD-ADR-001](adr/LLD-ADR-001-two-phase-idempotency.md))
 
-**Applies to** money-moving client operations: start checkout, staff refund operations (return decisions, lost-package refunds), and stock-changing staff operations (goods receipt, stock adjustment). Provider callbacks use the provider event ID instead (payment LLD).
+**Applies to** money-moving client operations: start checkout, return requests, staff refund operations (return decisions, lost-package refunds, returned-to-sender refunds), and stock-changing staff operations (goods receipt, stock adjustment). Provider callbacks use the provider event ID instead (payment LLD).
 
 **Input:** `Idempotency-Key` header (UUID string), `user_id` from the trusted identity context, `operation` (fully qualified gRPC method), `request_hash` = SHA-256 of the request message in deterministic protobuf serialization.
 
@@ -263,6 +263,8 @@ Retry and DLQ publishes use publisher confirms. If the host crashes before ACK, 
 | `in_progress` | `locked_until <= now()` (stale) | Take over: `UPDATE … SET locked_until = now() + 60 s WHERE user_id = … AND key = … AND status = 'in_progress' AND locked_until <= now()`. 1 row → resume execution; 0 rows → `IDEMPOTENCY_IN_PROGRESS`. |
 
 **Execution, operations without a provider call** (single transaction): insert `in_progress` → run the business change → set `completed` with the outcome → `COMMIT`. A concurrent duplicate blocks on the primary key until commit, then reads `completed` and gets the replay.
+
+**Execution, multi-step operations** (several transactions, no single provider call): (1) Tx 1: claim the key (insert `in_progress`), `COMMIT`, then run the caller's hook; (2) a middle step with several calls and commits; (3) a final step stores the outcome (`completed`). A business rejection returned by a step is stored as the outcome and replayed (see the outcome rules below).
 
 **Execution, operations with a provider call** (two-phase):
 1. Tx 1: insert `in_progress`, `locked_until = now() + 60 s`. `COMMIT`.
@@ -308,7 +310,7 @@ WHERE  launch_sku_id = @id
 
 ### 7.7 DLQ admin ([LLD-ADR-009](adr/LLD-ADR-009-dlq-admin-endpoint.md))
 
-A `DeadLetterAdmin` gRPC service from the library, hosted by each domain service's API. Route: `/api/admin/dlq/{service}/**`; `{service}` must equal the hosting service's name, otherwise `NOT_FOUND`. Every method requires `x-bloom-user-type = staff` and `x-bloom-role = Admin`, otherwise `PERMISSION_DENIED` / `ROLE_NOT_ALLOWED`.
+A `DeadLetterAdmin` gRPC service from the library, hosted by each domain service's API. Route: `/api/admin/dlq/{service}/**`; `{service}` must equal the hosting service's name, otherwise `NOT_FOUND`. Every method requires `x-bloom-user-type = staff` and `x-bloom-role = admin`, otherwise `PERMISSION_DENIED` / `ROLE_NOT_ALLOWED`.
 
 | Method | Effect |
 |---|---|
@@ -318,7 +320,7 @@ A `DeadLetterAdmin` gRPC service from the library, hosted by each domain service
 | `ReplayAllDeadLetters` | Every message present in one DLQ when the call starts |
 | `DiscardDeadLetter` | One message (by `messageId`) removed |
 
-**One pass, no requeue.** An operation takes the DLQ's message count at the start and consumes exactly that many messages. Each message is replayed, discarded, or published back to the DLQ's tail unchanged. Messages are never returned with `nack`/requeue, so the quorum-queue delivery limit can't drop them. Publishes use confirms. Order is preserved after a full pass. Only one operation runs on a DLQ at a time: an operation first takes a PostgreSQL advisory lock for that DLQ on the service's database and holds it for the whole pass; a second operation that can't take the lock gets `ABORTED` / `DLQ_BUSY` (LLD-ADR-010).
+**One pass, no requeue.** An operation takes the DLQ's message count at the start and consumes exactly that many messages. Each message is replayed, discarded, or published back to the DLQ's tail unchanged. Messages are never returned with `nack`/requeue, so the quorum-queue delivery limit can't drop them. Publishes use confirms. Order is preserved after a full pass. Only one operation runs on a DLQ at a time: an operation opens one transaction on the service's database and calls `pg_try_advisory_xact_lock` with a key derived from the DLQ name; false → `ABORTED` / `DLQ_BUSY`. The transaction stays open for the whole pass and its `COMMIT` at the end releases the lock; a dead process closes the connection, which also releases it. The per-message audit commits use their own connections. The lock works through the transaction-mode pooler ([HLD-ADR-004](../high-level-design/adr/HLD-ADR-004-data-ownership.md)) ([LLD-ADR-011](adr/LLD-ADR-011-dlq-pass-lock-transaction-scoped.md), which supersedes LLD-ADR-010).
 
 **Replay** publishes the original body and properties to the consumer queue (default exchange) without `x-attempt`, `x-failure-reason` or `x-failed-at`, so it gets 5 fresh attempts.
 
