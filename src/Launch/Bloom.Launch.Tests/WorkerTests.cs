@@ -159,7 +159,7 @@ public class WorkerTests(Containers containers)
         await using var _ = api;
         await using var __ = worker;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/admin/dlq/launch/queues").WithCaller(Guid.NewGuid(), "staff", "Admin"); // the value Bloom.Shared checks today
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/admin/dlq/launch/queues").WithCaller(Guid.NewGuid(), "staff", "admin");
         request.Headers.Add("x-bloom-request-id", Guid.NewGuid().ToString());
         using var response = await api.Http.SendAsync(request, Ct);
 

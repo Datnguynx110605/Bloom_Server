@@ -9,7 +9,7 @@ using RabbitMQ.Client.Events;
 
 namespace Bloom.Shared.DeadLetters;
 
-/// <summary>DLQ admin (00-reliability §7.7, LLD-ADR-009): Admin only, own service only, one pass per operation and one at a time per DLQ.</summary>
+/// <summary>DLQ admin (00-reliability §7.7, LLD-ADR-009): admin only, own service only, one pass per operation and one at a time per DLQ.</summary>
 internal sealed class DeadLetterAdminService(
     BloomOptions options, ConsumerCatalog catalog, RabbitMqConnection connection, DeadLetterPass pass, OutboxWriter outbox, DbContext db)
     : DeadLetterAdmin.DeadLetterAdminBase
@@ -120,8 +120,8 @@ internal sealed class DeadLetterAdminService(
     /// <summary>Role, service, queue, in that order (R5). Returns the actor's user id for the audit event.</summary>
     private Guid Authorize(ServerCallContext context, string service, string? queue = null)
     {
-        if (context.RequestHeaders.GetValue("x-bloom-user-type") != "staff" || context.RequestHeaders.GetValue("x-bloom-role") != "Admin")
-            throw BloomErrors.Create(StatusCode.PermissionDenied, BloomErrors.RoleNotAllowed, "Only staff with the Admin role may manage dead letters.");
+        if (context.RequestHeaders.GetValue("x-bloom-user-type") != "staff" || context.RequestHeaders.GetValue("x-bloom-role") != "admin")
+            throw BloomErrors.Create(StatusCode.PermissionDenied, BloomErrors.RoleNotAllowed, "Only staff with the admin role may manage dead letters.");
         if (service != options.ServiceName || (queue is not null && !catalog.DeadLetterQueues.Contains(queue)))
             throw BloomErrors.Create(StatusCode.NotFound, BloomErrors.DlqNotFound, "No such dead-letter queue.");
         return Guid.TryParse(context.RequestHeaders.GetValue("x-bloom-user-id"), out var actor)

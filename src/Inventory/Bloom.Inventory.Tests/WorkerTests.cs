@@ -220,7 +220,7 @@ public class WorkerTests(Containers containers)
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/admin/dlq/inventory/queues");
         request.Headers.Add("x-bloom-user-id", Guid.NewGuid().ToString());
         request.Headers.Add("x-bloom-user-type", "staff");
-        request.Headers.Add("x-bloom-role", "Admin"); // the value Bloom.Shared checks today (plan owner item 6)
+        request.Headers.Add("x-bloom-role", "admin");
         request.Headers.Add("x-bloom-request-id", Guid.NewGuid().ToString());
         using var response = await api.Http.SendAsync(request, Ct);
 

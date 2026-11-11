@@ -219,7 +219,7 @@ public class WorkerTests(Containers containers)
     public async Task Dlq_admin_is_hosted()
     {
         await using var hosts = await StartAsync();
-        using var admin = hosts.Api2.StaffClient("Admin");
+        using var admin = hosts.Api2.StaffClient("admin");
 
         var response = await admin.GetAsync("/api/admin/dlq/notification/queues", Ct);
 

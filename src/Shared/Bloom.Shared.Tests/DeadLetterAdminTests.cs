@@ -14,6 +14,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -51,11 +52,21 @@ internal sealed class GatedPass(RabbitMqConnection connection) : DeadLetterPass(
         }, ct);
 }
 
+/// <summary>Throws on its first pass, then behaves normally.</summary>
+internal sealed class ThrowOncePass(RabbitMqConnection connection) : DeadLetterPass(connection)
+{
+    private int _calls;
+
+    public override Task RunAsync(
+        string dlq, Func<BasicDeliverEventArgs, PassAction> decide, Func<BasicDeliverEventArgs, PassAction, Task> audit, CancellationToken ct) =>
+        Interlocked.Increment(ref _calls) == 1 ? throw new IOException("pass failed") : base.RunAsync(dlq, decide, audit, ct);
+}
+
 public class DeadLetterAdminTests(Containers containers)
 {
     private const string AuditType = "identity.staff-action-recorded.v1";
 
-    private sealed record App(WebApplication Host, string Svc, Toggle Toggle, Rabbit Rabbit, DeadLetterAdmin.DeadLetterAdminClient Client) : IAsyncDisposable
+    private sealed record App(WebApplication Host, string Cs, string Svc, Toggle Toggle, Rabbit Rabbit, DeadLetterAdmin.DeadLetterAdminClient Client) : IAsyncDisposable
     {
         public string Type => $"{Svc}.thing.v1";
 
@@ -65,7 +76,7 @@ public class DeadLetterAdminTests(Containers containers)
 
         public readonly Guid Actor = Guid.NewGuid();
 
-        public CallOptions Headers(string role = "Admin", string userType = "staff") => new(
+        public CallOptions Headers(string role = "admin", string userType = "staff") => new(
             new Metadata
             {
                 { "x-bloom-user-type", userType },
@@ -109,7 +120,7 @@ public class DeadLetterAdminTests(Containers containers)
             await scope.ServiceProvider.GetRequiredService<TestDbContext>().Database.EnsureCreatedAsync(ct);
         await host.StartAsync(ct);
         var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
-        return new App(host, svc, toggle, await Rabbit.ConnectAsync(containers), new DeadLetterAdmin.DeadLetterAdminClient(channel));
+        return new App(host, cs, svc, toggle, await Rabbit.ConnectAsync(containers), new DeadLetterAdmin.DeadLetterAdminClient(channel));
     }
 
     private static byte[] Body(string type, Guid id, int n) =>
@@ -188,7 +199,7 @@ public class DeadLetterAdminTests(Containers containers)
         var audit = Assert.Single(await AuditAsync(app));
         var p = audit.Payload;
         Assert.Equal(app.Actor, p.GetProperty("actorId").GetGuid());
-        Assert.Equal("Admin", p.GetProperty("actorRole").GetString());
+        Assert.Equal("admin", p.GetProperty("actorRole").GetString());
         Assert.Equal(app.Svc, p.GetProperty("service").GetString());
         Assert.Equal($"{app.Svc}.dlq-replayed", p.GetProperty("action").GetString());
         Assert.Equal("dlq_message", p.GetProperty("targetType").GetString());
@@ -320,7 +331,8 @@ public class DeadLetterAdminTests(Containers containers)
 
     [Theory]
     [InlineData("Support", "staff")]
-    [InlineData("Admin", "customer")]
+    [InlineData("admin", "customer")]
+    [InlineData("Admin", "staff")]
     public async Task T24_non_admin_is_not_allowed(string role, string userType)
     {
         await using var app = await StartAsync();
@@ -340,6 +352,59 @@ public class DeadLetterAdminTests(Containers containers)
 
         Assert.Equal(3u, await app.Rabbit.MessageCountAsync(app.Dlq));
         Assert.Empty(await AuditAsync(app));
+    }
+
+    [Fact]
+    public async Task Role_Admin_capitalized_is_rejected()
+    {
+        await using var app = await StartAsync();
+
+        await AssertErrorAsync(StatusCode.PermissionDenied, "ROLE_NOT_ALLOWED",
+            () => app.Client.ListDeadLetterQueuesAsync(new ListDeadLetterQueuesRequest { Service = app.Svc }, app.Headers("Admin")).ResponseAsync);
+    }
+
+    [Fact]
+    public async Task Role_admin_lowercase_is_allowed()
+    {
+        await using var app = await StartAsync();
+
+        var response = await app.Client.ListDeadLetterQueuesAsync(new ListDeadLetterQueuesRequest { Service = app.Svc }, app.Headers("admin"));
+
+        Assert.Single(response.Queues);
+    }
+
+    /// <summary>Advisory locks held in this test's database, seen from a separate connection.</summary>
+    private static async Task<long> AdvisoryLockCountAsync(App a)
+    {
+        await using var conn = new NpgsqlConnection(a.Cs);
+        await conn.OpenAsync(TestContext.Current.CancellationToken);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND database = (SELECT oid FROM pg_database WHERE datname = current_database())", conn);
+        return (long)(await cmd.ExecuteScalarAsync(TestContext.Current.CancellationToken))!;
+    }
+
+    [Fact]
+    public async Task Lock_is_released_when_pass_ends()
+    {
+        await using var app = await StartAsync();
+        await SeedAsync(app, 2);
+
+        Assert.Equal(2u, (await app.Client.ReplayAllDeadLettersAsync(new ReplayAllDeadLettersRequest { Service = app.Svc, Queue = app.Dlq }, app.Headers())).ReplayedCount);
+
+        Assert.Equal(0, await AdvisoryLockCountAsync(app));
+    }
+
+    [Fact]
+    public async Task Lock_is_released_when_pass_throws()
+    {
+        await using var app = await StartAsync(configure: s => s.AddSingleton<DeadLetterPass>(sp => new ThrowOncePass(sp.GetRequiredService<RabbitMqConnection>())));
+        await SeedAsync(app, 2);
+        var request = new ReplayAllDeadLettersRequest { Service = app.Svc, Queue = app.Dlq };
+
+        await Assert.ThrowsAsync<RpcException>(() => app.Client.ReplayAllDeadLettersAsync(request, app.Headers()).ResponseAsync);
+
+        Assert.Equal(0, await AdvisoryLockCountAsync(app));
+        Assert.Equal(2u, (await app.Client.ReplayAllDeadLettersAsync(request, app.Headers())).ReplayedCount); // not DLQ_BUSY
     }
 
     [Fact]
@@ -490,7 +555,7 @@ public class DeadLetterAdminTests(Containers containers)
         using var http = app.Host.GetTestClient();
         using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/admin/dlq/{app.Svc}/queues");
         request.Headers.Add("x-bloom-user-type", "staff");
-        request.Headers.Add("x-bloom-role", "Admin");
+        request.Headers.Add("x-bloom-role", "admin");
         request.Headers.Add("x-bloom-user-id", app.Actor.ToString());
         request.Headers.Add("x-bloom-request-id", Guid.NewGuid().ToString());
 

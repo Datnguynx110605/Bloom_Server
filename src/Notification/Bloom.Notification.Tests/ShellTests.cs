@@ -112,7 +112,7 @@ public class ShellTests(Containers containers)
     public async Task Api_host_starts_and_hosts_the_dlq_admin()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        using var admin = t.StaffClient("Admin");
+        using var admin = t.StaffClient("admin");
 
         var response = await admin.GetAsync("/api/admin/dlq/notification/queues", TestContext.Current.CancellationToken);
 
