@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [11-notifications](../product-design/11-notifications.md) NTF-R01 … R06, INV-R11, ACC-R06 |
 | **HLD** | [high-level-design.md §5, §7.2](../high-level-design/high-level-design.md), HLD-ADR-018 |
@@ -86,7 +86,8 @@ Indexes: `(account_id, created_at DESC)`; `(account_id) WHERE read_at IS NULL`.
 | Key / channel | Purpose | TTL |
 |---|---|---|
 | `ws:ticket:{ticket}` | `accountId` for a one-time WebSocket ticket | 30 s |
-| SignalR backplane channels | Cross-pod delivery to user groups and disconnect commands | — |
+| SignalR backplane channels | Cross-pod delivery to user groups | — |
+| `notification:disconnect` | Cross-pod disconnect command | — |
 
 ## 5. Interfaces
 
@@ -98,7 +99,7 @@ Indexes: `(account_id, created_at DESC)`; `(account_id) WHERE read_at IS NULL`.
 | `GetUnreadCount` | Customer | → count |
 | `MarkRead` / `MarkAllRead` | Customer | `ids[]` / — |
 | `GetWsTicket` | Customer | → `ticket` (single use, 30 s) |
-| Hub `/api/notifications/hub?ticket=…` | Customer browser | SignalR over WebSocket; server → client message `notification {id, type, title, link, createdAt}` |
+| Hub `/api/notifications/hub?ticket=…` | Customer browser | SignalR over WebSocket; server → client message `notification {id, type, title, link, createdAt}`. A request is rejected before the upgrade: `403` for the `Origin`, `401` for the ticket, `400` for a non-WebSocket request |
 
 ### 5.2 Gateway route
 
@@ -111,7 +112,7 @@ Indexes: `(account_id, created_at DESC)`; `(account_id) WHERE read_at IS NULL`.
 | `identity.verification-code.v1` | `account.code` | ✓ | | `email` in payload; code decrypted at send |
 | `identity.staff-invited.v1` | `staff.invitation` | ✓ | | `email` in payload |
 | `order.paid.v1` | `order.confirmed` | ✓ | ✓ | `accountId` |
-| `order.cancelled.v1` | `order.cancelled` (text per `reason`: customer, Support, checkout expired, late payment) | ✓ | ✓ | `accountId` |
+| `order.cancelled.v1` | `order.cancelled` (text per `reason`: customer, Support, checkout expired, checkout failed, late payment) | ✓ | ✓ | `accountId` |
 | `order.preorder-delayed.v1` | `order.preorder-delayed` | ✓ | ✓ | `accountId` |
 | `fulfillment.shipment-shipped.v1` | `order.shipped` (tracking number) | ✓ | ✓ | via `order_refs` |
 | `fulfillment.shipment-delivered.v1` | `order.delivered` | ✓ | ✓ | via `order_refs` |
@@ -126,7 +127,20 @@ Indexes: `(account_id, created_at DESC)`; `(account_id) WHERE read_at IS NULL`.
 |---|---|
 | `identity.customer-registered.v1` / `contact-changed.v1` | Upsert `contacts` |
 | `identity.account-deleted.v1` | §6.5 |
-| `identity.tokens-revoked.v1` | Disconnect the user's sockets on every pod (backplane command) |
+| `identity.tokens-revoked.v1` | Disconnect the user's sockets on every pod (`notification:disconnect`) |
+
+Producers must keep writing UTC `OccurredAt`.
+
+### 5.4 Error reasons
+
+Only shared reasons are used (00-reliability §8):
+
+| Reason | Status | When |
+|---|---|---|
+| `VALIDATION_FAILED` | `INVALID_ARGUMENT` | Bad page token, `MarkRead` IDs |
+| `ROLE_NOT_ALLOWED` | `PERMISSION_DENIED` | Caller isn't a customer |
+
+`MarkRead` ignores IDs that aren't the caller's.
 
 ## 6. Behaviour
 
@@ -147,7 +161,7 @@ Every 2 s, claim `pending` jobs with `next_attempt_at <= now()` (`SKIP LOCKED`, 
 1. For `account.code` jobs, decrypt the code (AES-256-GCM, key shared with identity) in memory only.
 2. Send through `EmailProvider` with idempotency key `bloom:email:<id>` (used if the provider supports it).
 3. Success → `sent`, store `provider_message_id`; for code jobs, **remove the encrypted code from `data`** (NR-03).
-4. Transient error → `attempts + 1`, next attempt per 1 s / 5 s / 30 s / 2 min; after 5 attempts → `failed` + alert.
+4. Transient error → `attempts + 1`, next attempt per 1 s / 5 s / 30 s / 2 min; after 5 attempts → `failed` + alert. A Resend `429` isn't counted (`attempts` unchanged): the next attempt is at `max(schedule step, Retry-After)`, and without the header the schedule step applies. There is no cap on uncounted `429`s; the `event_to_email_seconds` alert covers a long throttle.
 5. Permanent error (invalid address, rejected) → `failed` immediately + alert.
 
 A crash between steps 2 and 3 can resend the email (accepted, NR-01). Code emails whose code has expired by send time are still sent; the code simply won't work and the user requests a new one.
@@ -171,7 +185,7 @@ sequenceDiagram
 
 - **Ticket:** `GETDEL ws:ticket:{t}` on connect; missing → reject (single use, NR-06 relies on fresh tickets).
 - **Lifetime:** the server closes every connection 15 min after it opened; the client fetches a new ticket and reconnects (jittered 0–10 s to avoid reconnect storms).
-- **Revocation:** `tokens-revoked` → backplane "disconnect user" → every pod closes that user's connections; reconnect fails until the user signs in again (NR-06).
+- **Revocation:** `tokens-revoked` → `notification:disconnect` → every pod closes that user's connections; reconnect fails until the user signs in again (NR-06).
 - **Keep-alive:** SignalR pings every 15 s; idle timeout 30 s.
 - **On (re)connect** the client refetches the unread count and list, so pushes missed during a disconnect or backplane hiccup are never lost.
 
@@ -213,7 +227,7 @@ Daily: delete `notifications` older than 90 days (NR-07); delete `email_jobs` th
 | Reconnect storm after a deploy | Jittered reconnect; tickets rate-limited by the gateway `global` policy. |
 | Late payment refunded for an order never paid | `order.cancelled` (reason late payment) created the `order_refs` row; refund email resolves. |
 | Contact changes email between event and send | Job keeps the address resolved at consume time. |
-| Provider down for 10 minutes | Jobs retry, then `failed` + alert after ~2.5 min of attempts; Ops re-queues after recovery (set `pending`). |
+| Provider down for 10 minutes | Jobs retry, then `failed` + alert after ~2.5 min of attempts; Ops re-queues after recovery (set `pending`, `attempts = 0`, `next_attempt_at = now()`). |
 
 ## 9. Security and validation
 
@@ -233,7 +247,7 @@ Daily: delete `notifications` older than 90 days (NR-07); delete `email_jobs` th
 | `notifications_created_total` | `type`, `channel` | Volume |
 | `email_jobs_by_status` | `status` | Sender health |
 | `email_send_seconds` | — | Provider latency |
-| `event_to_email_seconds` | `type` | End-to-end delay |
+| `event_to_email_seconds` | `type` | End-to-end delay, measured from consume time (`email_jobs.created_at`), not from the event's publish time |
 
 **Alerts:** any `failed` email job; `ws_connections` per pod > 25k; DLQ message on any notification consumer; `event_to_email_seconds` p95 > 60 s.
 
