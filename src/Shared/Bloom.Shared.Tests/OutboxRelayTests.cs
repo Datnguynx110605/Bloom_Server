@@ -194,4 +194,50 @@ public class OutboxRelayTests(Containers containers)
         // Passes at ~0 s and ~1 s only; a hot loop would burn attempts many times faster.
         Assert.InRange((await RowsAsync(s.Host)).Max(r => r.Attempts), 1, 2);
     }
+
+    private static OutboxRelay RelayVia(Setup s, string rabbitUri) =>
+        ActivatorUtilities.CreateInstance<OutboxRelay>(s.Host.Services,
+            new RabbitMqConnection(new BloomOptions { ServiceName = "svc", RabbitMqUri = rabbitUri }));
+
+    [Fact]
+    public async Task Relay_uses_one_confirm_deadline_per_pass()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var s = await SetUpAsync();
+        var broker = new Uri(containers.RabbitMqUri);
+        await using var proxy = new DelayedConfirmProxy(broker.Host, broker.Port);
+        var relay = RelayVia(s, new UriBuilder(broker) { Host = "127.0.0.1", Port = proxy.Port }.Uri.ToString());
+        await WriteAsync(s.Host, 1);
+        Assert.Equal(1, await relay.RunOnceAsync(ct)); // opens the relay's channel through the proxy
+        await WriteAsync(s.Host, 3);
+        proxy.DropConfirms = true;
+
+        var clock = Stopwatch.StartNew();
+        await relay.RunOnceAsync(ct);
+        clock.Stop();
+
+        // Per row, the three rows would wait 3 deadlines. Wall clock, so the bound is generous: under 2 deadlines.
+        Assert.True(clock.Elapsed < RabbitMqConnection.ConfirmTimeout * 2, $"The pass took {clock.Elapsed.TotalSeconds:0.0} s; one deadline is {RabbitMqConnection.ConfirmTimeout.TotalSeconds:0} s.");
+        Assert.Contains("confirm", (await RowsAsync(s.Host)).First(r => r.Status == "pending").LastError);
+    }
+
+    [Fact]
+    public async Task Relay_reopen_failure_reports_reopen_error()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var s = await SetUpAsync();
+        var closed = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        closed.Start();
+        var port = ((System.Net.IPEndPoint)closed.LocalEndpoint).Port;
+        closed.Stop(); // nothing listens here, so opening the channel fails
+        var relay = RelayVia(s, $"amqp://guest:guest@127.0.0.1:{port}/");
+        await WriteAsync(s.Host, 1);
+
+        await relay.RunOnceAsync(ct);
+
+        var row = Assert.Single(await RowsAsync(s.Host));
+        Assert.Equal(1, row.Attempts);
+        Assert.Contains("re-open", row.LastError);
+        Assert.DoesNotContain("confirm", row.LastError);
+    }
 }

@@ -102,6 +102,7 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
             }
             catch (FenceLostException)
             {
+                db.ChangeTracker.Clear(); // the re-run apply must not save what the lost run staged
             }
             catch (Exception ex) when (ex is not RpcException { StatusCode: var c } || !Stored.Contains(c))
             {

@@ -72,16 +72,29 @@ internal sealed class OutboxRelay(
         var sent = new List<Guid>();
         var failed = new List<(OutboxMessage Row, string Error)>();
 
+        // One confirm deadline for the whole pass: it bounds how long the FOR UPDATE locks are held (§7.2).
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(RabbitMqConnection.ConfirmTimeout);
+
         foreach (var row in rows)
         {
+            if (deadline.IsCancellationRequested) break; // the rest are untouched and tried next pass
             // A channel closed by the broker (404 on a bad exchange, ...) is replaced before the next row.
             if (_channel is { IsOpen: false }) await DisposeChannelAsync();
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(RabbitMqConnection.ConfirmTimeout);
             try
             {
-                _channel ??= await connection.CreateConfirmChannelAsync(timeout.Token);
-                await PublishAsync(_channel, row, timeout.Token);
+                if (_channel is null)
+                {
+                    try { _channel = await connection.CreateConfirmChannelAsync(deadline.Token); }
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        // Every following row would fail the same way, so the pass ends here.
+                        failed.Add((row, $"Channel re-open failed: {(ex is OperationCanceledException ? "timed out" : ex.Message)}"));
+                        await DisposeChannelAsync();
+                        break;
+                    }
+                }
+                await PublishAsync(_channel, row, deadline.Token);
                 sent.Add(row.Id);
             }
             catch (PublishException ex) // nack: the channel stays usable
@@ -91,12 +104,9 @@ internal sealed class OutboxRelay(
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 // Only the row in flight is unconfirmed (§7.2 step 5); the rest are untouched and tried next.
-                // ponytail: a broker that is down fails one row per pass, not the batch; the loop's 1 s pause keeps that cheap.
-                var brokerDown = _channel is null; // opening the channel failed, so every following row would fail too
                 var error = ex is OperationCanceledException ? $"No publisher confirm within {RabbitMqConnection.ConfirmTimeout.TotalSeconds:0} s" : ex.Message;
                 failed.Add((row, error));
                 await DisposeChannelAsync();
-                if (brokerDown) break;
             }
         }
 

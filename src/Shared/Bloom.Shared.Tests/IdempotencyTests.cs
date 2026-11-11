@@ -641,6 +641,31 @@ public class IdempotencyTests(Containers containers)
     }
 
     [Fact]
+    public async Task Retakeover_rerun_starts_with_clean_change_tracker()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = await TestApp.BuildAsync(containers);
+        var provider = new FakeProvider();
+        var applied = new Calls();
+        var attempts = new Calls();
+
+        // The first apply stages an effect, then loses its lock (it expires) and is rejected: the rejection cannot be stored, so the request claims the key again and re-runs apply.
+        var response = await TwoPhase(host, Ctx(Guid.NewGuid(), Guid.NewGuid().ToString()), provider, applied, failApply: async _ =>
+        {
+            if (Interlocked.Increment(ref attempts.N) > 1) return;
+            using var scope = host.Services.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<TestDbContext>().Database
+                .ExecuteSqlAsync($"UPDATE idempotency_keys SET locked_until = now() - interval '1 second'", ct);
+            throw BloomErrors.FailedPrecondition("SOLD_OUT", "No stock.");
+        });
+
+        Assert.Equal(2, applied.N);
+        Assert.Equal(1, await Count<Effect>(host, ct)); // not the first run's staged effect as well
+        Assert.Equal("completed", (await OnlyKey(host, ct)).Status);
+        Assert.NotEmpty(response.ChargeId);
+    }
+
+    [Fact]
     public async Task Multi_step_request_that_lost_its_lock_does_not_complete_the_key()
     {
         var ct = TestContext.Current.CancellationToken;
