@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-05) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R18), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
 | **HLD** | [high-level-design.md §5, §8.1 – §8.3, §8.5](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-013 |
@@ -102,8 +102,10 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | Column | Type | Notes |
 |---|---|---|
 | `order_id`, `type` | `uuid`, `text` | PK; `type` = `checkout_compensation` \| `expiry` \| `cancellation` \| `late_payment` |
-| `pending_steps` | `text[]` | subset of `inventory_release`, `launch_release`, `refund` |
+| `pending_steps` | `text[]` | subset of `inventory_release`, `launch_release`, `refund`, `refund_failed` |
 | `started_at`, `completed_at` | `timestamptz` | |
+
+**`checkout_keys`** — PK `(account_id, idempotency_key)`: `order_id`. A resumed `StartCheckout` finds its order through it (§6.2).
 
 ### 4.2 Cart
 
@@ -135,7 +137,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 
 ### 4.4 Settings
 
-**`checkout_settings`** — single row: `express_fee_cents`, `version`, `updated_by`, `updated_at`. The tax rate comes from service configuration (`TaxRateBasisPoints`), read at checkout start (CHK-R08).
+**`checkout_settings`** — single row: `express_fee_cents`, `version`, `updated_by`, `updated_at`. The migration seeds `express_fee_cents = 1500`. The tax rate comes from service configuration (`TaxRateBasisPoints`, default `825`), read at checkout start (CHK-R08).
 
 ## 5. Interfaces
 
@@ -143,15 +145,15 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 
 | Method | Caller | Request → Response |
 |---|---|---|
-| `GetCart` | Customer | → lines with current price, `available`, `price_changed` / `out_of_stock` flags (CHK-R18) |
-| `UpsertCartLine` / `RemoveCartLine` | Customer | line → cart (optimistic `version`) |
+| `GetCart` | Customer | → lines with current price, `available`, `out_of_stock` (CHK-R18). Per line: `available` = catalog `buyable`; `out_of_stock` = inventory `available` < line quantity (flags omitted when inventory is unreachable, §5.2) |
+| `UpsertCartLine` / `RemoveCartLine` | Customer | line → cart (optimistic `version`). `UpsertCartLine` identifies a line by (`kind`, `sku_id`) for products and (`kind`, `sku_id`, `parent_line_no`) for plans; `quantity` is absolute, 0 removes the line. Removing a device line (`RemoveCartLine` or quantity 0) removes its plan lines. Upsert checks through catalog `GetPricing`: `LAUNCH_ITEMS_IN_CART`, `SKU_NOT_BUYABLE`, `QUANTITY_LIMIT`, `WARRANTY_NOT_ELIGIBLE`. `version` is required on writes; an account with no cart row has version 0 |
 | `StartCheckout` | Customer | **`Idempotency-Key` required.** `source` = `cart` \| `launch{launch_id, pass_token, lines[]}`, `ship_to`, `shipping_option`, `coupon_code?` → `order_id`, `number`, totals, `payment_url`, `deadline_at` |
-| `GetOrder` | Customer (own), Support, Admin | `order_id` → order, lines, history |
+| `GetOrder` | Customer (own), Support, Admin | `order_id` → order, lines, history. For a customer caller, history keeps `from`, `to`, `at` and `actor_type`; it drops `actor_id` unless it is the customer, and drops `reason` on rows with `actor_type = staff`. System rows keep their reason codes (for example `checkout_expired`), and customer rows keep theirs. Support and Admin see everything |
 | `ListMyOrders` | Customer | page → orders |
 | `CancelOrder` | Customer | `order_id`, `version` → order |
 | `SupportCancelOrder` | Support, Admin | `order_id`, `reason`, `version` → order |
 | `SearchOrders` | Support, Admin | number / account / status → orders |
-| `CreateCoupon` / `UpdateCoupon` / `DeactivateCoupon` / `ListCoupons` | Catalog manager, Admin | coupon fields, `version` |
+| `CreateCoupon` / `UpdateCoupon` / `DeactivateCoupon` / `ListCoupons` | Catalog manager, Admin | coupon fields, `version`. `UpdateCoupon` edits every field except the code; `total_limit` below `uses_count` → `VALIDATION_FAILED` |
 | `GetCheckoutSettings` / `SetExpressFee` | Admin | `express_fee_cents`, `version` |
 | `HasUnsettledOrders` | identity | `account_id` → `bool` |
 
@@ -161,10 +163,12 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 |---|---|---|
 | catalog `GetPricing(sku_ids)` | Cart view, checkout start | Checkout: fail with `UNAVAILABLE` (idempotency key released, retry safe) |
 | inventory `GetAvailability` | Cart view | Flags omitted; cart still shown |
-| inventory `ReserveStock` | Regular checkout | Compensate (§6.2) |
+| inventory `ReserveStock` | Regular checkout | Compensate (§6.2). `ORDER_RELEASED` → the checkout answers `CHECKOUT_CLOSED` |
 | launch `HoldAllocation` | Launch checkout | Compensate (§6.2) |
-| payment `CreatePayment(order_id, amount, account)` | Checkout start (after Tx 2) | Order stays `pending_payment`; retry with same key resumes |
+| payment `CreatePayment(order_id, order_number, amount, account, display_lines)` | Checkout start (after Tx 2) | Any failure → `UNAVAILABLE` (key released, order stays `pending_payment`) with an error log; retry with same key resumes. The 15-min sweep expires the order if the client never retries (§6.2) |
 | fulfillment `CancelPackTask(order_id, by)` | Cancel of an order with `handed_to_fulfillment` | §6.6 |
+
+`display_lines` match [04-payment §5.1](04-payment.md): one per order line, plus Express shipping.
 
 `GetPricing` returns per SKU: `price_cents`, `name`, `product_id`, `category_id`, `kind` (`product` \| `warranty_plan`), `serialized`, `buyable`, `launch {launch_id, stage}?`, and for plans `eligible_product_ids`, `coverage_months`.
 
@@ -180,8 +184,8 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `order.preorder-delayed.v1` | Launch released while a pre-order still has no stock allocated (once per order, INV-R11) | `orderId`, `orderNumber`, `accountId` |
 | `order.delivered.v1` | Delivered | `orderId`, `accountId`, `productIds[]`, `deliveredAt` |
 | `inventory.release-reservation.v1` | Command | `orderId` |
-| `launch.release-allocation-hold.v1` | Command | `orderId`, `reason` |
-| `payment.refund-payment.v1` | Command | `orderId`, `refundId`, `amountCents`, `reason` |
+| `launch.release-allocation-hold.v1` | Command | `orderId`, `reason` = the order's cancel reason (`checkout_failed`, `checkout_expired`, `customer`, `support`) |
+| `payment.refund-payment.v1` | Command | `orderId`, `refundId`, `amountCents`, `reason` (`cancellation` \| `late_payment`), `lines?[{lineNo, amountCents}]` |
 | `payment.cancel-payment.v1` | Command (checkout expired or failed) | `orderId` |
 | `identity.staff-action-recorded.v1` | Staff actions | |
 
@@ -191,12 +195,12 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 |---|---|
 | `payment.succeeded.v1` | §6.4 |
 | `payment.failed.v1` | No effect: status unchanged; the customer retries on Stripe's page within the deadline (CHK-R13) |
-| `payment.refund-completed.v1` | Update line `refunded_cents` (when the refund carries line amounts) and complete the `refund` saga step |
-| `payment.refund-failed.v1` | Saga stays open with the `refund` step marked failed, so `sagas_stuck` shows it; Support resolves (payment alerts) |
+| `payment.refund-completed.v1` | Update line `refunded_cents` (when the refund carries line amounts; a zero-cent amount is accepted, only a negative one is rejected) and remove `refund` **or** `refund_failed` from the open saga's `pending_steps`; when empty → completed |
+| `payment.refund-failed.v1` | Replace `refund` with `refund_failed` in the open saga's `pending_steps` and log an error, so the saga stays open and `sagas_stuck` shows it; Support resolves (payment alerts) |
 | `inventory.stock-allocated.v1` | `stock_allocated = true`; §6.5 |
 | `inventory.reservation-released.v1` | Complete `inventory_release` step |
 | `launch.hold-released.v1` | Complete `launch_release` step |
-| `launch.stage-changed.v1` | On `stage = released`: `launch_released = true` for that launch's pre-orders; §6.5 |
+| `launch.stage-changed.v1` | On `stage = released`: `launch_released = true` for every `creating`, `pending_payment` and `awaiting_stock` order of that launch; §6.5 |
 | `fulfillment.packing-started.v1` | `paid` → `packing` |
 | `fulfillment.shipment-shipped.v1` | → `shipped` |
 | `fulfillment.shipment-delivered.v1` | → `delivered`, `delivered_at`; publish `order.delivered.v1` |
@@ -221,8 +225,15 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `COUPON_NOT_APPLICABLE` | `FAILED_PRECONDITION` | No eligible lines, or launch order (LCH-R14) |
 | `COUPON_LIMIT_REACHED` | `FAILED_PRECONDITION` | Total or per-customer limit (BI-04) |
 | `SOLD_OUT`, `LIMIT_EXCEEDED`, `PASS_*` | as returned | Passed through from inventory / launch |
-| `CANCEL_NOT_ALLOWED` | `FAILED_PRECONDITION` | Status doesn't allow it, or packing already started (customer) |
+| `CANCEL_NOT_ALLOWED` | `FAILED_PRECONDITION` | Status doesn't allow it, or packing already started (customer); fulfillment's `PACKING_STARTED` maps to it |
 | `ALREADY_SHIPPED` | `FAILED_PRECONDITION` | Support cancel refused by fulfillment |
+| `CHECKOUT_CLOSED` | `FAILED_PRECONDITION` | A resumed checkout whose order was already cancelled, or Tx 2 finds the order no longer `creating`, or inventory answered `ORDER_RELEASED`: "This checkout was cancelled; start a new one." Stored on the key |
+| `COUPON_CODE_TAKEN` | `ALREADY_EXISTS` | `CreateCoupon` with a code that already exists (ignoring case) |
+| `NOT_FOUND` | `NOT_FOUND` | Unknown record |
+| `VALIDATION_FAILED` | `INVALID_ARGUMENT` | Bad request field, named in `ErrorInfo` metadata |
+| `ROLE_NOT_ALLOWED` | `PERMISSION_DENIED` | Caller's role may not call the method (00-reliability §8) |
+| `CONCURRENCY_CONFLICT` | `ABORTED` | Stale `version` |
+| `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_INVALID`, `IDEMPOTENCY_KEY_REUSED` | `INVALID_ARGUMENT` | Key missing, not a UUID, or reused for a different request (00-reliability §7.4). A resumed `StartCheckout` whose source kind, launch, shipping option or address differs from the first request → `IDEMPOTENCY_KEY_REUSED`, also against an already-swept order (not `CHECKOUT_CLOSED`) |
 
 ## 6. Behaviour
 
@@ -242,24 +253,29 @@ stateDiagram-v2
     awaiting_stock --> cancelled : customer / Support
     packing --> cancelled : Support, fulfillment agrees
     packing --> shipped : shipment shipped
+    paid --> shipped : shipment shipped (events may skip ahead)
     shipped --> delivered
+    packing --> delivered : delivered (skips ahead)
+    paid --> delivered : delivered (skips ahead)
     shipped --> delivery_failed
+    packing --> delivery_failed : delivery failed (skips ahead)
+    paid --> delivery_failed : delivery failed (skips ahead)
     delivered --> partially_returned
     delivered --> returned
     partially_returned --> returned
 ```
 
-`creating` is internal: never shown to customers, never in history lists. Every transition is a guarded update on `status` (and `version`) and writes `order_status_history`.
+`creating` is internal: never shown to customers, never in history lists. Every transition is a guarded update on `status` (and `version`) and writes one `order_status_history` row (from → to). Fulfillment events may skip ahead: `shipped` from `paid` \| `packing`; `delivered` and `delivery_failed` from `paid` \| `packing` \| `shipped`. A late earlier event finds the order further on and is a no-op.
 
 ### 6.2 StartCheckout
 
-Guarded by the idempotency key (two-phase, [00-reliability.md §7.4](00-reliability.md)). The `order_id` is generated in Tx 1 and stored with the key, so a resumed request reuses it.
+Guarded by the idempotency key (multi-step form, [00-reliability.md §7.4](00-reliability.md)). The `order_id` is generated in Tx 1 and stored in `checkout_keys`, so a resumed request reuses it.
 
 1. **Validate input** (no I/O): address format, shipping option, coupon code format.
-2. **Tx 1:** claim the idempotency key; insert `orders` (`creating`, `deadline_at = now + 2 min`, new `number`). Commit.
+2. **Tx 1:** claim the idempotency key; insert the order (`orders`: `creating`, `deadline_at = now + 2 min`, new `number`) and its `checkout_keys` row. Commit.
 3. **Price:** catalog `GetPricing` for every SKU. Validate:
    - regular: every product SKU `buyable`, no launch SKU in `pre-launch` stages, quantities ≤ 10;
-   - launch: every product SKU in the given launch, stage `preorder_open`; plans only;
+   - launch: every product SKU in the given launch, stage `preorder_open` (judged by its launch, not by `buyable`: catalog returns `buyable = false` for `preorder_open`, [08-catalog §6.1](08-catalog.md)); plans only;
    - plans: eligible for the parent line's product; plan qty ≤ parent qty (WAR-R01).
 4. **Compute totals** (§6.3), including the coupon check (validity, eligibility, minimum spend). No counters touched yet.
 5. **Hold (gRPC):** regular → inventory `ReserveStock(order_id, product lines)`; launch → launch `HoldAllocation(order_id, pass, product lines)`.
@@ -272,11 +288,20 @@ Guarded by the idempotency key (two-phase, [00-reliability.md §7.4](00-reliabil
 | Failure at | Result |
 |---|---|
 | Step 3, 4 (validation, coupon) | Tx: order → `cancelled` (`checkout_failed`). Business error stored on the key. |
-| Step 5 (`SOLD_OUT`, `LIMIT_EXCEEDED`, `PASS_*`) | Tx: order → `cancelled`; saga `checkout_compensation` with a release command for the other side's partial holds (none for single-service holds). Error stored. |
+| Step 5 (`SOLD_OUT`, `LIMIT_EXCEEDED`, `PASS_*`) | Tx: order → `cancelled`; saga `checkout_compensation` with a release command for the other side's partial holds (none for single-service holds). Error stored. On a resumed order (found through `checkout_keys`, not inserted by this request), any hold rejection also sends the release command and opens `checkout_compensation`, so an earlier attempt's hold isn't orphaned (OR-02). |
 | Step 6 (coupon limit reached) | Tx: order → `cancelled` + release command for the hold + saga. `COUPON_LIMIT_REACHED` stored. |
 | Step 5–7 transient (timeout, unavailable) | Key released; order stays `creating` or `pending_payment`. Retry with same key resumes from the order's status. |
 | Crash anywhere | Key stale after 60 s → resume on retry. If the client never retries, the **creating sweep** (deadline 2 min) cancels the order and sends release commands. |
 | Step 7 fails after retries end | Order stays `pending_payment`; the 15-min sweep expires it. |
+
+**Resume.** A retry that finds its order through `checkout_keys` continues by the order's status:
+
+| Order status | Result |
+|---|---|
+| `creating` | Continue at step 5 |
+| `pending_payment` | `CHECKOUT_CLOSED` if `deadline_at` has passed, else continue at step 7 |
+| `paid`, `awaiting_stock` or later | The normal response with `payment_url = ""` |
+| `cancelled` | `CHECKOUT_CLOSED` |
 
 Release commands for holds that were never placed are no-ops in launch / inventory, which still publish the completion event (§5.3), so sagas always finish.
 
@@ -297,7 +322,7 @@ All amounts are integer cents.
 
 | Order status | Action |
 |---|---|
-| `pending_payment` | regular → `paid`; launch → `awaiting_stock`. Coupon use → `consumed`. Outbox `order.paid.v1`. Regular: also `order.ready-to-fulfill.v1`, `handed_to_fulfillment = true`. |
+| `pending_payment` | regular → `paid`; launch → `awaiting_stock`. Coupon use → `consumed`. Outbox `order.paid.v1`. Regular: also `order.ready-to-fulfill.v1`, `handed_to_fulfillment = true`, and the bought items leave the cart in the same transaction (CHK-R19); items added during the checkout stay. |
 | `cancelled` (expired / failed) | **Late payment** (HLD-ADR-013): saga `late_payment`; outbox `payment.refund-payment.v1` (full amount). Customer notified via `order.cancelled.v1` reason. |
 | Anything else | No-op (duplicate) |
 
@@ -305,7 +330,7 @@ All amounts are integer cents.
 
 Whenever `stock_allocated` or `launch_released` becomes true on an `awaiting_stock` order, check both. If both are true: → `paid`; outbox `order.ready-to-fulfill.v1`; `handed_to_fulfillment = true`.
 
-On `launch.stage-changed.v1` with `stage = released`: process that launch's `awaiting_stock` orders in batches of 500 (guarded updates), so a 5,000-order launch doesn't run in one transaction. Orders that still have `stock_allocated = false` get `order.preorder-delayed.v1` (once per order, INV-R11).
+On `launch.stage-changed.v1` with `stage = released`: set `launch_released = true` on every `creating`, `pending_payment` and `awaiting_stock` order of that launch, in batches of 500 (guarded updates) repeated until a batch is empty, so a 5,000-order launch doesn't run in one transaction. An order paid after the release enters `awaiting_stock` with the flag set and moves to `paid` when `stock-allocated` arrives. `awaiting_stock` orders that still have `stock_allocated = false` get `order.preorder-delayed.v1` (once per order, INV-R11); only the release batch sends it.
 
 ### 6.6 Cancellation (customer and Support)
 
@@ -328,7 +353,7 @@ On `launch.stage-changed.v1` with `stage = released`: process that launch's `awa
 
 - `shipment-delivered` → `delivered`, `delivered_at`; publish `order.delivered.v1` (catalog review eligibility).
 - `delivery-failed` → `delivery_failed`; coupon use `restored`. The refund is orchestrated by fulfillment (ORD-R17).
-- `return-decided` (accepted units only; rejected units don't count): add to each line's `returned_qty`. If every product line has `returned_qty = quantity` → `returned`, else `partially_returned`.
+- `return-decided` (accepted units only; rejected units don't count): add to each line's `returned_qty`. If every product line has `returned_qty = quantity` → `returned`, else `partially_returned`. A decision with no accepted units leaves the status unchanged.
 
 ### 6.8 Coupon hold (inside Tx 2)
 
@@ -367,21 +392,25 @@ On `launch.stage-changed.v1` with `stage = released`: process that launch's `awa
 | Case | Expected behaviour |
 |---|---|
 | Price changes during checkout | Locked prices used (OR-06). |
-| Cart item price changed since added | Shown with `price_changed`; checkout uses the current price. |
+| Cart item price changed since added | Shown at the current price; checkout uses it. |
 | Customer pays twice from two tabs | One Stripe Checkout Session per order (`CreatePayment` idempotent by `order_id`); provider + payment layers stop a second charge. |
 | Payment succeeds 1 s after expiry | Late payment saga refunds in full. |
 | `stock-allocated` arrives before `order.paid` was processed | Can't happen: inventory only creates the backorder from `order.paid`. |
 | Launch released before any stock arrives | `launch_released = true`; order waits for `stock_allocated`. |
+| Launch released while a checkout is open | The flag is set on the open order too; once paid, it waits only for stock. |
 | Coupon deactivated while held | Checkout completes with the coupon. |
 | Support cancels during packing, carrier already scanned | `ALREADY_SHIPPED`; order unchanged. |
 | Account deleted with unsettled orders | Refused by identity (ACC-R13) via `HasUnsettledOrders`. |
 | Fixed coupon larger than eligible total | Capped at eligible total. |
+| Fulfillment events arrive out of order | Events may skip ahead (§6.1); a late earlier event finds the order further on and is a no-op. Each applied transition writes one history row. |
+| Cart write followed by a catalog outage | The write is kept, the answer is `UNAVAILABLE`, and a retry is safe (absolute set / remove). |
 
 ## 9. Security and validation
 
 - `account_id` always comes from the trusted identity context. Customers can only read and cancel their own orders (ownership check on every call).
 - `ship_to`: US only; state is a USPS 2-letter code; ZIP `^\d{5}(-\d{4})?$`; name ≤ 100, lines ≤ 100 chars; phone E.164.
 - Coupon code: 3–32 chars `[A-Za-z0-9-]`.
+- A negative `version`, or a `parent_line_no` on a non-plan line → `VALIDATION_FAILED`.
 - Staff methods check roles ([10-accounts-access §3](../product-design/10-accounts-access.md)); all staff actions are audited.
 - `HasUnsettledOrders` callable only by identity (Linkerd allow rule).
 
