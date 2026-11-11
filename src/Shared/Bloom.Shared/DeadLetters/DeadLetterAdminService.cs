@@ -5,6 +5,7 @@ using Bloom.Shared.Messaging;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using RabbitMQ.Client.Events;
 
 namespace Bloom.Shared.DeadLetters;
@@ -63,41 +64,23 @@ internal sealed class DeadLetterAdminService(
     }
 
     /// <summary>
-    /// One pass at a time per DLQ, across pods: a session advisory lock on the service's own database, held on one open
-    /// connection for the whole pass (the per-message audit commits use that same connection).
+    /// One pass at a time per DLQ, across pods (LLD-ADR-011): a transaction-scoped advisory lock on the service's own database,
+    /// held by one transaction on its own connection for the whole pass. COMMIT (or rollback on a throw, or a dead process) releases it.
+    /// The per-message audit commits use the context's own connection, so they commit independently.
     /// </summary>
     private async Task RunLockedAsync(
         string queue, Func<BasicDeliverEventArgs, PassAction> decide, Func<BasicDeliverEventArgs, PassAction, Task> audit, CancellationToken ct)
     {
-        await db.Database.OpenConnectionAsync(ct);
-        try
+        await using var connection = new NpgsqlConnection(db.Database.GetConnectionString());
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(ct); // disposed without COMMIT = rollback, which also releases the lock
+        await using (var cmd = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(hashtextextended('bloom.dlq:' || @queue, 0))", connection, tx))
         {
-            var locked = await db.Database
-                .SqlQuery<bool>($"SELECT pg_try_advisory_lock(hashtextextended('bloom.dlq:' || {queue}, 0)) AS \"Value\"")
-                .SingleAsync(ct);
-            if (!locked) throw DeadLetterPass.Busy(queue);
-            try
-            {
-                await pass.RunAsync(queue, decide, audit, ct);
-            }
-            finally
-            {
-                try
-                {
-                    await db.Database
-                        .SqlQuery<bool>($"SELECT pg_advisory_unlock(hashtextextended('bloom.dlq:' || {queue}, 0)) AS \"Value\"")
-                        .SingleAsync(CancellationToken.None);
-                }
-                catch (Exception)
-                {
-                    // A broken connection ends the session, which releases the lock; don't mask the pass's own outcome.
-                }
-            }
+            cmd.Parameters.AddWithValue("queue", queue);
+            if (!(bool)(await cmd.ExecuteScalarAsync(ct))!) throw DeadLetterPass.Busy(queue);
         }
-        finally
-        {
-            await db.Database.CloseConnectionAsync();
-        }
+        await pass.RunAsync(queue, decide, audit, ct);
+        await tx.CommitAsync(CancellationToken.None);
     }
 
     private async Task OneAsync(DeadLetterRequest request, ServerCallContext context, PassAction wanted)
