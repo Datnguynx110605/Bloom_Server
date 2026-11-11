@@ -69,7 +69,9 @@ internal sealed class ConsumerHost(
         var outage = false;
         consumer.ReceivedAsync += async (_, delivery) =>
         {
-            if (await OnDeliveryAsync(def, channel, delivery, session)) outage = true;
+            if (!await OnDeliveryAsync(def, channel, delivery, session)) return;
+            outage = true; // before Cancel, so RunSessionAsync sees it when the session ends
+            session.Cancel();
         };
         await channel.BasicConsumeAsync(def.Queue, autoAck: false, consumer, ct);
         await closed.Task;
@@ -83,28 +85,35 @@ internal sealed class ConsumerHost(
         while (true)
         {
             await Task.Delay(TimeSpan.FromSeconds(1), ct);
-            try
-            {
-                using var scope = scopes.CreateScope();
-                await scope.ServiceProvider.GetRequiredService<DbContext>().Database.ExecuteSqlRawAsync("SELECT 1", ct);
-                return;
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
-            {
-                logger.LogDebug(ex, "Database probe failed");
-            }
+            if (await DatabaseReachableAsync(ct)) return;
         }
     }
 
-    /// <summary>Returns true when the delivery was requeued because the database is unreachable; the session then ends.</summary>
+    /// <summary>One <c>SELECT 1</c> on the service's own database, bounded to 5 s so a black-holed server can't stall the caller.</summary>
+    private async Task<bool> DatabaseReachableAsync(CancellationToken ct)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            using var scope = scopes.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<DbContext>().Database.ExecuteSqlRawAsync("SELECT 1", bounded.Token);
+            return true;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            logger.LogDebug(ex, "Database probe failed");
+            return false;
+        }
+    }
+
+    /// <summary>Returns true when the delivery was requeued because the database is unreachable; the caller then ends the session.</summary>
     private async Task<bool> OnDeliveryAsync(ConsumerDefinition def, IChannel channel, BasicDeliverEventArgs delivery, CancellationTokenSource session)
     {
         if (session.IsCancellationRequested) return false;
         try
         {
-            if (!await ProcessAsync(def, channel, delivery, session.Token)) return false;
-            session.Cancel();
-            return true;
+            return await ProcessAsync(def, channel, delivery, session.Token);
         }
         catch (Exception ex) when (!session.IsCancellationRequested)
         {
@@ -198,7 +207,9 @@ internal sealed class ConsumerHost(
             return false;
         }
 
-        if (DatabaseOutage.IsOutage(failure))
+        // The classifier is a cheap pre-filter: a client-side command timeout on a live database looks the same,
+        // so confirm with the probe. Reachable means a normal failure and keeps the 5-attempt rule.
+        if (DatabaseOutage.IsOutage(failure) && !await DatabaseReachableAsync(ct))
         {
             await channel.BasicNackAsync(delivery.DeliveryTag, false, requeue: true, ct); // HLD-ADR-019: no attempt counted
             return true;

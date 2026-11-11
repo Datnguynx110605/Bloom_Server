@@ -11,6 +11,15 @@ using Testcontainers.PostgreSql;
 
 namespace Bloom.Shared.Tests;
 
+public sealed class SlowQueryHandler(TestDbContext db, HandlerLog log) : IMessageHandler
+{
+    public async Task HandleAsync(Envelope envelope, CancellationToken ct)
+    {
+        log.Calls.Enqueue(envelope.MessageId);
+        await db.Database.ExecuteSqlRawAsync("SELECT pg_sleep(10)", ct); // exceeds the 2 s command timeout
+    }
+}
+
 /// <summary>
 /// D3 / HLD-ADR-019. Pausing the shared Postgres container would break tests running in parallel,
 /// so this class owns a dedicated one.
@@ -197,6 +206,22 @@ public class ConsumerPauseTests(Containers containers) : IAsyncLifetime
         await app.Rabbit.PublishAsync("", app.Queue, Body(app.Type), new Dictionary<string, object?> { ["x-attempt"] = 5 });
         var dead = await GetWithinAsync(app.Rabbit, MessageNames.DeadLetterQueue(app.Queue), 10);
         Assert.StartsWith("PostgresException", Encoding.UTF8.GetString((byte[])dead.BasicProperties.Headers!["x-failure-reason"]!));
+        Assert.Equal(1u, await ConsumersAsync(app));
+    }
+
+    [Fact]
+    public async Task Handler_command_timeout_on_a_reachable_db_is_counted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var app = await StartAsync<SlowQueryHandler>();
+
+        await app.Rabbit.PublishAsync("", app.Queue, Body(app.Type), new Dictionary<string, object?> { ["x-attempt"] = 2 });
+        var retried = await GetWithinAsync(app.Rabbit, RetryQueue(app, "5s"), 60);
+        Assert.Equal(3, Convert.ToInt32(retried.BasicProperties.Headers!["x-attempt"]));
+        await app.Rabbit.PublishAsync("", app.Queue, Body(app.Type), new Dictionary<string, object?> { ["x-attempt"] = 5 });
+        await GetWithinAsync(app.Rabbit, MessageNames.DeadLetterQueue(app.Queue), 60);
+
+        Assert.Equal(2, app.Log.Calls.Count);
         Assert.Equal(1u, await ConsumersAsync(app));
     }
 }
