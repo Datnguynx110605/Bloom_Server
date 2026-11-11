@@ -34,7 +34,11 @@ internal sealed class ConsumerHost(
         {
             try
             {
-                await RunSessionAsync(def, ct);
+                if (await RunSessionAsync(def, ct))
+                {
+                    await WaitForDatabaseAsync(def, ct);
+                    continue; // the probe already waited, resume at once
+                }
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -44,8 +48,11 @@ internal sealed class ConsumerHost(
         }
     }
 
-    /// <summary>One channel's lifetime: returns when the channel shuts down, a delivery could not be settled, or the host stops.</summary>
-    private async Task RunSessionAsync(ConsumerDefinition def, CancellationToken ct)
+    /// <summary>
+    /// One channel's lifetime: returns when the channel shuts down, a delivery could not be settled, or the host stops.
+    /// Returns true when it ended because the service's own database is unreachable (HLD-ADR-019).
+    /// </summary>
+    private async Task<bool> RunSessionAsync(ConsumerDefinition def, CancellationToken ct)
     {
         using var session = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -59,17 +66,45 @@ internal sealed class ConsumerHost(
         };
         await channel.BasicQosAsync(0, Prefetch, false, ct);
         var consumer = new AsyncEventingBasicConsumer(channel);
-        consumer.ReceivedAsync += (_, delivery) => OnDeliveryAsync(def, channel, delivery, session);
+        var outage = false;
+        consumer.ReceivedAsync += async (_, delivery) =>
+        {
+            if (await OnDeliveryAsync(def, channel, delivery, session)) outage = true;
+        };
         await channel.BasicConsumeAsync(def.Queue, autoAck: false, consumer, ct);
         await closed.Task;
+        return outage;
     }
 
-    private async Task OnDeliveryAsync(ConsumerDefinition def, IChannel channel, BasicDeliverEventArgs delivery, CancellationTokenSource session)
+    /// <summary>Probes the service's own database with <c>SELECT 1</c> every 1 s until it answers (HLD-ADR-019).</summary>
+    private async Task WaitForDatabaseAsync(ConsumerDefinition def, CancellationToken ct)
     {
-        if (session.IsCancellationRequested) return;
+        logger.LogWarning("Consumer {Consumer} paused: its database is unreachable", def.Queue);
+        while (true)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            try
+            {
+                using var scope = scopes.CreateScope();
+                await scope.ServiceProvider.GetRequiredService<DbContext>().Database.ExecuteSqlRawAsync("SELECT 1", ct);
+                return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                logger.LogDebug(ex, "Database probe failed");
+            }
+        }
+    }
+
+    /// <summary>Returns true when the delivery was requeued because the database is unreachable; the session then ends.</summary>
+    private async Task<bool> OnDeliveryAsync(ConsumerDefinition def, IChannel channel, BasicDeliverEventArgs delivery, CancellationTokenSource session)
+    {
+        if (session.IsCancellationRequested) return false;
         try
         {
-            await ProcessAsync(def, channel, delivery, session.Token);
+            if (!await ProcessAsync(def, channel, delivery, session.Token)) return false;
+            session.Cancel();
+            return true;
         }
         catch (Exception ex) when (!session.IsCancellationRequested)
         {
@@ -81,9 +116,11 @@ internal sealed class ConsumerHost(
         catch (OperationCanceledException)
         {
         }
+        return false;
     }
 
-    private async Task ProcessAsync(ConsumerDefinition def, IChannel channel, BasicDeliverEventArgs delivery, CancellationToken ct)
+    /// <summary>Returns true when the delivery was NACKed with requeue because the service's own database is unreachable.</summary>
+    private async Task<bool> ProcessAsync(ConsumerDefinition def, IChannel channel, BasicDeliverEventArgs delivery, CancellationToken ct)
     {
         var headers = delivery.BasicProperties.Headers;
         var attempt = headers is not null && headers.TryGetValue("x-attempt", out var raw) && raw is int n ? Math.Max(1, n) : 1;
@@ -96,12 +133,12 @@ internal sealed class ConsumerHost(
         catch (JsonException ex)
         {
             await DeadLetterAsync(def, channel, delivery, $"invalid envelope: {ex.Message}", ct);
-            return;
+            return false;
         }
         if (!def.Bindings.Any(b => b.MessageType == envelope.MessageType))
         {
             await DeadLetterAsync(def, channel, delivery, $"unknown message type: {envelope.MessageType}", ct);
-            return;
+            return false;
         }
 
         using var logScope = logger.BeginScope(new Dictionary<string, object?>
@@ -158,19 +195,26 @@ internal sealed class ConsumerHost(
             await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
             metrics.ConsumerMessage(def.Queue, result);
             if (result == "success") metrics.ConsumerHandle(def.Queue, Stopwatch.GetElapsedTime(started).TotalSeconds);
-            return;
+            return false;
+        }
+
+        if (DatabaseOutage.IsOutage(failure))
+        {
+            await channel.BasicNackAsync(delivery.DeliveryTag, false, requeue: true, ct); // HLD-ADR-019: no attempt counted
+            return true;
         }
 
         logger.LogWarning(failure, "Handler failed on attempt {Attempt}", attempt);
         if (failure is PermanentFailureException || attempt >= MaxAttempts)
         {
             await DeadLetterAsync(def, channel, delivery, $"{failure.GetType().Name}: {failure.Message}", ct);
-            return;
+            return false;
         }
         await RabbitMqConnection.RepublishAsync(channel, MessageNames.RetryQueue(def.Queue, MessageNames.RetryDelays[attempt - 1].Delay), delivery,
             h => h["x-attempt"] = attempt + 1, ct);
         await channel.BasicAckAsync(delivery.DeliveryTag, false, ct);
         metrics.ConsumerMessage(def.Queue, "retry");
+        return false;
     }
 
     private async Task DeadLetterAsync(ConsumerDefinition def, IChannel channel, BasicDeliverEventArgs delivery, string reason, CancellationToken ct)
