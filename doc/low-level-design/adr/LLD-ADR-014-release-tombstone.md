@@ -14,7 +14,7 @@
 
 ## Decision drivers
 - A released order must never hold or create stock claims again.
-- No change to who releases (IR-05: only `order` releases).
+- Inventory still never releases a reservation on its own (IR-05).
 - Additive message change only (LLD-ADR-004).
 
 ## Considered options

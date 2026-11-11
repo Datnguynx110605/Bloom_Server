@@ -161,7 +161,7 @@ A tombstone for every order that had an order-level release command (§6.5, LLD-
 | `inventory.stock-allocated.v1` | Published → order | `orderId`; emitted when **every** pre-order line of the order is `committed` |
 | `identity.staff-action-recorded.v1` | Published | Receipts, adjustments, serial changes |
 | `order.paid.v1` | Consumed (`inventory.order-paid`) | Payload includes `launchId` (null for regular), `paidAt`, lines |
-| `inventory.release-reservation.v1` | Consumed (`inventory.release-reservation`) | Command from order: `orderId`. Optional `reshipId` (sent by fulfillment; additive, stays v1 per LLD-ADR-004): release by reship id, §6.5 |
+| `inventory.release-reservation.v1` | Consumed (`inventory.release-reservation`) | Command from order: `orderId`. Command from fulfillment: `orderId`, `reshipId` (optional field, additive, stays v1 per LLD-ADR-004): release by reship id, §6.5 |
 | `inventory.reservation-released.v1` | Published → order | `orderId`. Written in the same transaction as **every** applied release command, including no-ops (saga completion, [03-order](03-order.md)) |
 | `fulfillment.shipment-shipped.v1` | Consumed (`inventory.shipment-shipped`) | `refId`, lines |
 | `inventory.receive-customer-return.v1` | Consumed | Command from fulfillment: `orderId`, accepted units `[{skuId, serial?, quantity}]` |
