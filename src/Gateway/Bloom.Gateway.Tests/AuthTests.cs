@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Net;
-using System.Net.Http.Headers;
-using System.Text.Json;
-using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Logging;
 using static Bloom.Gateway.Tests.Http;
 
 namespace Bloom.Gateway.Tests;
@@ -347,7 +345,12 @@ public class AuthTests(Containers containers)
     [Fact]
     public async Task Authorization_and_cookie_are_never_logged()
     {
-        await using var gateway = await TestGateway.StartAsync(containers);
+        // Trace for every category, including the two appsettings.json raises to Warning: the most a deployment could turn on.
+        await using var gateway = await TestGateway.StartAsync(containers, o =>
+        {
+            foreach (var category in new[] { "Default", "Microsoft.AspNetCore", "Yarp" })
+                o.Config[$"Logging:LogLevel:{category}"] = "Trace";
+        });
         var good = TestTokens.Issue(gateway.DefaultKey);
         var bad = TestTokens.Issue(gateway.DefaultKey, iat: gateway.Clock.GetUtcNow() - TimeSpan.FromHours(1));
 
@@ -359,7 +362,7 @@ public class AuthTests(Containers containers)
         }
 
         var entries = gateway.Logs.Entries;
-        Assert.NotEmpty(entries);
+        Assert.Contains(entries, e => e.Level == LogLevel.Trace);
         foreach (var entry in entries)
         {
             var text = entry.Message + string.Concat(entry.State.Select(s => s.Key + "=" + s.Value));
@@ -391,9 +394,6 @@ public class AuthTests(Containers containers)
         }
     }
 
-    /// <summary>The header and signature of <paramref name="signed"/> with the payload of <paramref name="other"/>.</summary>
-    private static string TamperedPayload(string signed, string other)
-    {
     [Fact]
     public async Task D15_shippo_secret_absent_from_spans()
     {
@@ -428,6 +428,9 @@ public class AuthTests(Containers containers)
         }
     }
 
+    /// <summary>The header and signature of <paramref name="signed"/> with the payload of <paramref name="other"/>.</summary>
+    private static string TamperedPayload(string signed, string other)
+    {
         var (a, b) = (signed.Split('.'), other.Split('.'));
         return $"{a[0]}.{b[1]}.{a[2]}";
     }

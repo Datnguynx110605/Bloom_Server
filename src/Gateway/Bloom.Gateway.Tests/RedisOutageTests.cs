@@ -1,6 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
-using System.Text.Json;
 using StackExchange.Redis;
 using Testcontainers.Redis;
 using static Bloom.Gateway.Tests.Http;

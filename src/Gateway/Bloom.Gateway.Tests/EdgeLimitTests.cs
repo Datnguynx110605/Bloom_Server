@@ -1,6 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
-using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using StackExchange.Redis;
 using static Bloom.Gateway.Tests.Http;
@@ -48,6 +46,8 @@ public class EdgeLimitTests(Containers containers)
         Assert.Equal(0, gateway.Upstream.RequestCount);
         Assert.Empty(Keys($"fw:global:{gateway.ClientIp}:*"));
         Assert.Equal(1, metrics.Sum("gateway_auth_failures_total", ("reason", "TOKEN_REVOKED")));
+    }
+
     [Fact]
     public async Task D12_token_issued_same_second_as_revoke_all_is_revoked()
     {
@@ -60,8 +60,6 @@ public class EdgeLimitTests(Containers containers)
         using var response = await SendAsync(gateway, "GET", "/api/cart", token);
 
         await AssertErrorAsync(response, HttpStatusCode.Unauthorized, 16, "TOKEN_REVOKED");
-    }
-
     }
 
     [Fact]
@@ -284,6 +282,8 @@ public class EdgeLimitTests(Containers containers)
             Assert.Empty(Keys("fw:global:6.6.6.7:*"));
             Assert.NotEmpty(Keys("fw:global:127.0.0.1:*"));
         }
+    }
+
     [Fact]
     public async Task D14_client_x_forwarded_for_is_replaced()
     {
@@ -308,8 +308,6 @@ public class EdgeLimitTests(Containers containers)
 
             Assert.Equal("6.6.6.6", seen["x-forwarded-for"]);
         }
-    }
-
     }
 
     /// <summary>The next 60 s fixed-window boundary after the gateway's clock; the clock can only move forward.</summary>

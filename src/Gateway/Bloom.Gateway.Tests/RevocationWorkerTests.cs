@@ -1,8 +1,6 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using Bloom.Identity.Contracts;
 using RabbitMQ.Client;
 using StackExchange.Redis;
 using Testcontainers.Redis;
@@ -140,10 +138,14 @@ public class RevocationWorkerTests(Containers containers)
             await PublishAsync(TestWorker.RevocationEnvelope(id, 5000));
             await Poll.UntilAsync(async () => (await TestWorker.QueueAsync(containers, "messages_unacknowledged")).FirstOrDefault() == "1", 15, "one delivery is unacknowledged");
 
+            var before = await ConsumerChannelsAsync();
+            Assert.Single(before);
+
             await containers.RabbitCtlAsync("close_all_connections", "test");
 
-            // The broker requeues the held delivery and the worker, reconnected, holds it again: nothing was acknowledged or lost.
-            await Poll.UntilAsync(async () => await TestWorker.QueueAsync(containers, "consumers", "messages_unacknowledged") is ["1", "1"], 15, "the worker reconnects and holds the redelivery");
+            // The broker requeues the held delivery and the worker, reconnected on a new channel, holds it again: nothing was acknowledged or lost.
+            await Poll.UntilAsync(async () => await ConsumerChannelsAsync() is [var after] && after != before[0]
+                && await TestWorker.QueueAsync(containers, "messages_unacknowledged") is ["1"], 15, "the worker reconnects and holds the redelivery");
             Assert.Equal(["1"], await TestWorker.QueueAsync(containers, "messages"));
         }
         finally
@@ -166,6 +168,15 @@ public class RevocationWorkerTests(Containers containers)
 
         await Poll.UntilAsync(async () => (string?)await Db.StringGetAsync($"rev:{id:D}") == "4000", 15, "the mark is written after the reconnect");
     }
+
+    /// <summary>The channels that consume the worker queue: a reconnect gives the consumer a new one.</summary>
+    private async Task<string[]> ConsumerChannelsAsync() =>
+        (await containers.RabbitCtlAsync("list_consumers", "--silent", "queue_name", "channel_pid"))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.TrimEnd('\r').Split('\t'))
+            .Where(cells => cells[0] == RevocationConsumer.Queue)
+            .Select(cells => cells[1])
+            .ToArray();
 
     private async Task PublishAsync(byte[] body)
     {
