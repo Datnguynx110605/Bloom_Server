@@ -13,7 +13,7 @@
 Consumer queues are quorum queues. A quorum queue drops a message once it has been delivered more times than its delivery limit (default 20) and the queue has no dead-letter target. Bloom's retry logic counts attempts itself (`x-attempt`, 5 tries), but a message NACKed with requeue is not counted that way: during a consumer pause on the service's own database outage (HLD-ADR-019) the same message is redelivered every time consuming resumes and fails again, and after repeated consumer crashes it is redelivered too. Past the limit the broker deletes the message silently, with no DLQ copy and no alert.
 
 ## Decision drivers
-- No lost message (BI-05 spirit: reliability guarantees of HLD-ADR-007).
+- No lost message (HLD-ADR-007).
 - A message dropped by the broker must be visible and replayable like any other dead letter (LLD-ADR-009).
 - No change to the retry logic or the message envelope.
 
