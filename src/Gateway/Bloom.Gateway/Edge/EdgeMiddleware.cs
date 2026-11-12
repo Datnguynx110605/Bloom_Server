@@ -79,7 +79,7 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
             decision = await store.CheckAsync(caller, clientIp, routePolicy, context.Request.Headers["x-bloom-request-id"].ToString());
             metrics.SetRedisDegraded(false);
         }
-        catch (Exception e) when (e is RedisException and not RedisServerException or TimeoutException) // RedisTimeoutException is a TimeoutException, not a RedisException; a server error (a Lua error) means Redis answered, so it is a 500, not an outage
+        catch (Exception e) when (IsRedisOutage(e))
         {
             // Redis is unreachable or not answering (§6.2): staff fail closed, everyone else gets per-pod limits and no revocation check.
             metrics.SetRedisDegraded(true);
@@ -122,6 +122,15 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
         }
         await next(context);
     }
+
+    /// <summary>Redis is unreachable, not answering, or mid-failover (§6.2). Any other server error (a Lua error, WRONGTYPE) means Redis answered, so it is a 500.</summary>
+    internal static bool IsRedisOutage(Exception e) => e switch
+    {
+        RedisServerException s => OutageCodes.Any(c => s.Message.StartsWith(c, StringComparison.Ordinal)),
+        _ => e is RedisException or TimeoutException, // RedisTimeoutException is a TimeoutException, not a RedisException
+    };
+
+    private static readonly string[] OutageCodes = ["LOADING", "READONLY", "MASTERDOWN", "CLUSTERDOWN", "TRYAGAIN", "BUSY"];
 
     private static bool RoleAllowed(EdgeRoute route, Caller caller) => route.Auth switch
     {

@@ -17,7 +17,7 @@ public sealed class RedisDegradedProbe(IConnectionMultiplexer redis, GatewayMetr
                 await redis.GetDatabase().PingAsync();
                 metrics.SetRedisDegraded(false);
             }
-            catch (Exception e) when (e is RedisException or TimeoutException) // same outage test as EdgeMiddleware
+            catch (Exception e) when (EdgeMiddleware.IsRedisOutage(e))
             {
                 metrics.SetRedisDegraded(true);
             }

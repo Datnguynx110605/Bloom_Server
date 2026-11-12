@@ -124,6 +124,21 @@ public class RedisOutageTests(Containers containers)
     }
 
     [Fact]
+    public async Task Redis_failover_error_takes_the_degraded_path_not_500()
+    {
+        // A replica whose master is unreachable still answers PING and reads, but refuses the script's writes with READONLY: what Redis says during a failover.
+        await using var redis = new RedisBuilder("redis:8.2.3").WithCommand("--replicaof", "127.0.0.1", "1").Build();
+        await redis.StartAsync(Ct);
+        await using var gateway = await TestGateway.StartAsync(containers, o => o.Config["Gateway:Redis"] = redis.GetConnectionString());
+        using var metrics = new MetricCapture(gateway.Services);
+
+        using var response = await SendAsync(gateway, "GET", "/api/catalog/x");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, metrics.Gauge("gateway_redis_degraded"));
+    }
+
+    [Fact]
     public async Task Degraded_gauge_updates_while_idle()
     {
         await using var gateway = await StartDuringOutageAsync();
