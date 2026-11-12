@@ -128,6 +128,7 @@ public static class CoverageStatuses
     public const string PendingDelivery = "pending_delivery";
     public const string Active = "active";
     public const string Cancelled = "cancelled";
+    public const string Expired = "expired"; // D30: derived at read (GetCoverage), never stored, so not in All
 
     public static readonly string[] All = [PendingDelivery, Active, Cancelled];
 }

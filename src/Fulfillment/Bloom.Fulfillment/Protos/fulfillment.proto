@@ -115,6 +115,7 @@ message GetCoverageRequest {
 }
 
 // The active | pending_delivery coverage of the serial, else its newest cancelled one. `starts_at` and `ends_at` are set once the order is delivered.
+// `status` is pending_delivery | active | cancelled | expired; `expired` is derived at read (active and `ends_at` <= now), never stored.
 message Coverage {
   string serial = 1;
   string order_id = 2;

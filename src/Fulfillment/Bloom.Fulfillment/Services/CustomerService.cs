@@ -124,6 +124,6 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
     public override async Task<Coverage> GetCoverage(GetCoverageRequest request, ServerCallContext context)
     {
         var caller = Caller.From(context).RequireCustomer();
-        return await Views.CoverageAsync(db, Inputs.Serial(request.Serial, "serial"), caller.UserId, context.CancellationToken);
+        return await Views.CoverageAsync(db, clock, Inputs.Serial(request.Serial, "serial"), caller.UserId, context.CancellationToken);
     }
 }

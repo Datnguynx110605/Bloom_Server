@@ -55,6 +55,24 @@ public class CoverageTests(Containers containers)
     }
 
     [Fact]
+    public async Task D30_coverage_past_end_reads_expired()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await PaidAsync(t);
+        await Seed.DeliveredAsync(t, order, serials);
+
+        t.Clock.Advance(TimeSpan.FromDays(364));
+        using (var before = await CustomerGetAsync(t, serials[0], customer)) Assert.Equal("active", (await before.OkJsonAsync()).GetProperty("status").GetString());
+
+        t.Clock.Advance(TimeSpan.FromDays(2)); // past ends_at (delivery + 12 months)
+        using (var customerView = await CustomerGetAsync(t, serials[0], customer)) Assert.Equal("expired", (await customerView.OkJsonAsync()).GetProperty("status").GetString());
+        using (var staffView = await StaffGetAsync(t, serials[0], "support")) Assert.Equal("expired", (await staffView.OkJsonAsync()).GetProperty("status").GetString());
+
+        await using var db = t.NewDb();
+        Assert.Equal(CoverageStatuses.Active, (await db.WarrantyCoverages.AsNoTracking().SingleAsync(c => c.Serial == serials[0], Ct)).Status); // nothing stored changes
+    }
+
+    [Fact]
     public async Task Other_customers_serial_is_NOT_FOUND()
     {
         await using var t = await TestFulfillment.StartAsync(containers);

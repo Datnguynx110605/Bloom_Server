@@ -271,6 +271,6 @@ public sealed class SupportService(
     public override async Task<Coverage> GetCoverage(GetCoverageRequest request, ServerCallContext context)
     {
         Caller.From(context).RequireStaff(Caller.Deciders);
-        return await Views.CoverageAsync(db, Inputs.Serial(request.Serial, "serial"), null, context.CancellationToken);
+        return await Views.CoverageAsync(db, clock, Inputs.Serial(request.Serial, "serial"), null, context.CancellationToken);
     }
 }
