@@ -215,6 +215,44 @@ public class RefundTests(Containers containers)
     }
 
     [Fact]
+    public async Task Canceled_refund_status()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, paymentId, _) = await Seed.PaidAsync(t, 1000);
+        t.Stripe.NextRefundStatus = "canceled";
+        var command = Command(orderId, 400);
+        await Send(t, command);
+
+        await t.RunExecutorAsync();
+
+        var failed = await t.RefundAsync(command.RefundId);
+        Assert.Equal((RefundStatuses.Failed, "re_test_1", "canceled"), (failed.Status, failed.StripeRefundId, failed.FailureReason));
+        Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
+        Assert.Equal(new RefundFailedV1(orderId, command.RefundId, "canceled"), Assert.Single(await Failed(t)));
+        Assert.Empty(await Completed(t));
+        Assert.Equal(1, t.ErrorLogs);
+    }
+
+    [Fact]
+    public async Task Requires_action_refund_status()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, paymentId, _) = await Seed.PaidAsync(t, 1000);
+        t.Stripe.NextRefundStatus = "requires_action";
+        var command = Command(orderId, 400);
+        await Send(t, command);
+
+        await t.RunExecutorAsync();
+
+        var row = await t.RefundAsync(command.RefundId);
+        Assert.Equal((RefundStatuses.Submitted, "re_test_1"), (row.Status, row.StripeRefundId));
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
+        Assert.Empty(await Failed(t));
+        Assert.Empty(await Completed(t));
+        Assert.Equal(0, t.ErrorLogs); // a known status, unlike D24's unknown one
+    }
+
+    [Fact]
     public async Task Pending_refund_completes_by_webhook()
     {
         await using var t = await TestPayment.StartAsync(containers);

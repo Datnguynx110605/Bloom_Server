@@ -393,6 +393,36 @@ public class ReconcileTests(Containers containers)
     }
 
     [Fact]
+    public async Task Failed_nightly_fetch_logged_and_skipped()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        t.Clock.SetUtcNow(DayNoon);
+        var (paymentId, _, _) = await PaidWithRefundAsync(t);
+        var ghost = Guid.NewGuid();
+        await using (var db = t.NewDb())
+        {
+            var now = t.Clock.GetUtcNow();
+            db.Refunds.Add(new RefundRow
+            {
+                Id = ghost, PaymentId = paymentId, OrderId = Guid.NewGuid(), AmountCents = 100, Reason = "return", Status = RefundStatuses.Succeeded,
+                StripeRefundId = "re_ghost", CreatedAt = now, UpdatedAt = now,
+            });
+            await db.SaveChangesAsync(Ct);
+        }
+        var (lostOrder, _, _) = await Seed.CreateAsync(t);
+        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', succeeded_at = {DayNoon}, stripe_payment_intent_id = 'pi_lost' WHERE order_id = {lostOrder}");
+        t.Stripe.Fail("v1/refunds/re_ghost", 500);
+        t.Stripe.Fail("v1/checkout/sessions/cs_test_2", 500);
+
+        var mismatches = await Nightly(t).RunAsync(Day, Ct); // neither failed lookup aborts the run
+
+        Assert.Equal(["bloom_only payment pi_lost", $"bloom_only refund {ghost}"], mismatches);
+        Assert.Equal(2, metrics.Latest("reconcile_mismatches"));
+        Assert.Equal(2, t.Logs.Entries.Count(e => e.StartsWith("[Warning]", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task Lists_are_read_across_pages()
     {
         await using var t = await TestPayment.StartAsync(containers);

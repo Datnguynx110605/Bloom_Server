@@ -124,6 +124,28 @@ public class CancelTests(Containers containers)
         Assert.Equal(PaymentStatuses.Open, (await t.PaymentByOrderAsync(lateOrder)).Status);
     }
 
+    // The expire answered "not open", but the retrieved session is still open and unpaid: the retrieve applies nothing.
+    [Fact]
+    public async Task Indirect_cancel_noop()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, _, sessionId) = await Seed.CreateAsync(t);
+        await Send(t, orderId);
+        t.Stripe.Fail(Expire(sessionId), 400, "checkout_session_not_open");
+
+        await t.RunExecutorAsync();
+
+        var row = await t.PaymentByOrderAsync(orderId);
+        Assert.Equal((PaymentStatuses.Open, true), (row.Status, row.CancelRequested));
+        Assert.Equal(1, t.Stripe.Requests.Count(r => r is { Method: "GET" } && r.Path == $"v1/checkout/sessions/{sessionId}"));
+        Assert.Empty(await Succeeded(t));
+        Assert.Equal(0, t.ErrorLogs);
+
+        await t.RunExecutorAsync(); // the next tick expires it for real
+
+        Assert.Equal(PaymentStatuses.Canceled, (await t.PaymentByOrderAsync(orderId)).Status);
+    }
+
     [Fact]
     public async Task Cancel_for_creating_unknown_or_final_payments_is_a_no_op()
     {

@@ -246,6 +246,25 @@ public class StripeClientTests
     }
 
     [Fact]
+    public async Task Http_status_fallback_reason()
+    {
+        var client = ClientAnswering(() => Json("not json", HttpStatusCode.NotFound));
+
+        var e = await Assert.ThrowsAsync<ProviderException>(() => client.GetSessionAsync("cs_x", Ct));
+
+        Assert.False(e.Transient);
+        Assert.Equal("http_404", e.Reason);
+    }
+
+    [Fact]
+    public async Task Network_error_is_transient()
+    {
+        var client = ClientAnswering(() => throw new HttpRequestException("connection refused"));
+
+        await AssertUnreadableAsync(client.GetSessionAsync("cs_x", Ct));
+    }
+
+    [Fact]
     public void Signature_accepts_a_valid_header_and_any_matching_v1()
     {
         var now = _clock.GetUtcNow();
