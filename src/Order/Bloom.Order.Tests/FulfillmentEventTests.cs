@@ -272,20 +272,18 @@ public class FulfillmentEventTests(Containers containers)
         var (_, orderId, _) = await PaidAsync(t);
         var returnId = Guid.NewGuid();
         var v = (await OrderAsync(t, orderId)).Version;
-        async Task<bool> BumpedAsync(Func<Task> act)
-        {
-            await act();
-            var now = (await OrderAsync(t, orderId)).Version;
-            var bumped = now == v + 1;
-            Assert.True(bumped || now == v);
-            v = now;
-            return bumped;
-        }
+        var versions = new List<long>();
 
-        Assert.True(await BumpedAsync(() => ReturnRequestedAsync(t, orderId, returnId)));
-        Assert.False(await BumpedAsync(() => ReturnRequestedAsync(t, orderId, returnId)));
-        Assert.True(await BumpedAsync(() => ReturnClosedAsync(t, orderId, returnId)));
-        Assert.False(await BumpedAsync(() => ReturnClosedAsync(t, orderId, returnId)));
+        await ReturnRequestedAsync(t, orderId, returnId);
+        versions.Add((await OrderAsync(t, orderId)).Version);
+        await ReturnRequestedAsync(t, orderId, returnId);
+        versions.Add((await OrderAsync(t, orderId)).Version);
+        await ReturnClosedAsync(t, orderId, returnId);
+        versions.Add((await OrderAsync(t, orderId)).Version);
+        await ReturnClosedAsync(t, orderId, returnId);
+        versions.Add((await OrderAsync(t, orderId)).Version);
+
+        Assert.Equal([v + 1, v + 1, v + 2, v + 2], versions);
     }
 
     [Fact]
