@@ -8,6 +8,7 @@
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [03-inventory](../product-design/03-inventory.md) (INV-R01 … R20), BI-02, BI-06, BI-07, LCH-R19, R20 |
 | **HLD** | [high-level-design.md §5, §8.5](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-013 |
+| **Decision records** | [LLD-ADR-014](adr/LLD-ADR-014-release-tombstone.md) |
 | **Depends on** | [00-reliability.md](00-reliability.md) |
 
 ## 1. Problem and scope
@@ -26,7 +27,7 @@
 | IR-02 | Received launch stock goes to the oldest backorders, strict FIFO, in the receipt's transaction. | INV-R10, R11 |
 | IR-03 | Every counter change writes a ledger entry in the same transaction; entries are never modified. | INV-R17, R18 |
 | IR-04 | Each shipped serial unit is linked to exactly one order (or reship). | BI-07, INV-R15 |
-| IR-05 | `inventory` never releases a reservation on its own; only `order` does. | Owner decision |
+| IR-05 | `inventory` never releases a reservation on its own; only a command from `order` (by order) or from `fulfillment` (by `reshipId`, §6.5) does. | Owner decision |
 | IR-06 | A decrease adjustment can't exceed available stock. | Owner decision |
 | IR-07 | A goods receipt is atomic: all lines and serials are recorded, or none. | Owner decision |
 | IR-08 | Reserve p95 fits the checkout budget (checkout start p95 < 300 ms overall). | QA-03 |
@@ -285,6 +286,7 @@ Every adjustment requires a note, writes `stock_adjustments` + ledger `adjusted`
 | Duplicate / reordered messages | Inbox + allocation-status guards (§6.5, §6.7 tables) |
 | Serial double-assigned | Primary key + status check in a guarded update (`WHERE status = 'in_stock'`) |
 | Delayed "paid" after a release | Release tombstone: every order-level release command inserts `released_orders(order_id)`; a later `order.paid.v1` for that order creates no allocations and logs a warning; tombstones are purged after 30 days (§4.5, §6.5, LLD-ADR-014) |
+| Release vs concurrent reserve / paid | Per-order transaction advisory lock taken first by the release consumer, `ReserveStock` and `order.paid` (before the tombstone check and any SKU lock). Lock order: order lock → SKU locks → the allocator's order lock |
 
 ## 8. Edge cases
 
@@ -299,6 +301,7 @@ Every adjustment requires a note, writes `stock_adjustments` + ledger `adjusted`
 | Receipt with one duplicate serial among 100 | Whole receipt rejected with that serial listed. |
 | catalog unavailable on a first receipt | Receipt fails; nothing written. |
 | `GetAvailability` for a never-received SKU | `available = 0`. |
+| Repeated lost-in-transit for a serialized ref | No-op once its units are counted. |
 
 ## 9. Security and validation
 
