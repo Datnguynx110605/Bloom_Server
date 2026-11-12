@@ -20,22 +20,22 @@ public class AfterCommitTests(Containers containers)
             Entries.Add((logLevel, exception));
     }
 
-    private async Task<(AfterCommitDbContext Db, CapturingLogger Log)> NewContextAsync()
+    private readonly CapturingLogger _log = new();
+
+    private async Task<AfterCommitDbContext> NewContextAsync()
     {
-        var log = new CapturingLogger();
         var options = new DbContextOptionsBuilder<AfterCommitDbContext>()
             .UseNpgsql(await containers.CreateDatabaseAsync())
-            .AddInterceptors(new AfterCommitInterceptor(log))
+            .AddInterceptors(new AfterCommitInterceptor(_log))
             .Options;
-        return (new AfterCommitDbContext(options), log);
+        return new AfterCommitDbContext(options);
     }
 
     [Fact]
     public async Task Runs_after_commit()
     {
         var ct = TestContext.Current.CancellationToken;
-        var (db, _) = await NewContextAsync();
-        await using var _db = db;
+        await using var db = await NewContextAsync();
         var ran = 0;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         db.AfterCommit.Add(() => { ran++; return Task.CompletedTask; });
@@ -48,8 +48,7 @@ public class AfterCommitTests(Containers containers)
     public async Task Dropped_after_rollback()
     {
         var ct = TestContext.Current.CancellationToken;
-        var (db, _) = await NewContextAsync();
-        await using var _db = db;
+        await using var db = await NewContextAsync();
         var ran = 0;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         db.AfterCommit.Add(() => { ran++; return Task.CompletedTask; });
@@ -61,8 +60,7 @@ public class AfterCommitTests(Containers containers)
     public async Task Later_transaction_does_not_run_rolled_back_actions()
     {
         var ct = TestContext.Current.CancellationToken;
-        var (db, _) = await NewContextAsync();
-        await using var _db = db;
+        await using var db = await NewContextAsync();
         var ran = new List<string>();
         await using (await db.Database.BeginTransactionAsync(ct))
             db.AfterCommit.Add(() => { ran.Add("X"); return Task.CompletedTask; }); // disposed without commit
@@ -76,15 +74,14 @@ public class AfterCommitTests(Containers containers)
     public async Task Throwing_action_is_logged_and_the_next_still_runs()
     {
         var ct = TestContext.Current.CancellationToken;
-        var (db, log) = await NewContextAsync();
-        await using var _db = db;
+        await using var db = await NewContextAsync();
         var ran = 0;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         db.AfterCommit.Add(() => throw new InvalidOperationException("boom"));
         db.AfterCommit.Add(() => { ran++; return Task.CompletedTask; });
         await tx.CommitAsync(ct);
         Assert.Equal(1, ran);
-        var entry = Assert.Single(log.Entries);
+        var entry = Assert.Single(_log.Entries);
         Assert.Equal(LogLevel.Warning, entry.Level);
         Assert.IsType<InvalidOperationException>(entry.Error);
     }
