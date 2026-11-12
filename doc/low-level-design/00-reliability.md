@@ -8,7 +8,7 @@
 | **Last updated** | 2026-10-31 |
 | **Component** | Shared reliability library used by every domain service (plumbing only, no domain code) |
 | **HLD** | [high-level-design.md §9.2](../high-level-design/high-level-design.md#92-reliability-patterns), HLD-ADR-005 … 009 |
-| **Decision records** | [LLD-ADR-001 … 006, 009, 010](adr/README.md) |
+| **Decision records** | [LLD-ADR-001 … 006, 009 … 011, 015](adr/README.md) |
 
 ## 1. Problem and scope
 
@@ -183,7 +183,7 @@ flowchart LR
 
 | Queue | Arguments |
 |---|---|
-| Consumer queue | `x-queue-type=quorum` |
+| Consumer queue | `x-queue-type=quorum`, `x-dead-letter-exchange=""`, `x-dead-letter-routing-key=<queue>.dlq` ([LLD-ADR-015](adr/LLD-ADR-015-consumer-queue-dlx.md)) |
 | Retry queue (`1s`, `5s`, `30s`, `2m`) | `x-queue-type=quorum`, `x-message-ttl=<delay ms>`, `x-dead-letter-exchange=""`, `x-dead-letter-routing-key=<consumer queue>` |
 | DLQ | `x-queue-type=quorum`, no TTL |
 
@@ -230,7 +230,7 @@ The consumer host uses manual ACK with a bounded prefetch.
 5. 0 rows inserted → **duplicate**: `COMMIT`, ACK, stop.
 6. Invoke the handler in the same transaction. The handler may write outbox rows (§7.1).
 7. `COMMIT`, then ACK. Done.
-8. On exception: `ROLLBACK`, then classify. **Exception:** if `BEGIN`, `COMMIT` or the inbox insert (step 4) failed because the service's own PostgreSQL can't be reached, NACK the delivery with requeue and do **not** count an attempt; stop consuming, probe the database with `SELECT 1` every 1 s, and resume consuming when the probe succeeds ([HLD-ADR-019](../high-level-design/adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md)). The pause is per process and covers consumers only; the outbox relay (§7.2) keeps its own loop. Every other failure is classified as follows:
+8. On exception: `ROLLBACK`, then classify. **Exception:** if `BEGIN`, `COMMIT` or the inbox insert (step 4) failed because the service's own PostgreSQL can't be reached, NACK the delivery with requeue and do **not** count an attempt; stop consuming, probe the database with `SELECT 1` every 1 s, and resume consuming when the probe succeeds ([HLD-ADR-019](../high-level-design/adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md)). The pause is per consumer queue (each queue pauses on its own outage and probes on its own) and covers consumers only; the outbox relay (§7.2) keeps its own loop. Every other failure is classified as follows:
    - **Permanent** (thrown as a permanent failure by the handler, unknown message type, invalid payload): publish to `<queue>.dlq` with headers `x-failure-reason`, `x-failed-at`; ACK the original.
    - **Transient** (anything else): if `attempt < 5`, publish to `<queue>.retry.<delay>` with `x-attempt = attempt + 1`, where delay = `1s`, `5s`, `30s`, `2m` for attempts 1, 2, 3, 4; ACK the original. If `attempt = 5`, publish to the DLQ as above; ACK the original.
 
