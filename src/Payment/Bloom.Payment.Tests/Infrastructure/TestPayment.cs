@@ -2,10 +2,12 @@ using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
 using Bloom.Payment.Stripe;
 using Bloom.Payment.Worker;
+using System.Data.Common;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -25,6 +27,32 @@ public sealed class TestPaymentOptions
 
     /// <summary>Config keys (for example <c>Payment:StorefrontBaseUrl</c>) that replace the defaults of <see cref="TestPayment.DefaultConfig"/>.</summary>
     public Dictionary<string, string?> Config { get; } = [];
+}
+
+/// <summary>Counts the EF transactions started and not yet committed or rolled back (the app uses the async API only).</summary>
+public sealed class TransactionWatch : DbTransactionInterceptor
+{
+    private int _open;
+
+    public int Open => Volatile.Read(ref _open);
+
+    public override ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData eventData, DbTransaction result, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref _open);
+        return new(result);
+    }
+
+    public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken ct = default)
+    {
+        Interlocked.Decrement(ref _open);
+        return Task.CompletedTask;
+    }
+
+    public override Task TransactionRolledBackAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken ct = default)
+    {
+        Interlocked.Decrement(ref _open);
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>The payment app built through <see cref="PaymentApp.Build"/> on <c>TestServer</c> (plan R1), on its own database (plan R16).</summary>
@@ -51,6 +79,9 @@ public sealed class TestPayment : IAsyncDisposable
 
     public required LogCapture Logs { get; init; }
 
+    /// <summary>The EF transactions currently open in this host.</summary>
+    public required TransactionWatch Transactions { get; init; }
+
     /// <summary>The Stripe double behind the app's real <see cref="StripeClient"/>; one per host (unless shared through <see cref="TestPaymentOptions.Stripe"/>), on the test clock.</summary>
     public required FakeStripe Stripe { get; init; }
 
@@ -68,6 +99,7 @@ public sealed class TestPayment : IAsyncDisposable
         // PostgreSQL keeps microseconds; Linux clocks have 100 ns ticks
         var clock = new FakeTimeProvider(new DateTimeOffset(DateTime.UtcNow.Ticks / 10 * 10, TimeSpan.Zero));
         var logs = new LogCapture();
+        var transactions = new TransactionWatch();
         var stripe = options.Stripe ?? new FakeStripe(clock);
 
         var config = DefaultConfig(connectionString, containers.RabbitMqUri);
@@ -80,6 +112,7 @@ public sealed class TestPayment : IAsyncDisposable
             b.Configuration.AddInMemoryCollection(config);
             b.Services.AddSingleton<TimeProvider>(clock); // registered first, so the app's TryAdd keeps it
             b.Services.AddSingleton<ILoggerProvider>(logs);
+            b.Services.ConfigureDbContext<PaymentDbContext>(o => o.AddInterceptors(transactions));
             b.Services.AddHttpClient<IPaymentProvider, StripeClient>().ConfigurePrimaryHttpMessageHandler(() => stripe); // the app's own registration adds the rest
         });
         if (fresh)
@@ -94,6 +127,7 @@ public sealed class TestPayment : IAsyncDisposable
             Http = app.GetTestClient(),
             Clock = clock,
             Logs = logs,
+            Transactions = transactions,
             Stripe = stripe,
             ConnectionString = connectionString,
         };
@@ -141,6 +175,20 @@ public sealed class TestPayment : IAsyncDisposable
     {
         await using var db = NewDb();
         await db.Database.ExecuteSqlAsync(sql, Ct);
+    }
+
+    /// <summary>Sessions of this database waiting for a lock, so a test can tell a second transaction is queued behind the first.</summary>
+    public async Task<int> LockWaitersAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()").SingleAsync(Ct);
+    }
+
+    /// <summary>Sessions of this database that hold an open transaction and are not running a statement (for example awaiting a Stripe answer).</summary>
+    public async Task<int> IdleTransactionsAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM pg_stat_activity WHERE state = 'idle in transaction' AND datname = current_database()").SingleAsync(Ct);
     }
 
     /// <summary>One pass of the provider executor.</summary>

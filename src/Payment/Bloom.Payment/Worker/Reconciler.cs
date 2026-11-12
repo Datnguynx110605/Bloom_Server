@@ -13,6 +13,8 @@ namespace Bloom.Payment.Worker;
 /// </summary>
 public sealed class Reconciler(IServiceScopeFactory scopes, TimeProvider clock, PaymentMetrics metrics, ILogger<Reconciler> logger) : BackgroundService
 {
+    private const int Batch = 100;
+
     private static readonly string[] ClosedDisputes = ["won", "lost", "warning_closed"];
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -44,38 +46,41 @@ public sealed class Reconciler(IServiceScopeFactory scopes, TimeProvider clock, 
             var paymentCutoff = now.AddMinutes(-15);
             var refundCutoff = now.AddMinutes(-10);
             payments = (await db.Payments.AsNoTracking().Where(p => p.Status == PaymentStatuses.Open && p.CreatedAt < paymentCutoff && p.StripeSessionId != null)
-                .OrderBy(p => p.CreatedAt).Select(p => new { p.Id, p.StripeSessionId }).ToListAsync(ct)).Select(p => (p.Id, p.StripeSessionId!)).ToList();
+                .OrderBy(p => p.CreatedAt).Take(Batch).Select(p => new { p.Id, p.StripeSessionId }).ToListAsync(ct)).Select(p => (p.Id, p.StripeSessionId!)).ToList();
             refunds = (await db.Refunds.AsNoTracking().Where(r => r.Status == RefundStatuses.Submitted && r.UpdatedAt < refundCutoff && r.StripeRefundId != null)
-                .OrderBy(r => r.UpdatedAt).Select(r => new { r.Id, r.StripeRefundId }).ToListAsync(ct)).Select(r => (r.Id, r.StripeRefundId!)).ToList();
+                .OrderBy(r => r.UpdatedAt).Take(Batch).Select(r => new { r.Id, r.StripeRefundId }).ToListAsync(ct)).Select(r => (r.Id, r.StripeRefundId!)).ToList();
             open = await db.Disputes.CountAsync(d => !ClosedDisputes.Contains(d.Status), ct);
         }
 
         foreach (var (id, sessionId) in payments)
-            await FixAsync($"payment {id}", async (provider, transitions, token) =>
-                await transitions.ApplySessionAsync(id, await provider.GetSessionAsync(sessionId, token), token), ct);
+            await FixAsync($"payment {id}", (provider, token) => provider.GetSessionAsync(sessionId, token), async (transitions, session, token) =>
+                await transitions.ApplySessionAsync(id, session, token), ct);
         foreach (var (id, stripeRefundId) in refunds)
-            await FixAsync($"refund {id}", async (provider, transitions, token) =>
-            {
-                var refund = await provider.GetRefundAsync(stripeRefundId, token);
-                return await transitions.ApplyRefundAsync(id, refund.Status, refund.Id, refund.FailureReason, token)
+            await FixAsync($"refund {id}", (provider, token) => provider.GetRefundAsync(stripeRefundId, token), async (transitions, refund, token) =>
+                await transitions.ApplyRefundAsync(id, refund.Status, refund.Id, refund.FailureReason, token)
                     ? refund.Status == "succeeded" ? "refund_succeeded" : "refund_failed"
-                    : null;
-            }, ct);
+                    : null, ct);
 
         metrics.SetDisputesOpen(open);
     }
 
-    /// <summary>One record: Stripe call first (no row is locked yet), then the transition in its own transaction. <paramref name="apply"/> returns the fix kind, or null when nothing changed.</summary>
-    private async Task FixAsync(string record, Func<IPaymentProvider, Transitions, CancellationToken, Task<string?>> apply, CancellationToken ct)
+    /// <summary>
+    /// One record: <paramref name="fetch"/> asks Stripe first, with no transaction open (P-5), then <paramref name="apply"/> runs in its own transaction. The transitions lock the row and guard on its
+    /// current status, so a row a webhook moved meanwhile is a no-op. <paramref name="apply"/> returns the fix kind, or null when nothing changed.
+    /// </summary>
+    private async Task FixAsync<T>(string record, Func<IPaymentProvider, CancellationToken, Task<T>> fetch, Func<Transitions, T, CancellationToken, Task<string?>> apply, CancellationToken ct)
     {
         try
         {
             await using var scope = scopes.CreateAsyncScope();
+            var stripe = await fetch(scope.ServiceProvider.GetRequiredService<IPaymentProvider>(), ct);
             var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
             await using var tx = await db.Database.BeginTransactionAsync(ct);
-            var kind = await apply(scope.ServiceProvider.GetRequiredService<IPaymentProvider>(), scope.ServiceProvider.GetRequiredService<Transitions>(), ct);
+            var transitions = scope.ServiceProvider.GetRequiredService<Transitions>();
+            var kind = await apply(transitions, stripe, ct);
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
+            transitions.Emit();
             if (kind is not null) metrics.ReconcileFix(kind);
         }
         catch (ProviderException e)

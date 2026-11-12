@@ -182,6 +182,83 @@ public class ReconcileTests(Containers containers)
     }
 
     [Fact]
+    public async Task P5_reconciler_calls_stripe_outside_transaction()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (openOrder, _, sessionId) = await Seed.CreateAsync(t);
+        t.Stripe.Pay(sessionId);
+        var (orderId, _, _) = await Seed.PaidAsync(t, 1000);
+        t.Stripe.NextRefundStatus = "pending";
+        var refundId = Guid.NewGuid();
+        await Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, refundId, 400, "return", null));
+        await t.RunExecutorAsync();
+        t.Stripe.SetRefund((await t.RefundAsync(refundId)).StripeRefundId!, "succeeded");
+        t.Clock.Advance(StuckPayment);
+        var baseline = t.Transactions.Open; // earlier requests that disposed a transaction without committing it stay counted
+        var openTransactions = new List<int>(); // EF transactions open at each Stripe lookup (the driver only sends BEGIN with the first statement, so the database cannot tell)
+        t.Stripe.Before = path =>
+        {
+            if (path.StartsWith("v1/checkout/sessions/", StringComparison.Ordinal) || path.StartsWith("v1/refunds/", StringComparison.Ordinal))
+                openTransactions.Add(t.Transactions.Open - baseline);
+            return Task.CompletedTask;
+        };
+
+        await Reconcile(t);
+
+        Assert.Equal(2, openTransactions.Count); // one session lookup and one refund lookup
+        Assert.All(openTransactions, n => Assert.Equal(0, n));
+        Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(refundId)).Status);
+        Assert.Equal(PaymentStatuses.Succeeded, (await t.PaymentByOrderAsync(openOrder)).Status);
+    }
+
+    [Fact]
+    public async Task P5_row_changed_during_the_stripe_call_is_a_no_op()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (orderId, response, sessionId) = await Seed.CreateAsync(t);
+        var paymentId = Guid.Parse(response.PaymentId);
+        var piId = t.Stripe.Pay(sessionId);
+        t.Clock.Advance(StuckPayment);
+        t.Stripe.Before = async path =>
+        {
+            if (!path.StartsWith("v1/checkout/sessions/", StringComparison.Ordinal)) return;
+            t.Stripe.Before = null;
+            using var posted = await PostCompleted(t, paymentId, orderId, sessionId, piId); // no row is locked during the call, so the webhook settles it first
+            posted.EnsureSuccessStatusCode();
+        };
+
+        await Reconcile(t);
+
+        Assert.Single(await Succeeded(t));
+        Assert.Equal(0, metrics.Sum("reconcile_fixes_total"));
+        Assert.Equal(0, t.ErrorLogs);
+    }
+
+    [Fact]
+    public async Task P5_reconciler_batch_cap_100()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var created = t.Clock.GetUtcNow();
+        await using (var db = t.NewDb())
+        {
+            for (var i = 0; i < 101; i++)
+                db.Payments.Add(new PaymentRow
+                {
+                    Id = Guid.NewGuid(), OrderId = Guid.NewGuid(), OrderNumber = $"BLM-{i}", AccountId = Guid.NewGuid(), AmountCents = 1000, Currency = "usd", Status = PaymentStatuses.Open,
+                    StripeSessionId = $"cs_cap_{i}", CreatedAt = created.AddSeconds(i), UpdatedAt = created,
+                });
+            await db.SaveChangesAsync(Ct);
+        }
+        t.Clock.Advance(StuckPayment + TimeSpan.FromSeconds(101));
+
+        await Reconcile(t); // the fake has none of these sessions, so each lookup is a skipped warning
+
+        Assert.Equal(100, t.Stripe.Count("v1/checkout/sessions/"));
+        Assert.DoesNotContain(t.Stripe.Requests, r => r.Path.EndsWith("cs_cap_100", StringComparison.Ordinal)); // oldest first: the newest waits for the next pass
+    }
+
+    [Fact]
     public async Task A_stripe_error_skips_one_record()
     {
         await using var t = await TestPayment.StartAsync(containers);

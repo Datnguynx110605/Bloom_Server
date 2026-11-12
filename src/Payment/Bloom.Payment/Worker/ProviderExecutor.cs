@@ -11,8 +11,6 @@ namespace Bloom.Payment.Worker;
 /// </summary>
 public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider clock, ILogger<ProviderExecutor> logger) : BackgroundService
 {
-    // Retry delay after transient failure n (1-based); the 5th failure fails the refund (spec §7).
-    internal static readonly TimeSpan[] Backoff = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
     private const int MaxAttempts = 5;
     private const int Batch = 50;
 
@@ -78,6 +76,7 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
             }
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
+            transitions.Emit();
         }
         catch (ProviderException e)
         {
@@ -119,6 +118,7 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
             }
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
+            transitions.Emit();
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
@@ -132,7 +132,7 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
     private async Task FailAsync(RefundRow refund, DateTimeOffset now, Exception e, CancellationToken ct)
     {
         var n = refund.Attempts + 1;
-        var next = now + Backoff[Math.Min(n, Backoff.Length) - 1];
+        var next = now + Backoff.Schedule[Math.Min(n, Backoff.Schedule.Length) - 1];
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
@@ -141,13 +141,16 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
             UPDATE refunds SET attempts = {n}, next_attempt_at = {next}, updated_at = {now}
             WHERE id = {refund.Id} AND status = {RefundStatuses.Pending}
             """, ct) == 1;
+        var transitions = scope.ServiceProvider.GetRequiredService<Transitions>();
         if (pending && n >= MaxAttempts)
         {
-            await scope.ServiceProvider.GetRequiredService<Transitions>().ApplyRefundAsync(refund.Id, "failed", null, ProviderException.Unavailable, ct);
+            await transitions.ApplyRefundAsync(refund.Id, "failed", null, ProviderException.Unavailable, ct);
             await db.SaveChangesAsync(ct);
         }
         await tx.CommitAsync(ct);
+        transitions.Emit();
+        if (!pending) return; // nothing was rescheduled or failed, so there is nothing to log
         if (n < MaxAttempts) logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); retrying at {NextAttemptAt}", refund.Id, n, next);
-        else if (pending) logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); giving up", refund.Id, n);
+        else logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); giving up", refund.Id, n);
     }
 }

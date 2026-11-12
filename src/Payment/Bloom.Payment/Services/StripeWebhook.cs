@@ -80,6 +80,7 @@ public static class StripeWebhook
                 if (obj.ValueKind == JsonValueKind.Object) await ApplyAsync(type, obj, created, db, transitions, outbox, logger, ct);
                 await db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
+                transitions.Emit();
 
                 metrics.Webhook(type, "processed");
                 metrics.WebhookLag((clock.GetUtcNow() - DateTimeOffset.FromUnixTimeSeconds(created)).TotalSeconds);

@@ -13,6 +13,15 @@ namespace Bloom.Payment.Domain;
 /// </summary>
 public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimeProvider clock, PaymentMetrics metrics, ILogger<Transitions> logger)
 {
+    private readonly List<Action> _afterCommit = [];
+
+    /// <summary>Records the metrics and error logs of the transitions made so far (P-4). Call it after the caller's commit: a rolled-back transition leaves no trace.</summary>
+    public void Emit()
+    {
+        foreach (var action in _afterCommit) action();
+        _afterCommit.Clear();
+    }
+
     /// <summary>Any status but <c>succeeded</c> → <c>succeeded</c>: money was taken, so an <c>expired</c> or <c>canceled</c> payment is recorded too. False when already <c>succeeded</c> or unknown.</summary>
     public async Task<bool> SucceedAsync(Guid paymentId, string paymentIntentId, CancellationToken ct)
     {
@@ -30,7 +39,8 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
         if (moved is null) return false;
 
         outbox.PublishEvent(PaymentMessages.Succeeded, new PaymentSucceededV1(moved.OrderId, paymentId, moved.AmountCents, now));
-        metrics.Succeeded(moved.PriorStatus is PaymentStatuses.Expired or PaymentStatuses.Canceled || moved.PriorCancelRequested);
+        var late = moved.PriorStatus is PaymentStatuses.Expired or PaymentStatuses.Canceled || moved.PriorCancelRequested;
+        _afterCommit.Add(() => metrics.Succeeded(late));
         return true;
     }
 
@@ -81,13 +91,13 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
         if (target is null)
         {
             // D24: Stripe has the refund, so it is never created again; the webhook and the reconciler settle it.
-            logger.LogError("Stripe reports refund {RefundId} of order {OrderId} in the unknown status {Status}; submitted", refundId, refund.OrderId, stripeStatus);
+            _afterCommit.Add(() => logger.LogError("Stripe reports refund {RefundId} of order {OrderId} in the unknown status {Status}; submitted", refundId, refund.OrderId, stripeStatus));
             target = RefundStatuses.Submitted;
         }
         if (refund.Status is RefundStatuses.Succeeded or RefundStatuses.Failed)
         {
             if (target != RefundStatuses.Submitted && target != refund.Status)
-                logger.LogError("Stripe reports refund {RefundId} of order {OrderId} as {Status}, but it is already {Final}; unchanged", refundId, refund.OrderId, stripeStatus, refund.Status);
+                _afterCommit.Add(() => logger.LogError("Stripe reports refund {RefundId} of order {OrderId} as {Status}, but it is already {Final}; unchanged", refundId, refund.OrderId, stripeStatus, refund.Status));
             return false;
         }
         if (target == RefundStatuses.Submitted && refund.Status != RefundStatuses.Pending) return false;
@@ -111,9 +121,10 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
                 """, ct) != 1)
                 throw new InvalidOperationException($"Payment {refund.PaymentId} of refund {refundId} is missing."); // the foreign key rules this out
             outbox.PublishEvent(PaymentMessages.RefundFailed, new RefundFailedV1(refund.OrderId, refundId, reason!));
-            logger.LogError("Refund {RefundId} of order {OrderId} failed: {Reason}; {Amount} cents released", refundId, refund.OrderId, reason, refund.AmountCents);
+            _afterCommit.Add(() => logger.LogError("Refund {RefundId} of order {OrderId} failed: {Reason}; {Amount} cents released", refundId, refund.OrderId, reason, refund.AmountCents));
         }
-        metrics.Refund(target);
+        var applied = target;
+        _afterCommit.Add(() => metrics.Refund(applied));
         return true;
     }
 

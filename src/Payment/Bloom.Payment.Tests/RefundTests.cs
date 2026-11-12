@@ -36,12 +36,6 @@ public class RefundTests(Containers containers)
     private static Task<HttpResponseMessage> Post(TestPayment t, string stripeRefundId, string status, Guid? refundId, string? failureReason = null, string? eventId = null) =>
         StripeEvents.PostAsync(t, StripeEvents.Json("refund.updated", StripeEvents.Refund(stripeRefundId, status, refundId, failureReason), t.Clock.GetUtcNow(), eventId));
 
-    private static async Task<bool> WaitingOnALockAsync(TestPayment t)
-    {
-        await using var db = t.NewDb();
-        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()").SingleAsync(Ct) > 0;
-    }
-
     [Fact]
     public async Task Refund_command_records_intent_and_executor_completes_it()
     {
@@ -378,7 +372,7 @@ public class RefundTests(Containers containers)
         {
             if (path != Refunds) return;
             webhook = Post(t, "re_test_1", "pending", command.RefundId);
-            await Poll.UntilAsync(() => WaitingOnALockAsync(t), 10, "the webhook waits for the executor's row lock");
+            await Poll.UntilAsync(async () => await t.LockWaitersAsync() > 0, 10, "the webhook waits for the executor's row lock");
         };
 
         await t.RunExecutorAsync(); // the 5th call fails, but the webhook gets the row first
@@ -392,6 +386,74 @@ public class RefundTests(Containers containers)
         Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Empty(await Failed(t));
         Assert.Empty(await Completed(t));
+    }
+
+    [Fact]
+    public async Task P1_no_retrying_log_when_guarded_update_hits_zero_rows()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, _, _) = await Seed.PaidAsync(t, 1000);
+        var command = Command(orderId, 400);
+        await Send(t, command);
+        t.Stripe.Fail(Refunds, 500);
+        Task<HttpResponseMessage>? webhook = null;
+        t.Stripe.Before = async path =>
+        {
+            if (path != Refunds) return;
+            webhook = Post(t, "re_test_1", "pending", command.RefundId);
+            await Poll.UntilAsync(async () => await t.LockWaitersAsync() > 0, 10, "the webhook waits for the executor's row lock");
+        };
+
+        await t.RunExecutorAsync(); // the 1st call fails, but the webhook submits the refund first: the guarded update hits 0 rows
+
+        Assert.NotNull(webhook);
+        using var response = await webhook;
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        var row = await t.RefundAsync(command.RefundId);
+        Assert.Equal((RefundStatuses.Submitted, 0), (row.Status, row.Attempts));
+        Assert.DoesNotContain(t.Logs.Entries, e => e.Contains("retrying at", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task P1_fifth_failure_log_has_exception()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, _, _) = await Seed.PaidAsync(t, 1000);
+        var command = Command(orderId, 400);
+        await Send(t, command);
+        t.Stripe.Fail(Refunds, 500, times: 5);
+        foreach (var delay in new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.Zero })
+        {
+            await t.RunExecutorAsync();
+            t.Clock.Advance(delay);
+        }
+
+        Assert.Equal(RefundStatuses.Failed, (await t.RefundAsync(command.RefundId)).Status);
+        var giveUp = Assert.Single(t.Logs.Entries, e => e.Contains("giving up", StringComparison.Ordinal));
+        Assert.Contains(nameof(ProviderException), giveUp);
+    }
+
+    [Fact]
+    public async Task P4_transition_metric_not_recorded_on_rollback()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (orderId, paymentId, _) = await Seed.PaidAsync(t, 1000);
+        t.Stripe.NextRefundStatus = "pending";
+        var command = Command(orderId, 400);
+        await Send(t, command);
+        await t.RunExecutorAsync();
+        var submitted = await t.RefundAsync(command.RefundId);
+        Assert.Equal(RefundStatuses.Submitted, submitted.Status);
+        await t.SqlAsync($"ALTER TABLE outbox_messages ADD CONSTRAINT ck_test_never CHECK (false) NOT VALID"); // the transition runs, then saving its event fails
+
+        using var failed = await Post(t, submitted.StripeRefundId!, "failed", command.RefundId, "lost_or_stolen_card");
+
+        Assert.Equal(System.Net.HttpStatusCode.InternalServerError, failed.StatusCode);
+        Assert.Equal(RefundStatuses.Submitted, (await t.RefundAsync(command.RefundId)).Status);
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
+        Assert.Equal(0, metrics.Sum("refunds_total", ("status", "failed")));
+        Assert.DoesNotContain(t.Logs.Entries, e => e.Contains("cents released", StringComparison.Ordinal));
     }
 
     [Fact]
