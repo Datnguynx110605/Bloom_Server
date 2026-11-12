@@ -133,6 +133,65 @@ public class SenderTests(Containers containers)
         Assert.Equal(EmailStatuses.Sent, (await RowAsync(t, id)).Status);
     }
 
+    /// <summary>A pending job that already failed twice, so its schedule step is 30 s (<c>Backoff[2]</c>).</summary>
+    private static async Task<Guid> JobAtThirtySecondStepAsync(TestNotification t)
+    {
+        var id = await Seed.JobAsync(t);
+        await t.SqlAsync($"UPDATE email_jobs SET attempts = 2 WHERE id = {id}");
+        return id;
+    }
+
+    [Theory, InlineData("120", 120), InlineData("10", 30)]
+    public async Task D39_429_with_retry_after_is_not_counted_and_waits_max(string retryAfter, int waitSeconds)
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        t.Resend.Fail(429, retryAfter: retryAfter);
+        var id = await JobAtThirtySecondStepAsync(t);
+
+        Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+
+        var row = await RowAsync(t, id);
+        Assert.Equal(EmailStatuses.Pending, row.Status);
+        Assert.Equal(2, row.Attempts);
+        Assert.Equal("http_429", row.LastError);
+        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(waitSeconds), row.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.Equal(0, t.ErrorLogs);
+    }
+
+    [Fact]
+    public async Task D39_429_without_header_uses_schedule_step()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        t.Resend.Fail(429);
+        var id = await JobAtThirtySecondStepAsync(t);
+
+        Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+
+        var row = await RowAsync(t, id);
+        Assert.Equal(EmailStatuses.Pending, row.Status);
+        Assert.Equal(2, row.Attempts);
+        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(30), row.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+    }
+
+    [Fact]
+    public async Task D39_429s_never_fail_the_job()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        t.Resend.Fail(429, times: 8);
+        var id = await Seed.JobAsync(t);
+        await t.SqlAsync($"UPDATE email_jobs SET attempts = 4 WHERE id = {id}"); // the next counted failure would end the job
+
+        for (var i = 0; i < 8; i++)
+        {
+            Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+            t.Clock.Advance(TimeSpan.FromMinutes(2));
+        }
+
+        var row = await RowAsync(t, id);
+        Assert.Equal(EmailStatuses.Pending, row.Status);
+        Assert.Equal(4, row.Attempts);
+    }
+
     [Fact]
     public async Task N09_invalid_address_fails_at_once()
     {

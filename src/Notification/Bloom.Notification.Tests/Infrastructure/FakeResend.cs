@@ -17,7 +17,7 @@ public sealed class FakeResend : HttpMessageHandler
     private readonly List<ResendRequest> _requests = [];
     private readonly List<string> _unexpected = [];
     private readonly Dictionary<string, string> _delivered = []; // idempotency key -> message id
-    private readonly Queue<(int Status, string? Name)> _failures = [];
+    private readonly Queue<(int Status, string? Name, string? RetryAfter)> _failures = [];
     private int _hangs, _count;
 
     public IReadOnlyList<ResendRequest> Requests { get { lock (_gate) return [.. _requests]; } }
@@ -31,11 +31,11 @@ public sealed class FakeResend : HttpMessageHandler
     /// <summary>Runs for every request after it is recorded and before it is served; failures and hangs come after.</summary>
     public Func<Task>? Before { get; set; }
 
-    /// <summary>The next <paramref name="times"/> requests answer <paramref name="status"/>, with Resend's error body <c>{name, message, statusCode}</c> when <paramref name="name"/> is set.</summary>
-    public void Fail(int status, string? name = null, int times = 1)
+    /// <summary>The next <paramref name="times"/> requests answer <paramref name="status"/>, with Resend's error body <c>{name, message, statusCode}</c> when <paramref name="name"/> is set and a <c>Retry-After</c> header of <paramref name="retryAfter"/> when given.</summary>
+    public void Fail(int status, string? name = null, int times = 1, string? retryAfter = null)
     {
         lock (_gate)
-            for (var i = 0; i < times; i++) _failures.Enqueue((status, name));
+            for (var i = 0; i < times; i++) _failures.Enqueue((status, name, retryAfter));
     }
 
     /// <summary>The next request never answers: it waits until the caller cancels (or times out).</summary>
@@ -61,7 +61,7 @@ public sealed class FakeResend : HttpMessageHandler
         if (Before is { } before) await before();
 
         bool hang, failed;
-        (int Status, string? Name) failure = default;
+        (int Status, string? Name, string? RetryAfter) failure = default;
         lock (_gate)
         {
             hang = _hangs > 0 && _hangs-- > 0;
@@ -72,7 +72,11 @@ public sealed class FakeResend : HttpMessageHandler
             await Task.Delay(Timeout.Infinite, ct); // ends with the caller's cancellation
         }
         if (failed)
-            return Reply((HttpStatusCode)failure.Status, failure.Name is null ? new { message = "failed", statusCode = failure.Status } : new { name = failure.Name, message = "failed", statusCode = failure.Status } as object);
+        {
+            var reply = Reply((HttpStatusCode)failure.Status, failure.Name is null ? new { message = "failed", statusCode = failure.Status } : new { name = failure.Name, message = "failed", statusCode = failure.Status } as object);
+            if (failure.RetryAfter is not null) reply.Headers.TryAddWithoutValidation("Retry-After", failure.RetryAfter);
+            return reply;
+        }
 
         lock (_gate)
         {

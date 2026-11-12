@@ -91,7 +91,7 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
         }
         catch (Exception)
         {
-            await RecordFailureAsync(db, job, transient: false, failure, ct);
+            await RecordFailureAsync(db, job, transient: false, failure, null, ct);
             return;
         }
 
@@ -103,7 +103,7 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
         }
         catch (EmailSendException e)
         {
-            await RecordFailureAsync(db, job, e.Transient, e.Reason, ct);
+            await RecordFailureAsync(db, job, e.Transient, e.Reason, e.RetryAfter, ct);
             return;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -112,7 +112,7 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
         }
         catch (Exception) // for example a FormatException from a malformed address: one bad job never breaks the batch
         {
-            await RecordFailureAsync(db, job, transient: true, "unexpected", ct);
+            await RecordFailureAsync(db, job, transient: true, "unexpected", null, ct);
             return;
         }
         finally
@@ -128,8 +128,18 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
         if (updated == 1) metrics.EventToEmail(job.Template, (sentAt - job.CreatedAt).TotalSeconds);
     }
 
-    private async Task RecordFailureAsync(NotificationDbContext db, EmailJobRow job, bool transient, string reason, CancellationToken ct)
+    private async Task RecordFailureAsync(NotificationDbContext db, EmailJobRow job, bool transient, string reason, TimeSpan? retryAfter, CancellationToken ct)
     {
+        if (retryAfter is { } asked)
+        {
+            // D39 (§6.2 step 4): a throttled send isn't counted; wait the longer of the step the next counted attempt would use and Retry-After. No cap on how often.
+            var step = Backoff[Math.Min(job.Attempts, Backoff.Length - 1)];
+            var at = clock.GetUtcNow() + (asked > step ? asked : step);
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE email_jobs SET next_attempt_at = {at}, last_error = {reason} WHERE id = {job.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {job.NextAttemptAt}
+                """, ct);
+            return;
+        }
         var attempts = job.Attempts + 1;
         if (transient && attempts < MaxAttempts)
         {

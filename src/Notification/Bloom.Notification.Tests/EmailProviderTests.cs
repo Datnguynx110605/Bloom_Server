@@ -52,6 +52,27 @@ public class EmailProviderTests(Containers containers)
     }
 
     [Fact]
+    public async Task D39_429_carries_retry_after_seconds_or_date()
+    {
+        await using var n = await TestNotification.StartAsync(containers);
+        n.Resend.Fail(429, retryAfter: "120");
+        n.Resend.Fail(429, retryAfter: n.Clock.GetUtcNow().AddSeconds(90).ToString("R"));
+        n.Resend.Fail(429, retryAfter: "soon");
+        n.Resend.Fail(429);
+        n.Resend.Fail(503, retryAfter: "120");
+        var provider = Provider(n);
+
+        async Task<EmailSendException> Fail() =>
+            await Assert.ThrowsAsync<EmailSendException>(() => provider.SendAsync(Message(Address()), "bloom:email:k", TestContext.Current.CancellationToken));
+
+        Assert.Equal(TimeSpan.FromSeconds(120), (await Fail()).RetryAfter);
+        Assert.InRange((await Fail()).RetryAfter!.Value.TotalSeconds, 88, 90); // an HTTP-date, counted from the app clock; the header has whole seconds
+        Assert.Equal(TimeSpan.Zero, (await Fail()).RetryAfter); // unparseable: as if absent
+        Assert.Equal(TimeSpan.Zero, (await Fail()).RetryAfter);
+        Assert.Null((await Fail()).RetryAfter); // only a 429 is throttled
+    }
+
+    [Fact]
     public async Task Resend_4xx_is_permanent_with_its_name()
     {
         await using var n = await TestNotification.StartAsync(containers);

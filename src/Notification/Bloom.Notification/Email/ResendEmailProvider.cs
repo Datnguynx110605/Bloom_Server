@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace Bloom.Notification.Email;
 
 /// <summary>Resend over <c>HttpClient</c> and <c>System.Text.Json</c> (spec §7): one <c>POST emails</c> per send. The client (base address, bearer key, 10 s timeout) is configured in <c>NotificationApp</c>.</summary>
-public sealed class ResendEmailProvider(HttpClient http, NotificationOptions options) : IEmailProvider
+public sealed class ResendEmailProvider(HttpClient http, NotificationOptions options, TimeProvider clock) : IEmailProvider
 {
     public async Task<string?> SendAsync(EmailMessage message, string idempotencyKey, CancellationToken ct)
     {
@@ -19,7 +19,7 @@ public sealed class ResendEmailProvider(HttpClient http, NotificationOptions opt
             request.Headers.Add("Idempotency-Key", idempotencyKey);
             using var response = await http.SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
-            if (!response.IsSuccessStatusCode) throw Failure(response.StatusCode, body);
+            if (!response.IsSuccessStatusCode) throw Failure(response, body);
             using var json = JsonDocument.Parse(body);
             return json.RootElement.GetProperty("id").GetString();
         }
@@ -38,10 +38,12 @@ public sealed class ResendEmailProvider(HttpClient http, NotificationOptions opt
         }
     }
 
-    private static EmailSendException Failure(HttpStatusCode status, string body)
+    private EmailSendException Failure(HttpResponseMessage response, string body)
     {
+        var status = response.StatusCode;
         var message = $"Resend answered {(int)status}.";
-        if ((int)status >= 500 || status == HttpStatusCode.TooManyRequests) return new(true, $"http_{(int)status}", message);
+        if (status == HttpStatusCode.TooManyRequests) return new(true, "http_429", message) { RetryAfter = RetryAfter(response) }; // D39: throttled, not a failure of the job
+        if ((int)status >= 500) return new(true, $"http_{(int)status}", message);
         string? name = null;
         try
         {
@@ -51,4 +53,8 @@ public sealed class ResendEmailProvider(HttpClient http, NotificationOptions opt
         catch (JsonException) { } // no readable error object: fall back to the status
         return new(false, string.IsNullOrEmpty(name) ? $"http_{(int)status}" : name, message);
     }
+
+    /// <summary><c>Retry-After</c> as delta-seconds or an HTTP-date (both parsed by <c>HttpClient</c>); absent or unparseable is zero, so the sender's schedule step applies.</summary>
+    private TimeSpan RetryAfter(HttpResponseMessage response) =>
+        response.Headers.RetryAfter is { } h ? h.Delta ?? (h.Date - clock.GetUtcNow()) ?? TimeSpan.Zero : TimeSpan.Zero;
 }

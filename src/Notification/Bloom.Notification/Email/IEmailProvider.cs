@@ -14,4 +14,6 @@ public sealed class EmailSendException(bool transient, string reason, string mes
 {
     public bool Transient { get; } = transient;
     public string Reason { get; } = reason;
+    /// <summary>Set only for a throttled send (a Resend <c>429</c>, D39): how long the provider asked to wait, <see cref="TimeSpan.Zero"/> when it gave no usable <c>Retry-After</c>. A throttled send is not counted as an attempt.</summary>
+    public TimeSpan? RetryAfter { get; init; }
 }
