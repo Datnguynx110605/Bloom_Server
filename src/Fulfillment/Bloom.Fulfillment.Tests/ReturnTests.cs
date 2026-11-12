@@ -25,7 +25,7 @@ public class ReturnTests(Containers containers)
     }
 
     private static Task<HttpResponseMessage> RequestAsync(TestFulfillment t, Guid orderId, TestCaller caller, params (int Line, int Qty)[] units) =>
-        t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId, units = units.Select(u => new { lineNo = u.Line, quantity = u.Qty }) }, caller);
+        t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId, units = units.Select(u => new { lineNo = u.Line, quantity = u.Qty }) }, caller, Guid.NewGuid());
 
     private static async Task<Shipment> ReturnShipmentAsync(TestFulfillment t, Guid returnId) =>
         await Seed.ShipmentAsync(t, (await Seed.ReturnRequestAsync(t, returnId)).ReturnShipmentId!.Value);
@@ -137,6 +137,36 @@ public class ReturnTests(Containers containers)
     }
 
     [Fact]
+    public async Task D28_request_return_replay_returns_same_request()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, _, customer) = await DeliveredAsync(t);
+        var key = Guid.NewGuid();
+        object body = new { orderId = order.OrderId, units = new[] { new { lineNo = 1, quantity = 1 } } };
+
+        using var first = await t.SendAsync(HttpMethod.Post, "/api/returns", body, customer, key);
+        using var second = await t.SendAsync(HttpMethod.Post, "/api/returns", body, customer, key);
+
+        Assert.Equal((await first.OkJsonAsync()).GetRawText(), (await second.OkJsonAsync()).GetRawText());
+        await using var db = t.NewDb();
+        Assert.Single(await db.ReturnRequests.AsNoTracking().Where(r => r.OrderId == order.OrderId).ToListAsync(Ct));
+        Assert.Single(await Outbox.PayloadsAsync<ReturnRequestedV1>(t, FulfillmentMessages.ReturnRequested));
+    }
+
+    [Fact]
+    public async Task D28_request_return_without_key_is_IDEMPOTENCY_KEY_REQUIRED()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, _, customer) = await DeliveredAsync(t);
+
+        using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 1, quantity = 1 } } }, customer);
+
+        await response.ExpectErrorAsync(400, "IDEMPOTENCY_KEY_REQUIRED");
+        await using var db = t.NewDb();
+        Assert.Empty(await db.ReturnRequests.AsNoTracking().Where(r => r.OrderId == order.OrderId).ToListAsync(Ct));
+    }
+
+    [Fact]
     public async Task Invalid_units_are_VALIDATION_FAILED()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
@@ -148,7 +178,7 @@ public class ReturnTests(Containers containers)
             using var response = await RequestAsync(t, order.OrderId, customer, units);
             await response.ExpectValidationAsync("units");
         }
-        using var badId = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = "nope", units = new[] { new { lineNo = 1, quantity = 1 } } }, customer);
+        using var badId = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = "nope", units = new[] { new { lineNo = 1, quantity = 1 } } }, customer, Guid.NewGuid());
         await badId.ExpectValidationAsync("order_id");
     }
 

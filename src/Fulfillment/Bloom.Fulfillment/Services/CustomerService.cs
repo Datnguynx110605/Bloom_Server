@@ -4,6 +4,7 @@ using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Errors;
 using Bloom.Fulfillment.V1;
+using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -14,25 +15,27 @@ using Shipment = Bloom.Fulfillment.Data.Shipment;
 namespace Bloom.Fulfillment.Services;
 
 /// <summary>05-fulfillment §3 component <c>Customer API</c> (returns). The caller's id is the order's <c>account_id</c>; anything that is not theirs is <c>NOT_FOUND</c> (spec §6).</summary>
-public sealed class CustomerService(FulfillmentDbContext db, OutboxWriter outbox, RefundEngine refunds, TimeProvider clock) : FulfillmentCustomer.FulfillmentCustomerBase
+public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard guard, OutboxWriter outbox, RefundEngine refunds, TimeProvider clock) : FulfillmentCustomer.FulfillmentCustomerBase
 {
     private static readonly TimeSpan ReturnWindow = TimeSpan.FromDays(14); // RET-R01, RET-R15
     private static readonly string[] Open =
         [ReturnStatuses.Requested, ReturnStatuses.LabelIssued, ReturnStatuses.InTransit, ReturnStatuses.Received, ReturnStatuses.Inspected];
 
     /// <summary>
-    /// §6.4 steps 1-5 under the order's <c>order_accounts</c> lock (it serializes the unit counts). A product request gets its units, its <c>return</c> shipment (<c>label_pending</c>) and <c>return-requested</c>.
+    /// <b>Idempotency-Key required</b> (D28, 00-reliability §7.4): the guard's one transaction. §6.4 steps 1-5 under the order's <c>order_accounts</c> lock (it serializes the unit counts). A product request gets its units, its <c>return</c> shipment (<c>label_pending</c>) and <c>return-requested</c>.
     /// A plan-only request (WAR-R06) is decided at once, with no label and no inspection: see <see cref="DecidePlansAsync"/>.
     /// </summary>
     public override async Task<V1.ReturnRequest> RequestReturn(RequestReturnRequest request, ServerCallContext context)
     {
         var caller = Caller.From(context).RequireCustomer();
         var orderId = Inputs.Id(request.OrderId, "order_id");
-        var ct = context.CancellationToken;
         if (request.Units.Count == 0 || request.Units.Any(u => u.Quantity <= 0) || request.Units.Select(u => u.LineNo).Distinct().Count() != request.Units.Count)
             throw FulfillmentErrors.Validation("units", "Give each line once with a quantity above 0.");
+        return await guard.ExecuteAsync(request, context, ct => RequestAsync(caller, orderId, request, ct));
+    }
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+    private async Task<V1.ReturnRequest> RequestAsync(Caller caller, Guid orderId, RequestReturnRequest request, CancellationToken ct)
+    {
         var account = await refunds.LockOrderAsync(orderId, ct);
         if (account.AccountId != caller.UserId) throw FulfillmentErrors.NotFound("The order");
         var now = clock.GetUtcNow();
@@ -75,8 +78,7 @@ public sealed class CustomerService(FulfillmentDbContext db, OutboxWriter outbox
         db.ReturnUnits.AddRange(units);
         outbox.PublishEvent(FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(orderId, returnId));
         if (planOnly) await DecidePlansAsync(account, returnId, lines, units, ct);
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        await db.SaveChangesAsync(ct); // the view below reads the rows; the guard commits
         return await Views.ReturnAsync(db, returnId, ct);
     }
 

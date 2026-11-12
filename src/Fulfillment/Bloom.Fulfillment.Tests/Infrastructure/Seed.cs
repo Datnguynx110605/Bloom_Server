@@ -149,7 +149,7 @@ public static class Seed
     /// <summary><c>RequestReturn</c> as <paramref name="customer"/> (status <c>requested</c>, label not yet bought).</summary>
     public static async Task<Guid> ReturnAsync(TestFulfillment t, Guid orderId, TestCaller customer, params (int LineNo, int Qty)[] units)
     {
-        using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId, units = units.Select(u => new { lineNo = u.LineNo, quantity = u.Qty }) }, customer);
+        using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId, units = units.Select(u => new { lineNo = u.LineNo, quantity = u.Qty }) }, customer, Guid.NewGuid());
         return Guid.Parse((await response.OkJsonAsync()).GetProperty("id").GetString()!);
     }
 

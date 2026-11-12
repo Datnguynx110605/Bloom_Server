@@ -179,7 +179,7 @@ public class RefundTests(Containers containers)
         Assert.Equal([(1, 1001L)], Lines(b)); // shipping is in the amount, not in the lines
         Assert.True(await ShippingRefundedAsync(t, order.OrderId));
 
-        using var planOnly = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity = 1 } } }, customer);
+        using var planOnly = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity = 1 } } }, customer, Guid.NewGuid());
         await planOnly.OkJsonAsync();
         var commands = await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment);
         Assert.Equal([1001L, 2501L, 9900L], commands.Select(c => c.AmountCents)); // no second fee
@@ -360,7 +360,7 @@ public class RefundTests(Containers containers)
 
         async Task<JsonElement> RequestPlansAsync(int quantity)
         {
-            using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity } } }, customer);
+            using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity } } }, customer, Guid.NewGuid());
             return await response.OkJsonAsync();
         }
 
@@ -393,7 +393,7 @@ public class RefundTests(Containers containers)
         var again = await RequestPlansAsync(1); // the last unit takes the rest of the line
         Assert.Equal(9900, Cents(again.GetProperty("units")[0], "refundCents"));
         Assert.Equal(CoverageStatuses.Cancelled, (await CoverageAsync(t, serials[0])).Status);
-        using var more = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity = 1 } } }, customer);
+        using var more = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity = 1 } } }, customer, Guid.NewGuid());
         await more.ExpectErrorAsync(400, "RETURN_QUANTITY_EXCEEDED");
     }
 
@@ -404,7 +404,7 @@ public class RefundTests(Containers containers)
         var (order, _, customer) = await DeliveredAsync(t);
         t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromSeconds(1));
 
-        using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity = 1 } } }, customer);
+        using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity = 1 } } }, customer, Guid.NewGuid());
 
         await response.ExpectErrorAsync(400, "RETURN_WINDOW_CLOSED");
         Assert.Empty(await Outbox.PayloadsAsync<RefundPaymentV1>(t, PaymentMessages.RefundPayment));
