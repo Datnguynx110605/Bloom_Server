@@ -4,6 +4,7 @@ using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Order.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Bloom.Inventory.Tests;
 
@@ -277,5 +278,73 @@ public class ReleaseTests(Containers containers)
         Assert.Equal((5, 0), ((await Seed.ItemAsync(t, high))!.OnHand, (await Seed.ItemAsync(t, high))!.Reserved));
         var lowItem = (await Seed.ItemAsync(t, low))!; // the reship's commitment came back
         Assert.Equal((5, 0, 0), (lowItem.OnHand, lowItem.Reserved, lowItem.Committed));
+    }
+
+    /// <summary>A release blocked after its insert: holds the order's lock and an uncommitted tombstone until <c>COMMIT</c> on the returned connection.</summary>
+    private static async Task<NpgsqlConnection> HoldReleaseAsync(TestInventory t, Guid orderId)
+    {
+        var release = await SideDb.OpenAsync(t);
+        await release.ExecAsync($"BEGIN; SELECT pg_advisory_xact_lock({StockLocks.Key(orderId)}); INSERT INTO released_orders (order_id) VALUES ('{orderId}')");
+        return release;
+    }
+
+    /// <summary>Starts <paramref name="start"/> against a held release, waits until it queues on the order's lock, lets the release commit, and returns the call's task.</summary>
+    private static async Task<Task> RaceReleaseAsync(TestInventory t, Guid orderId, Func<Task> start)
+    {
+        await using var release = await HoldReleaseAsync(t, orderId);
+        await using var probe = await SideDb.OpenAsync(t);
+        var running = start();
+        try { await probe.WaitForAsync(SideDb.WaitersOn(StockLocks.Key(orderId)), 1, "the call waits for the order's lock"); }
+        finally { await release.ExecAsync("COMMIT"); }
+        return running;
+    }
+
+    [Fact]
+    public async Task Reserve_racing_release_waits_and_gets_order_released()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var orderId = Guid.CreateVersion7();
+
+        await Rpc.FailsAsync(await RaceReleaseAsync(t, orderId, () => Seed.ReserveAsync(t, orderId, (sku, 2))), "ORDER_RELEASED");
+
+        Assert.Empty(await Seed.AllocationsAsync(t, orderId));
+        Assert.Equal(0, (await Seed.ItemAsync(t, sku))!.Reserved);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Paid_racing_release_waits_and_creates_nothing(bool preorder)
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var orderId = Guid.CreateVersion7();
+        if (!preorder) await Seed.ReserveAsync(t, orderId, (sku, 2)); // a regular paid would commit this if it ran past the tombstone check unlocked
+
+        await await RaceReleaseAsync(t, orderId, () => Seed.PaidAsync(t, orderId, preorder ? Guid.CreateVersion7() : null, (sku, 2)));
+
+        var allocations = await Seed.AllocationsAsync(t, orderId);
+        Assert.All(allocations, a => Assert.Equal(AllocationStatuses.Reserved, a.Status));
+        Assert.Equal(preorder ? 0 : 1, allocations.Count);
+        var item = (await Seed.ItemAsync(t, sku))!;
+        Assert.Equal((5, preorder ? 0 : 2, 0), (item.OnHand, item.Reserved, item.Committed));
+    }
+
+    [Fact]
+    public async Task Reserve_replay_after_release_is_order_released()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var orderId = Guid.CreateVersion7();
+        await Seed.ReserveAsync(t, orderId, (sku, 2));
+        await Seed.ReleaseAsync(t, orderId);
+
+        await Rpc.FailsAsync(t.Stock.ReserveStockAsync(new() { OrderId = orderId.ToString(), Lines = { Seed.Line(sku, 2) } }, cancellationToken: Ct), "ORDER_RELEASED");
+
+        Assert.Equal(AllocationStatuses.Released, Assert.Single(await Seed.AllocationsAsync(t, orderId)).Status); // the allocation is still there; the answer is not "ok"
     }
 }

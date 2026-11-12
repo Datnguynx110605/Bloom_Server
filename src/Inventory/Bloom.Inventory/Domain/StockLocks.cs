@@ -14,6 +14,12 @@ public sealed class StockLocks(InventoryDbContext db)
     }
 
     /// <summary>
+    /// The per-order lock (IR-05, 02-inventory §7): taken first by the release consumer, <c>ReserveStock</c> and <c>order.paid</c>, before the tombstone check and any SKU lock.
+    /// </summary>
+    // ponytail: the order id folds to the same single-bigint key space as the SKU keys; a 2^-64 collision only over-serializes and Postgres' deadlock detector covers a crossed pair. Add a namespace int if it ever matters.
+    public Task LockOrderAsync(Guid orderId, CancellationToken ct) => db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock({Key(orderId)})", ct);
+
+    /// <summary>
     /// Locks the SKUs until the transaction ends: first one transaction-scoped advisory lock per SKU (ascending key order), so callers serialize
     /// even before the SKU's first receipt has a committed <c>stock_items</c> row to lock; then the rows themselves. Returns the rows that exist (untracked).
     /// </summary>
