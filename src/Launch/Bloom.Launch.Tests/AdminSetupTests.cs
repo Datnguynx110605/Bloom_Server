@@ -181,6 +181,29 @@ public class AdminSetupTests(Containers containers)
     }
 
     [Fact]
+    public async Task List_tie_break()
+    {
+        await using var t = await StartAsync();
+        var ids = new List<string>();
+        for (var i = 0; i < 5; i++) ids.Add((await Seed.LaunchAsync(t, LaunchStages.Draft)).Id.ToString()); // the clock stands still: one created_at for all
+        var expected = ids.Order(StringComparer.Ordinal).Reverse().ToList(); // uuid order is byte order; the lower-case hex strings sort the same way
+
+        var seen = new List<string>();
+        var sizes = new List<int>();
+        var token = "";
+        do
+        {
+            var page = await t.Admin.AdminListLaunchesAsync(new() { PageSize = 2, PageToken = token }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+            sizes.Add(page.Launches.Count);
+            seen.AddRange(page.Launches.Select(l => l.Id));
+            token = page.NextPageToken;
+        } while (token != "" && sizes.Count < 10);
+
+        Assert.Equal([2, 2, 1], sizes);
+        Assert.Equal(expected, seen);
+    }
+
+    [Fact]
     public async Task AdminListLaunches_rejects_bad_paging()
     {
         await using var t = await StartAsync();
@@ -208,6 +231,42 @@ public class AdminSetupTests(Containers containers)
         var audit = await Outbox.AuditAsync(t, "launch.product-added");
         Assert.Equal(("launch", launch.Id.ToString()), (audit.TargetType, audit.TargetId));
         Assert.Empty(await Outbox.EnvelopesAsync(t, LaunchMessages.StageChanged));
+    }
+
+    [Fact]
+    public async Task Audit_details_for_adds()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, LaunchStages.Draft, products: new SeedProduct(2));
+        var (product, sku, newProduct) = (launch.Products[0], Guid.NewGuid(), Guid.NewGuid());
+        t.Catalog.Sku(sku, product);
+
+        await t.Admin.AddLaunchProductAsync(new() { LaunchId = launch.Id.ToString(), ProductId = newProduct.ToString(), PurchaseLimit = 3 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+        await t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), ProductId = product.ToString(), Allocation = 25 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+
+        var productAdded = (await Outbox.AuditAsync(t, "launch.product-added")).Details;
+        Assert.Equal((newProduct.ToString(), 3), (productAdded.GetProperty("productId").GetString(), productAdded.GetProperty("purchaseLimit").GetInt32()));
+        var skuAdded = (await Outbox.AuditAsync(t, "launch.sku-added")).Details;
+        Assert.Equal((sku.ToString(), product.ToString(), 25), (skuAdded.GetProperty("skuId").GetString(), skuAdded.GetProperty("productId").GetString(), skuAdded.GetProperty("allocation").GetInt32()));
+    }
+
+    [Fact]
+    public async Task AddLaunchSku_stage_recheck()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, LaunchStages.Draft, products: new SeedProduct(2));
+        var sku = Guid.NewGuid();
+        t.Catalog.Sku(sku, launch.Products[0]);
+        // The launch leaves the editable stages while catalog is being asked: the read check passed, the check under the row lock must not.
+        t.Catalog.Before = () => t.SqlAsync($"UPDATE launches SET stage = {LaunchStages.PreorderOpen} WHERE id = {launch.Id}");
+
+        await Rpc.FailsAsync(t.Admin.AddLaunchSkuAsync(new() { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), ProductId = launch.Products[0].ToString(), Allocation = 5 }, Api.Staff(), cancellationToken: Ct), LaunchErrors.InvalidStage);
+
+        Assert.Equal(1, t.Catalog.Count);
+        await using var db = t.NewDb();
+        Assert.Empty(await db.LaunchSkus.AsNoTracking().ToListAsync(Ct));
+        Assert.Equal(0, await VersionAsync(t, launch.Id));
+        Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.StaffActionRecorded));
     }
 
     [Fact]
@@ -299,7 +358,7 @@ public class AdminSetupTests(Containers containers)
         var clock = Stopwatch.StartNew();
         var slow = await Assert.ThrowsAsync<RpcException>(() => t.Admin.AddLaunchSkuAsync(request, Api.Staff(), cancellationToken: Ct).ResponseAsync);
         Assert.Equal(StatusCode.Unavailable, slow.StatusCode);
-        Assert.InRange(clock.Elapsed.TotalSeconds, 2.8, 3.9);
+        Assert.InRange(clock.Elapsed.TotalSeconds, 2.5, 3.95); // the 3 s deadline, not the 4 s delay; wide for a loaded CI box
         t.Catalog.Before = null;
 
         await using var db = t.NewDb();

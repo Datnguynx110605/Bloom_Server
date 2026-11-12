@@ -232,6 +232,7 @@ public class SettlementTests(Containers containers)
         await t.RunMonitorAsync();
 
         Assert.Equal(1, metrics.Latest("stuck_holds", ("launch", stuck.Id.ToString())));
+        Assert.False(metrics.Reported("stuck_holds", ("launch", fresh.Id.ToString()))); // 29 minutes is not stuck: the gauge has no value for it
         Assert.Equal(1, t.ErrorLogs);
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]", StringComparison.Ordinal) && e.Contains(stuck.Id.ToString()));
         Assert.DoesNotContain(t.Logs.Entries, e => e.Contains(fresh.Id.ToString()) && e.StartsWith("[Error]", StringComparison.Ordinal));

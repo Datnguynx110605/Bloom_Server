@@ -212,6 +212,18 @@ public sealed class CommandCounter : DbCommandInterceptor
         return base.ReaderExecuting(command, eventData, result);
     }
 
+    public override InterceptionResult<int> NonQueryExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
+    {
+        Interlocked.Increment(ref _count);
+        return base.NonQueryExecuting(command, eventData, result);
+    }
+
+    public override InterceptionResult<object> ScalarExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<object> result)
+    {
+        Interlocked.Increment(ref _count);
+        return base.ScalarExecuting(command, eventData, result);
+    }
+
     public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken ct = default)
     {
         Interlocked.Increment(ref _count);

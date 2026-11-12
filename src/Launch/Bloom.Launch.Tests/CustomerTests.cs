@@ -52,6 +52,38 @@ public class CustomerTests(Containers containers)
     }
 
     [Fact]
+    public async Task Join_and_status_over_http()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t);
+        var account = Guid.NewGuid();
+        var url = $"/api/launches/{launch.Id}/waiting-room";
+
+        async Task<JsonElement> SendAsync(HttpMethod method)
+        {
+            using var request = new HttpRequestMessage(method, url).WithCaller(account, "customer");
+            using var response = await t.Http.SendAsync(request, Ct);
+            var text = await response.Content.ReadAsStringAsync(Ct);
+            Assert.True(response.IsSuccessStatusCode, text);
+            return JsonDocument.Parse(text).RootElement.Clone();
+        }
+
+        var joined = await SendAsync(HttpMethod.Post);
+        Assert.Equal(("queued", 1), (joined.GetProperty("state").GetString(), joined.GetProperty("position").GetInt32()));
+        Assert.InRange(joined.GetProperty("pollAfterSeconds").GetInt32(), 4, 6);
+
+        await t.TickAsync(launch.Id);
+
+        var status = await SendAsync(HttpMethod.Get);
+        Assert.Equal("admitted", status.GetProperty("state").GetString());
+        Assert.NotEmpty(status.GetProperty("passToken").GetString()!);
+        Assert.Equal(JsonValueKind.String, status.GetProperty("passExpiresAt").ValueKind);
+
+        using var anonymous = await t.Http.GetAsync(url, Ct); // no caller headers
+        Assert.False(anonymous.IsSuccessStatusCode);
+    }
+
+    [Fact]
     public async Task Draft_and_unknown_launches_are_NOT_FOUND()
     {
         await using var t = await StartAsync();

@@ -5,6 +5,7 @@ using Bloom.Launch.WaitingRoom;
 using Bloom.Launch.Worker;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
 
 using static Bloom.Launch.Tests.WaitingRooms;
@@ -148,11 +149,14 @@ public class AdmissionTests(Containers containers)
         Assert.Equal(1, metrics.Sum("admission_ticks_total", ("launch", launch.Id.ToString("D")), ("result", "skipped_lock")));
         Assert.Equal(5, (await t.TickAsync(launch.Id)).Admitted.Count);
 
+        var admittedInRounds = 0;
         for (var round = 0; round < 20; round++)
         {
             var results = await Task.WhenAll(t.TickAsync(launch.Id), t.TickAsync(launch.Id));
-            Assert.InRange(results.Sum(r => r.Admitted.Count), 0, 10);
-            Assert.InRange(await t.Redis.SortedSetLengthAsync(RedisKeys.Passes(launch.Id)), 0, 1000);
+            var admitted = results.Sum(r => r.Admitted.Count);
+            Assert.True(admitted <= 10, $"round {round} admitted {admitted}"); // at most the rate for each of the two ticks
+            admittedInRounds += admitted;
+            Assert.Equal(5 + admittedInRounds, await t.Redis.SortedSetLengthAsync(RedisKeys.Passes(launch.Id))); // every admitted account has its passes entry
         }
 
         // Nobody was popped without a pass key, and nobody was admitted twice.
@@ -166,8 +170,41 @@ public class AdmissionTests(Containers containers)
             if (queuedStill) inQueue++; else withPass++;
         }
         Assert.Equal(withPass, await t.Redis.SortedSetLengthAsync(RedisKeys.Passes(launch.Id)));
-        Assert.InRange(withPass, 5, 5 + 20 * 10);
+        Assert.Equal(5 + admittedInRounds, withPass);
         Assert.Equal(queued, inQueue + withPass);
+    }
+
+    [Fact]
+    public async Task Redis_failure_at_pop()
+    {
+        // A Redis user that may do everything but ZPOPMIN: the pacing key is set and the pop itself fails inside the script.
+        var user = $"nopop-{Guid.NewGuid():N}";
+        await containers.Redis.GetDatabase().ExecuteAsync("ACL", "SETUSER", user, "on", "nopass", "~*", "&*", "+@all", "-zpopmin");
+        try
+        {
+            await using var t = await TestLaunch.StartAsync(containers, o => o.Config["Launch:Redis"] = $"{containers.RedisConnectionString},user={user},password=x");
+            var redis = t.Services.GetRequiredService<IConnectionMultiplexer>();
+            await Poll.UntilAsync(() => Task.FromResult(redis.IsConnected), 10, "the app's Redis connection");
+            var launch = await Seed.LaunchAsync(t, rate: 3);
+            await QueueAsync(t, launch.Id, 5);
+
+            await Assert.ThrowsAnyAsync<RedisException>(() => t.TickAsync(launch.Id));
+
+            Assert.Equal(5, await t.Redis.SortedSetLengthAsync(RedisKeys.Queue(launch.Id)));
+            Assert.Equal(0, await t.Redis.SortedSetLengthAsync(RedisKeys.Passes(launch.Id)));
+            Assert.Equal(0, (await t.RowAsync(launch.Id)).Version);
+            Assert.Equal(0, t.ErrorLogs); // the tick throws to its caller; the worker's loop is what logs
+
+            await t.Redis.KeyDeleteAsync(RedisKeys.Tick(launch.Id));
+            await t.RunAdmissionAsync();
+
+            Assert.Equal(1, t.ErrorLogs);
+            Assert.Equal(5, await t.Redis.SortedSetLengthAsync(RedisKeys.Queue(launch.Id)));
+        }
+        finally
+        {
+            await containers.Redis.GetDatabase().ExecuteAsync("ACL", "DELUSER", user);
+        }
     }
 
     [Fact]

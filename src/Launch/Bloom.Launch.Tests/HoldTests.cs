@@ -9,6 +9,7 @@ using Bloom.Launch.Errors;
 using Bloom.Launch.WaitingRoom;
 using Bloom.Launch.Worker;
 using Bloom.Shared.Errors;
+using Google.Rpc;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -537,6 +538,39 @@ public class HoldTests(Containers containers)
         await NothingWrittenAsync(t, launch.Id, launch.Skus[0]);
     }
 
+    private static async Task<ErrorInfo?> TryHoldAsync(TestLaunch t, Guid launch, Guid sku)
+    {
+        var account = Guid.NewGuid();
+        try
+        {
+            await Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch, account), (sku, 1)));
+            return null;
+        }
+        catch (RpcException e)
+        {
+            return Rpc.Info(e);
+        }
+    }
+
+    [Fact]
+    public async Task Raising_allocation_between_two_waves_of_holds_is_exact()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, products: [new SeedProduct(1, 5)]);
+        var sku = launch.Skus[0];
+
+        var first = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => TryHoldAsync(t, launch.Id, sku)));
+        Assert.Equal(5, first.Count(r => r is null)); // the allocation, no more
+        await t.Admin.SetAllocationAsync(new() { LaunchId = launch.Id.ToString(), SkuId = sku.ToString(), Allocation = 8, Version = 0 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+        var second = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => TryHoldAsync(t, launch.Id, sku)));
+
+        Assert.Equal(3, second.Count(r => r is null)); // exactly the raise
+        Assert.All(first.Concat(second).Where(r => r is not null), r => Assert.Equal(LaunchErrors.SoldOut, r!.Reason));
+        Assert.Equal((8, 0), await Holds.SkuAsync(t, sku));
+        Assert.Equal(0, t.ErrorLogs);
+        await Holds.InvariantAsync(t, launch.Id);
+    }
+
     [Fact]
     public async Task Raising_allocation_while_holds_run_keeps_the_invariant()
     {
@@ -547,16 +581,7 @@ public class HoldTests(Containers containers)
         var holds = Enumerable.Range(0, 100).Select(async i =>
         {
             if (i == 20) await Task.Delay(5, Ct);
-            var account = Guid.NewGuid();
-            try
-            {
-                await Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (sku, 1)));
-                return null;
-            }
-            catch (RpcException e)
-            {
-                return Rpc.Info(e);
-            }
+            return await TryHoldAsync(t, launch.Id, sku);
         }).ToList();
         var raise = Task.Run(async () =>
         {
