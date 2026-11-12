@@ -167,6 +167,32 @@ public class PackingTests(Containers containers)
     }
 
     [Fact]
+    public async Task Forwards_user_type_and_role_headers()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, taskId, _) = await PackingTaskAsync(t);
+        var staff = TestCaller.Staff("warehouse");
+
+        using (var response = await t.SendAsync(HttpMethod.Post, Tasks($"/{taskId}/serials"), new { lineNo = 1, serial = "ABC1" }, staff)) await response.OkJsonAsync();
+
+        var call = Assert.Single(t.Inventory.Calls);
+        Assert.Equal((staff.Id.ToString("D"), "staff", "warehouse"), (call.UserId, call.UserType, call.Role));
+    }
+
+    [Fact]
+    public async Task Non_bloom_inventory_UNAVAILABLE_passes_through()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, taskId, _) = await PackingTaskAsync(t);
+        t.Inventory.Fail("AssignSerial", StatusCode.Unavailable, null); // a plain gRPC status: no bloom ErrorInfo
+
+        using var response = await t.SendAsync(HttpMethod.Post, Tasks($"/{taskId}/serials"), new { lineNo = 1, serial = "ABC1" }, Warehouse);
+
+        Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Empty(await RowsAsync(t, taskId));
+    }
+
+    [Fact]
     public async Task Scan_retry_after_lost_local_write_gives_one_row()
     {
         await using var t = await TestFulfillment.StartAsync(containers);

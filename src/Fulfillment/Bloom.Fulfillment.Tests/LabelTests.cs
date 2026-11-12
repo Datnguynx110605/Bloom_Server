@@ -350,6 +350,27 @@ public class LabelTests(Containers containers)
         Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1)); // after-call time + 1 s, not before-call time + 1 s
     }
 
+    [Fact]
+    public async Task Shippo_pagination_follows_next_and_stops()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var start = t.Clock.GetUtcNow();
+        for (var i = 0; i < 250; i++) t.Shippo.AddLabel($"bloom:{Guid.NewGuid()}", start.AddSeconds(i)); // 3 pages of 100, newest first
+        var shippo = t.Services.GetRequiredService<IShippo>();
+
+        var all = await shippo.ListLabelsAsync(start.AddDays(-1), Ct);
+
+        Assert.Equal(250, all.Count);
+        Assert.Equal(start.AddSeconds(249), all[0].CreatedAt); // newest first
+        Assert.Equal(3, t.Shippo.Calls("transactions/"));
+
+        var callsBefore = t.Shippo.Calls("transactions/");
+        var recent = await shippo.ListLabelsAsync(start.AddSeconds(100), Ct);
+
+        Assert.Equal(150, recent.Count);
+        Assert.Equal(2, t.Shippo.Calls("transactions/") - callsBefore); // an entry older than since ends the walk although the page had a next
+    }
+
     /// <summary>Blocks (synchronously: it runs inside the fake's handler) until some session waits for a lock, so the test really exercises the row-lock wait.</summary>
     internal static void WaitUntilSomeoneWaitsForALock(string connectionString)
     {

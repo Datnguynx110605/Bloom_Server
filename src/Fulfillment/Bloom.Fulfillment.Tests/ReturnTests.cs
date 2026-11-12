@@ -379,6 +379,25 @@ public class ReturnTests(Containers containers)
     }
 
     [Fact]
+    public async Task Sweep_row_failure_does_not_stop_others()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, _, customer) = await DeliveredAsync(t);
+        var (otherOrder, _, other) = await DeliveredAsync(t);
+        var poisoned = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 1));
+        var good = await Seed.ReturnAsync(t, otherOrder.OrderId, other, (1, 1));
+        await Seed.RunLabelWorkerAsync(t);
+        await Seed.PoisonAsync(t, "return_requests", poisoned);
+
+        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
+        await SweepAsync(t); // doesn't throw
+
+        Assert.Equal(ReturnStatuses.LabelIssued, (await Seed.ReturnRequestAsync(t, poisoned)).Status); // rolled back
+        Assert.Equal(ReturnStatuses.Expired, (await Seed.ReturnRequestAsync(t, good)).Status);
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(poisoned.ToString()));
+    }
+
+    [Fact]
     public async Task D31_account_deleted_expires_requested_returns()
     {
         await using var t = await TestFulfillment.StartAsync(containers);

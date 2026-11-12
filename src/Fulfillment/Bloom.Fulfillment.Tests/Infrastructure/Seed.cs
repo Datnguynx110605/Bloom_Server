@@ -113,6 +113,17 @@ public static class Seed
         return (task.Id, shipmentId);
     }
 
+    /// <summary>Makes every UPDATE of the row fail (a poison row, for the sweeps' per-row isolation). Once per database.</summary>
+    public static async Task PoisonAsync(TestFulfillment t, string table, Guid id)
+    {
+        await using var db = t.NewDb();
+        var sql = $"""
+            CREATE FUNCTION poison() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'poisoned row'; END $$;
+            CREATE TRIGGER poison BEFORE UPDATE ON {table} FOR EACH ROW WHEN (OLD.id = '{id}') EXECUTE FUNCTION poison();
+            """; // test-only constants: a table name and a Guid
+        await db.Database.ExecuteSqlRawAsync(sql, TestContext.Current.CancellationToken);
+    }
+
     /// <summary>One pass of the label worker (the API-mode test host doesn't run it, plan R23).</summary>
     public static Task RunLabelWorkerAsync(TestFulfillment t) =>
         ActivatorUtilities.CreateInstance<LabelWorker>(t.Services).RunOnceAsync(TestContext.Current.CancellationToken);

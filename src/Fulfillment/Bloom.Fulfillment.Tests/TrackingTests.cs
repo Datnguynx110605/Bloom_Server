@@ -7,7 +7,9 @@ using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Worker;
 using Bloom.Order.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Bloom.Fulfillment.Tests;
 
@@ -16,11 +18,11 @@ public class TrackingTests(Containers containers)
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private static readonly TestCaller Warehouse = TestCaller.Staff("warehouse");
 
-    private static async Task<(OrderReadyToFulfillV1 Order, Guid ShipmentId, string Tracking)> HandedOverAsync(TestFulfillment t)
+    private static async Task<(OrderReadyToFulfillV1 Order, Guid ShipmentId, string Tracking)> HandedOverAsync(TestFulfillment t, string serialSuffix = "")
     {
         var ready = Seed.Ready();
         await Seed.ReadyAsync(t, ready);
-        var (_, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB", "SNA");
+        var (_, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB" + serialSuffix, "SNA" + serialSuffix);
         using (var response = await t.SendAsync(HttpMethod.Post, "/api/admin/fulfillment/handover", new { shipmentId }, Warehouse)) await response.OkJsonAsync();
         return (ready, shipmentId, (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!);
     }
@@ -72,6 +74,55 @@ public class TrackingTests(Containers containers)
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode); // the secret was right: the body has no tracking number
         await Poll.UntilAsync(() => { lock (paths) return Task.FromResult(paths.Count > 0); }, 5, "the request span to stop"); // it stops just after the response is sent
         lock (paths) Assert.Equal(["/webhooks/shippo/{secret}"], paths.Distinct());
+    }
+
+    [Fact]
+    public async Task F4_webhook_secret_absent_from_request_logs()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        // The app's own filter decides what reaches the capture: appsettings.json sets Microsoft.AspNetCore to Warning, which hides "Request starting/finished" (Information).
+        Assert.Equal("Warning", t.Services.GetRequiredService<IConfiguration>()["Logging:LogLevel:Microsoft.AspNetCore"]);
+
+        using (var ok = await PostAsync(t, "{}")) Assert.Equal(HttpStatusCode.BadRequest, ok.StatusCode); // right secret
+        using (var wrong = await PostAsync(t, "{}", "wrong-secret")) Assert.Equal(HttpStatusCode.NotFound, wrong.StatusCode);
+
+        var loggers = t.Services.GetRequiredService<ILoggerFactory>(); // the capture sees an Information entry of another category, and none of ASP.NET Core's
+        loggers.CreateLogger("Bloom.Test").LogInformation("control");
+        loggers.CreateLogger("Microsoft.AspNetCore.Hosting.Diagnostics").LogInformation("Request starting control");
+        Assert.Contains(t.Logs.Entries, e => e == "[Information] control");
+        Assert.DoesNotContain(t.Logs.Entries, e => e.Contains("secret-test"));
+        Assert.DoesNotContain(t.Logs.Entries, e => e.Contains("Request starting") || e.Contains("Request finished"));
+    }
+
+    [Fact]
+    public async Task Returned_on_possibly_lost_shipment()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, shipmentId, tracking) = await HandedOverAsync(t);
+        await EventAsync(t, tracking, "FAILURE");
+        Assert.Equal(FailureKinds.Lost, (await Seed.FailureAsync(t, shipmentId))!.Kind);
+
+        await EventAsync(t, tracking, "RETURNED");
+
+        Assert.Equal(ShipmentStatuses.ReturnedToSender, (await Seed.ShipmentAsync(t, shipmentId)).Status);
+        var failure = (await Seed.FailureAsync(t, shipmentId))!; // the same row, now a confirmed return to sender
+        Assert.Equal((FailureKinds.ReturnedToSender, FailureStatuses.Confirmed, null), (failure.Kind, failure.Status, failure.PreviousStatus));
+    }
+
+    [Fact]
+    public async Task Sweep_row_failure_does_not_stop_others()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, poisonedId, _) = await HandedOverAsync(t, "1");
+        var (_, goodId, _) = await HandedOverAsync(t, "2");
+        await Seed.PoisonAsync(t, "shipments", poisonedId);
+
+        t.Clock.Advance(TimeSpan.FromDays(7) + TimeSpan.FromMinutes(1));
+        await SweepAsync(t); // doesn't throw
+
+        Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, poisonedId)).Status); // rolled back
+        Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, goodId)).Status);
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("failed") && e.Contains(poisonedId.ToString()));
     }
 
     [Fact]
