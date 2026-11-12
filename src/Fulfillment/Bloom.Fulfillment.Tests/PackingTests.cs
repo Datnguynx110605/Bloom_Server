@@ -236,7 +236,7 @@ public class PackingTests(Containers containers)
 
         var unknown = await PostOkAsync(t, Tasks($"/{taskId}/serials/unassign"), new { serial = "Q1" });
         Assert.Equal([(1, "B1", 1), (1, "A2", 2)], Serials(unknown));
-        Assert.Equal(0, t.Inventory.Count("UnassignSerial"));
+        Assert.Equal(1, t.Inventory.Count("UnassignSerial")); // D29: no local record, inventory still decides
 
         var unassigned = await PostOkAsync(t, Tasks($"/{taskId}/serials/unassign"), new { serial = "a2" });
         Assert.Equal([(1, "B1", 1)], Serials(unassigned));
@@ -248,6 +248,24 @@ public class PackingTests(Containers containers)
         var pending = await ReadyTaskAsync(t);
         using var notPacking = await t.SendAsync(HttpMethod.Post, Tasks($"/{pending.TaskId}/serials/unassign"), new { serial = "B1" }, Warehouse);
         await notPacking.ExpectErrorAsync(400, "INVALID_STATE");
+    }
+
+    [Fact]
+    public async Task D29_unassign_serial_without_local_record_calls_inventory()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (orderId, taskId, _) = await PackingTaskAsync(t);
+
+        var ok = await PostOkAsync(t, Tasks($"/{taskId}/serials/unassign"), new { serial = "Q1" });
+
+        Assert.Empty(Serials(ok));
+        var call = Assert.IsType<UnassignSerialRequest>(Assert.Single(t.Inventory.Calls, c => c.Method == "UnassignSerial").Request);
+        Assert.Equal((orderId.ToString(), "Q1"), (call.RefId, call.Serial));
+
+        t.Inventory.Fail("UnassignSerial", StatusCode.FailedPrecondition, "SERIAL_NOT_ASSIGNED");
+        using var refused = await t.SendAsync(HttpMethod.Post, Tasks($"/{taskId}/serials/unassign"), new { serial = "Q2" }, Warehouse);
+        await refused.ExpectErrorAsync(400, "SERIAL_NOT_ASSIGNED");
+        Assert.Equal(2, t.Inventory.Count("UnassignSerial"));
     }
 
     [Fact]

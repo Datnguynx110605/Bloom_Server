@@ -78,6 +78,7 @@ public sealed partial class WarehouseService(
         return await Views.PackTaskAsync(db, taskId, ct);
     }
 
+    /// <summary>D29: with no local record of the serial inventory is still called for the order, and its own check decides (its error passes through).</summary>
     public override async Task<V1.PackTask> UnassignSerial(UnassignSerialRequest request, ServerCallContext context)
     {
         var caller = Caller.From(context).RequireStaff(Caller.Packers);
@@ -86,7 +87,6 @@ public sealed partial class WarehouseService(
         var ct = context.CancellationToken;
 
         var task = await TaskAsync(taskId, TaskStatuses.Packing, forUpdate: false, ct);
-        if (!(await ScannedAsync(taskId, ct)).Any(s => s.Serial == serial)) return await Views.PackTaskAsync(db, taskId, ct);
         await inventory.UnassignAsync(task.RefId, serial, context);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
