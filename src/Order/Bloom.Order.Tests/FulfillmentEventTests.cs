@@ -245,6 +245,49 @@ public class FulfillmentEventTests(Containers containers)
     }
 
     [Fact]
+    public async Task D18_unmatched_reservation_released_is_noop()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var orderId = await CancelledAsync(t);
+        await using (var db = t.NewDb())
+            await db.Database.ExecuteSqlAsync($"UPDATE order_sagas SET pending_steps = {new[] { SagaSteps.Refund }} WHERE order_id = {orderId}", Ct); // no inventory_release step left
+        Task ReleasedAsync(Guid id) => Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(id)); // what a reship's release publishes too (D18)
+
+        await ReleasedAsync(orderId); // matches no open step
+        await ReleasedAsync(Guid.NewGuid()); // an unknown order
+
+        var open = await SagaAsync(t, orderId, SagaTypes.Cancellation);
+        Assert.Equal([SagaSteps.Refund], open.PendingSteps);
+        Assert.Null(open.CompletedAt);
+
+        await RefundCompletedAsync(t, orderId, (1, 700));
+        var done = await SagaAsync(t, orderId, SagaTypes.Cancellation);
+        await ReleasedAsync(orderId); // the saga is closed already
+        Assert.NotNull(done.CompletedAt);
+        Assert.Equal(done.CompletedAt, (await SagaAsync(t, orderId, SagaTypes.Cancellation)).CompletedAt);
+    }
+
+    [Fact]
+    public async Task D33_return_closed_decided_after_expired_is_handled()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (_, orderId, _) = await PaidAsync(t);
+        await SetStatusAsync(t, orderId, OrderStatuses.Delivered);
+        var returnId = Guid.NewGuid();
+        Task ClosedAsync(string reason) => Consume.Async<ReturnClosedConsumer>(t, FulfillmentMessages.ReturnClosed, new ReturnClosedV1(orderId, returnId, reason));
+        await Consume.Async<ReturnRequestedConsumer>(t, FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(orderId, returnId));
+        await ClosedAsync("expired"); // the request lapsed
+        Assert.Equal(0, (await OrderAsync(t, orderId)).OpenReturns);
+
+        await ClosedAsync("decided"); // the parcel arrived anyway and was decided (D33): a second close of the same return
+        await DecidedAsync(t, orderId, (1, 1));
+
+        var order = await OrderAsync(t, orderId);
+        Assert.Equal((0, OrderStatuses.PartiallyReturned), (order.OpenReturns, order.Status)); // never below 0, and the decision still counts
+        Assert.Equal([1, 0], (await LinesAsync(t, orderId)).Select(l => l.ReturnedQty));
+    }
+
+    [Fact]
     public async Task Refund_completed_updates_lines_and_completes_the_saga()
     {
         await using var t = await TestOrder.StartAsync(containers);
