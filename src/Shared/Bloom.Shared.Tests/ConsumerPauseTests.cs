@@ -163,7 +163,8 @@ public class ConsumerPauseTests(Containers containers) : IAsyncLifetime
     {
         var ct = TestContext.Current.CancellationToken;
         await using var app = await StartAsync<RecordingHandler>();
-        Assert.Equal(1u, await ConsumersAsync(app));
+        // The consumer host subscribes in the background after the host starts, so wait for it.
+        await Poll.UntilAsync(async () => await ConsumersAsync(app) == 1, 10, "consumer registered");
 
         await PauseAsync();
         await app.Rabbit.PublishAsync("", app.Queue, Body(app.Type));
