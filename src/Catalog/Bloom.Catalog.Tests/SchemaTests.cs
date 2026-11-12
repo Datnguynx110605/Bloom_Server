@@ -1,5 +1,7 @@
 using Bloom.Catalog.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql;
 
 namespace Bloom.Catalog.Tests;
@@ -70,6 +72,21 @@ public class SchemaTests(Containers containers)
 
         Assert.False(db.Database.HasPendingModelChanges());
         Assert.Empty(await db.Database.GetPendingMigrationsAsync(Ct));
+    }
+
+    [Fact]
+    public async Task D37_migration_backfills_existing_reviewer_names_to_the_epoch()
+    {
+        var database = await containers.CreateDatabaseAsync();
+        await using var db = new CatalogDbContext(new DbContextOptionsBuilder<CatalogDbContext>().UseNpgsql(database).Options);
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync("20261102125419_Initial", Ct);
+        var account = Guid.NewGuid();
+        await db.Database.ExecuteSqlAsync($"INSERT INTO reviewer_names (account_id, display_name) VALUES ({account}, 'Mary W.')", Ct);
+
+        await migrator.MigrateAsync(cancellationToken: Ct);
+
+        Assert.Equal(DateTimeOffset.UnixEpoch, await db.Database.SqlQuery<DateTimeOffset>($"SELECT updated_at AS \"Value\" FROM reviewer_names WHERE account_id = {account}").SingleAsync(Ct));
     }
 
     [Theory, InlineData("ux_categories_slug"), InlineData("ux_products_slug"), InlineData("ux_skus_code"), InlineData("ux_skus_product_option_key")]

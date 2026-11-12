@@ -24,7 +24,11 @@ public sealed class ReviewerNameConsumer(CatalogDbContext db) : IMessageHandler
         };
         var display = ReviewerNames.Derive(name);
         await db.Database.ExecuteSqlAsync(
-            $"INSERT INTO reviewer_names (account_id, display_name) VALUES ({accountId}, {display}) ON CONFLICT (account_id) DO UPDATE SET display_name = EXCLUDED.display_name", ct);
+            $"""
+            INSERT INTO reviewer_names (account_id, display_name, updated_at) VALUES ({accountId}, {display}, {envelope.OccurredAt})
+            ON CONFLICT (account_id) DO UPDATE SET display_name = EXCLUDED.display_name, updated_at = EXCLUDED.updated_at
+            WHERE reviewer_names.updated_at < EXCLUDED.updated_at
+            """, ct); // D37: the newest event wins; an equal timestamp is not newer, so it changes nothing
     }
 
     private static (Guid AccountId, string Name) Pick(CustomerRegisteredV1 p) => (p.AccountId, p.Name);

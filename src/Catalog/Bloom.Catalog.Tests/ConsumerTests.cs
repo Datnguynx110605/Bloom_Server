@@ -211,6 +211,37 @@ public class ConsumerTests(Containers containers)
     }
 
     [Fact]
+    public async Task D37_older_registered_event_does_not_overwrite_newer_contact_change()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var account = Guid.NewGuid();
+        var t1 = t.Clock.GetUtcNow().UtcDateTime;
+        var t2 = t1.AddMinutes(5);
+
+        await Consume.Async<ReviewerNameConsumer>(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "m@example.com", "Mary Parker"), occurredAt: t2);
+        await Consume.Async<ReviewerNameConsumer>(t, IdentityMessages.CustomerRegistered, new CustomerRegisteredV1(account, "m@example.com", "Mary Jane Watson"), occurredAt: t1);
+
+        await using var db = t.NewDb();
+        Assert.Equal("Mary P.", (await db.ReviewerNames.AsNoTracking().SingleAsync(n => n.AccountId == account, Ct)).DisplayName);
+    }
+
+    [Fact]
+    public async Task D37_equal_timestamps_change_nothing_and_a_newer_event_wins()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var account = Guid.NewGuid();
+        var at = t.Clock.GetUtcNow().UtcDateTime;
+        async Task<string> NameAsync() { await using var db = t.NewDb(); return (await db.ReviewerNames.AsNoTracking().SingleAsync(n => n.AccountId == account, Ct)).DisplayName; }
+
+        await Consume.Async<ReviewerNameConsumer>(t, IdentityMessages.CustomerRegistered, new CustomerRegisteredV1(account, "m@example.com", "Mary Jane Watson"), occurredAt: at);
+        await Consume.Async<ReviewerNameConsumer>(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "m@example.com", "Mary Parker"), occurredAt: at);
+        Assert.Equal("Mary W.", await NameAsync()); // equal is not newer: no change
+
+        await Consume.Async<ReviewerNameConsumer>(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "m@example.com", "Mary Parker"), occurredAt: at.AddSeconds(1));
+        Assert.Equal("Mary P.", await NameAsync());
+    }
+
+    [Fact]
     public async Task Rename_keeps_old_reviews_and_names_new_ones()
     {
         await using var t = await TestCatalog.StartAsync(containers);

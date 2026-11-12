@@ -109,7 +109,7 @@ public static class Seed
     public static async Task ReviewerNameAsync(TestCatalog t, Guid accountId, string displayName)
     {
         await using var db = t.NewDb();
-        db.ReviewerNames.Add(new ReviewerName { AccountId = accountId, DisplayName = displayName });
+        db.ReviewerNames.Add(new ReviewerName { AccountId = accountId, DisplayName = displayName, UpdatedAt = DateTimeOffset.UnixEpoch });
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
     }
 

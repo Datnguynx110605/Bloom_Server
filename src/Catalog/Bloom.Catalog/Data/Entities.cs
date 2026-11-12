@@ -167,4 +167,5 @@ public class ReviewerName
 {
     public Guid AccountId { get; set; }
     public required string DisplayName { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
 }
