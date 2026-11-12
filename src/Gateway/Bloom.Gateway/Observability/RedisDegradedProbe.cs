@@ -21,6 +21,10 @@ public sealed class RedisDegradedProbe(IConnectionMultiplexer redis, GatewayMetr
             {
                 metrics.SetRedisDegraded(true);
             }
+            catch (RedisServerException)
+            {
+                metrics.SetRedisDegraded(false); // Redis answered, with an error that is not an outage (for example NOPERM)
+            }
             catch (OperationCanceledException)
             {
                 return;

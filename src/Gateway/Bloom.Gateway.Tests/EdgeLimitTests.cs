@@ -358,6 +358,10 @@ public class EdgeLimitTests(Containers containers)
         Assert.Equal(0, gateway.Upstream.RequestCount);
     }
 
+    [Fact]
+    public void Script_loads_on_the_primary() =>
+        Assert.False(EdgeStore.Primary(containers.Redis).IsReplica); // R2: only the single-node test Redis is exercised here
+
     private static async Task<long> CallsAsync(IConnectionMultiplexer redis, string command)
     {
         var stats = (await redis.GetServers().Single().InfoAsync("commandstats")).SelectMany(g => g).ToList();
