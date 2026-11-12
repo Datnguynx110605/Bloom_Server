@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-12 |
 | **Related ADRs** | [PD-ADR-002](adr/PD-ADR-002-us-market-flat-sales-tax.md), [PD-ADR-003](adr/PD-ADR-003-charge-at-checkout-online-only.md), [PD-ADR-004](adr/PD-ADR-004-reserve-stock-at-checkout.md), [PD-ADR-007](adr/PD-ADR-007-coupon-allocation-and-holding.md), [PD-ADR-008](adr/PD-ADR-008-account-required-staff-mfa.md), [PD-ADR-009](adr/PD-ADR-009-no-price-change-flag-in-cart.md) |
 
 ## 1. Purpose and scope
