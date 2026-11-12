@@ -114,6 +114,32 @@ public class AddressTests(Containers containers)
         Assert.Equal([first], await DefaultsAsync());
     }
 
+    [Fact]
+    public async Task D11_two_concurrent_default_upserts_leave_one_default()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var account = await Seed.CustomerAsync(t);
+        var caller = TestCaller.Customer(t, account);
+        var ids = new List<string>();
+        for (var i = 0; i < 2; i++) ids.Add((await (await UpsertAsync(t, caller, Body())).OkJsonAsync()).GetProperty("id").GetString()!);
+        Task<HttpResponseMessage> MakeDefault(string id)
+        {
+            var body = Body(isDefault: true);
+            body["id"] = id;
+            body["version"] = 1;
+            return UpsertAsync(t, caller, body);
+        }
+
+        // Both upserts queue on the account row; the lock is released once both wait, so they run one after the other.
+        await using var held = await RowLock.HoldAsync(t, $"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE");
+        var upserts = ids.Select(MakeDefault).ToList();
+        await RowLock.WaitForWaitersAsync(t, 2, "both default upserts waiting on the account row");
+        await held.ReleaseAsync();
+
+        foreach (var response in await Task.WhenAll(upserts)) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, (await ListAsync(t, caller)).EnumerateArray().Count(a => a.TryGetProperty("isDefault", out var d) && d.GetBoolean()));
+    }
+
     [Theory]
     [InlineData("state", "XX")]
     [InlineData("zip", "1234")]

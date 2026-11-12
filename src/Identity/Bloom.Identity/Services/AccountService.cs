@@ -133,10 +133,11 @@ public sealed class AccountService(
             Id = Guid.CreateVersion7(), AccountId = caller.UserId, Label = label, Recipient = recipient, Line1 = line1, Line2 = line2,
             City = city, State = state, Zip = zip, Phone = phone, IsDefault = request.IsDefault,
         };
+        // The account row first, then the addresses (same order as DeleteAccount, D11): two concurrent creates cannot pass the limit
+        // together, and two default upserts cannot both clear the old default and leave two.
+        if (request.Id.Length == 0 || request.IsDefault) await db.Database.ExecuteSqlAsync($"SELECT 1 FROM accounts WHERE id = {caller.UserId} FOR UPDATE", ct);
         if (request.Id.Length == 0)
         {
-            // Lock the account row so two concurrent creates cannot pass the limit together.
-            await db.Database.ExecuteSqlAsync($"SELECT 1 FROM accounts WHERE id = {caller.UserId} FOR UPDATE", ct);
             if (await db.Addresses.CountAsync(a => a.AccountId == caller.UserId, ct) >= MaxAddresses)
                 throw IdentityErrors.Error(IdentityErrors.AddressLimitReached, $"At most {MaxAddresses} addresses.");
             if (request.IsDefault) await ClearDefaultsAsync(caller.UserId, stored.Id, ct);
@@ -191,11 +192,15 @@ public sealed class AccountService(
         }
 
         var ct = context.CancellationToken;
+        await using var tx = await db.Database.BeginTransactionAsync(ct); // ExecuteDelete/Update mixed with tracked changes (plan I29)
+        // The account row first, then the addresses (D11). A delete that waited here sees the winner's commit and gets NOT_FOUND.
+        await db.Database.ExecuteSqlAsync($"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE", ct);
+        await db.Entry(account).ReloadAsync(ct);
+        if (account.Status == AccountStatuses.Deleted) throw IdentityErrors.Error(IdentityErrors.NotFound, "No such account.");
         var oldEmail = account.EmailNormalized;
         account.Status = AccountStatuses.Deleted;
         account.EmailNormalized = $"deleted+{account.Id:D}@invalid"; // frees the real email (§6.8)
         account.EmailDisplay = account.Name = account.PasswordHash = account.GoogleSub = null;
-        await using var tx = await db.Database.BeginTransactionAsync(ct); // ExecuteDelete/Update mixed with tracked changes (plan I29)
         await db.Addresses.Where(a => a.AccountId == account.Id).ExecuteDeleteAsync(ct);
         await db.VerificationCodes.Where(c => c.AccountId == account.Id || c.TargetEmail == oldEmail).ExecuteDeleteAsync(ct); // plan I30
         await sessions.RevokeAllAsync(account, "account_deleted");

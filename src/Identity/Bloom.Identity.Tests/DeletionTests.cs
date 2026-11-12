@@ -107,6 +107,57 @@ public class DeletionTests(Containers containers)
     }
 
     [Fact]
+    public async Task D11_two_concurrent_deletes_publish_one_account_deleted()
+    {
+        await using var order = await FakeOrder.StartAsync();
+        await using var t = await StartAsync(containers, order);
+        var account = await Seed.CustomerAsync(t);
+        var caller = TestCaller.Customer(t, account);
+
+        // Both deletes pass the first status check and queue on the account row; they run one after the other.
+        await using var held = await RowLock.HoldAsync(t, $"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE");
+        var deletes = new[] { DeleteAsync(t, caller), DeleteAsync(t, caller) };
+        await RowLock.WaitForWaitersAsync(t, 2, "both deletes waiting on the account row");
+        await held.ReleaseAsync();
+
+        var responses = await Task.WhenAll(deletes);
+        Assert.Equal([HttpStatusCode.OK, HttpStatusCode.NotFound], responses.Select(r => r.StatusCode).Order());
+        await responses.Single(r => r.StatusCode == HttpStatusCode.NotFound).ExpectErrorAsync(404, "NOT_FOUND");
+        Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.AccountDeleted));
+        Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.TokensRevoked));
+    }
+
+    [Fact]
+    public async Task D11_delete_and_upsert_do_not_deadlock()
+    {
+        await using var order = await FakeOrder.StartAsync();
+        await using var t = await StartAsync(containers, order);
+        var account = await Seed.CustomerAsync(t);
+        var caller = TestCaller.Customer(t, account);
+        var defaultAddress = Guid.CreateVersion7();
+        await using (var db = t.NewDb())
+        {
+            db.Addresses.Add(new Address { Id = defaultAddress, AccountId = account.Id, Recipient = "Ann", Line1 = "1 Main St", City = "Austin", State = "TX", Zip = "78701", IsDefault = true });
+            await db.SaveChangesAsync(Ct);
+        }
+
+        // The old default address is held, so the delete waits first and the upsert second. Lock order address -> account in one
+        // and account -> address in the other would deadlock as soon as the address is released.
+        await using var held = await RowLock.HoldAsync(t, $"SELECT 1 FROM addresses WHERE id = {defaultAddress} FOR UPDATE");
+        var delete = DeleteAsync(t, caller);
+        await RowLock.WaitForWaitersAsync(t, 1, "the delete waiting");
+        var upsert = t.SendAsync(HttpMethod.Put, "/api/me/addresses", new
+        {
+            recipient = "Bea", line1 = "2 Main St", city = "Austin", state = "TX", zip = "78701", isDefault = true,
+        }, caller);
+        await RowLock.WaitForWaitersAsync(t, 2, "the upsert waiting");
+        await held.ReleaseAsync();
+
+        Assert.Equal(HttpStatusCode.OK, (await delete).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await upsert).StatusCode); // it ran after the delete; the account's own rows are not this test's concern
+    }
+
+    [Fact]
     public async Task Order_down_is_ORDER_SERVICE_UNAVAILABLE_and_changes_nothing()
     {
         await using var order = await FakeOrder.StartAsync();
