@@ -404,7 +404,7 @@ public class DeliveryFailureTests(Containers containers)
     }
 
     [Fact]
-    public async Task Reship_is_refused_when_the_failure_changed_during_the_inventory_call()
+    public async Task D27_failure_resolved_before_apply_sends_reship_release_and_returns_INVALID_STATE()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var f = await PossiblyLostAsync(t);
@@ -421,6 +421,8 @@ public class DeliveryFailureTests(Containers containers)
         Assert.Equal(ShipmentStatuses.Delivered, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
         Assert.Equal(FailureStatuses.Dismissed, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
         Assert.Empty(await Outbox.PayloadsAsync<MarkLostInTransitV1>(t, FulfillmentMessages.MarkLostInTransit));
+        var release = Assert.Single(await Outbox.PayloadsAsync<ReleaseReservationV1>(t, InventoryMessages.ReleaseReservation)); // D27: committed, though the reship is not
+        Assert.Equal((f.Order.OrderId, Ids.ReshipId(f.ShipmentId)), (release.OrderId, release.ReshipId));
     }
 
     [Fact]

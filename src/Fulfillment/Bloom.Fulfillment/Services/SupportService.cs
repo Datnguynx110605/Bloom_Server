@@ -4,6 +4,7 @@ using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Errors;
 using Bloom.Fulfillment.V1;
+using Bloom.Inventory.Contracts;
 using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
 using Grpc.Core;
@@ -18,7 +19,7 @@ namespace Bloom.Fulfillment.Services;
 /// <summary>05-fulfillment §3 component <c>Support API</c>: <c>Deciders</c> only (plan R7).</summary>
 public sealed class SupportService(
     FulfillmentDbContext db, IdempotencyGuard guard, RefundEngine refunds, Failures failures, InventoryCalls inventory, Audit audit, OutboxWriter outbox, TimeProvider clock,
-    ILogger<SupportService> logger)
+    IServiceScopeFactory scopes, ILogger<SupportService> logger)
     : FulfillmentSupport.FulfillmentSupportBase
 {
     /// <summary>
@@ -210,6 +211,8 @@ public sealed class SupportService(
     /// <summary>
     /// The guard's apply step: failure → <c>resolved_reship</c> (guarded, so a failure that was dismissed or resolved while inventory was working is <c>INVALID_STATE</c>), shipment → <c>lost</c>,
     /// and the reship's pack task with the same lines and address. No refund, no <c>delivery-failed</c> (§6.5).
+    /// D27: a failure no longer open sends <c>inventory.release-reservation.v1 {orderId, reshipId}</c> before <c>INVALID_STATE</c>. The guard rolls a rejected apply back to its savepoint, so the release is
+    /// committed on its own scope first: if the process dies before the rejection is stored, the retry finds the failure still not open and sends it again (inventory releases by reshipId, idempotently).
     /// </summary>
     private async Task<V1.DeliveryFailure> ReshipAsync(Caller caller, Guid shipmentId, Guid reshipId, CancellationToken ct)
     {
@@ -220,7 +223,14 @@ public sealed class SupportService(
             SET status = {FailureStatuses.ResolvedReship}, reship_id = {reshipId}, decided_by = {caller.UserId}, updated_at = {now}
             WHERE shipment_id = {shipmentId} AND kind = {FailureKinds.Lost} AND status IN ({FailureStatuses.PossiblyLost}, {FailureStatuses.Confirmed})
             """, ct) != 1)
+        {
+            await using (var scope = scopes.CreateAsyncScope())
+            {
+                scope.ServiceProvider.GetRequiredService<OutboxWriter>().SendCommand("inventory", InventoryMessages.ReleaseReservation, new ReleaseReservationV1(shipment.OrderId, reshipId));
+                await scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>().SaveChangesAsync(ct);
+            }
             throw FulfillmentErrors.Error(FulfillmentErrors.InvalidState, "The failure is no longer open.");
+        }
         var task = await MarkLostAsync(shipment, ct);
 
         var reship = new PackTask
