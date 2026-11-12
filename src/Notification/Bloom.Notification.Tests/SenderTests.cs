@@ -32,7 +32,7 @@ public class SenderTests(Containers containers)
         var order = Guid.NewGuid();
         await Seed.ContactAsync(t, account, $"{account:N}@bloom.test", "Ada");
         await Seed.OrderRefAsync(t, order, account, "BL-1001");
-        await Consume.Async(t, OrderMessages.Paid, new OrderPaidV1(order, "BL-1001", account, null, DateTimeOffset.UtcNow, 1000, []));
+        await Consume.Async(t, OrderMessages.Paid, new OrderPaidV1(order, "BL-1001", account, null, t.Clock.GetUtcNow(), 1000, []));
         var job = Assert.Single(await t.NewDb().EmailJobs.AsNoTracking().Where(j => j.AccountId == account).ToListAsync(Ct));
 
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
@@ -55,7 +55,7 @@ public class SenderTests(Containers containers)
     public async Task N03_code_email_is_sent_with_the_code_and_scrubbed()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        var expiresAt = t.Clock.GetUtcNow().AddMinutes(10);
         await Consume.Async(t, IdentityMessages.VerificationCode, new VerificationCodeV1("Code@Bloom.test", "signup", TestNotification.EncryptCode("482913"), expiresAt));
 
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
@@ -190,6 +190,27 @@ public class SenderTests(Containers containers)
         var row = await RowAsync(t, id);
         Assert.Equal(EmailStatuses.Pending, row.Status);
         Assert.Equal(4, row.Attempts);
+    }
+
+    [Fact]
+    public async Task N2_lease_lost_during_own_send()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var id = await Seed.JobAsync(t);
+        var takenOver = t.Clock.GetUtcNow().AddMinutes(2);
+        // Another sender takes the job over while this pass is inside the provider call for it.
+        t.Resend.Before = () => t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = {takenOver} WHERE id = {id}");
+
+        await Sender(t).RunOnceAsync(Ct);
+
+        Assert.Single(t.Resend.Requests); // the send happened; recording its outcome is the new owner's job
+        var row = await RowAsync(t, id);
+        Assert.Equal(EmailStatuses.Pending, row.Status);
+        Assert.Null(row.SentAt);
+        Assert.Equal(0, row.Attempts);
+        Assert.Equal(takenOver, row.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.Equal(0, metrics.Count("event_to_email_seconds", ("type", "order.confirmed")));
     }
 
     [Fact]

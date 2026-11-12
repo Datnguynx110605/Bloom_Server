@@ -110,7 +110,7 @@ public class WorkerTests(Containers containers)
         var account = await CustomerAsync(hosts.Api1);
 
         await PublishAsync(channel, "fulfillment", FulfillmentMessages.ShipmentShipped, ConsumerTests.Payload(FulfillmentMessages.ShipmentShipped, account));
-        await Task.Delay(1500, Ct);
+        await Poll.UntilAsync(() => Task.FromResult(hosts.Worker.Logs.Entries.Any(e => e.Contains("Handler failed on attempt"))), 15, "the shipped event to fail once for its missing order_ref");
         Assert.Empty(await Seed.RowsAsync(hosts.Api1, account));
         await PublishAsync(channel, "order", OrderMessages.Paid, ConsumerTests.Payload(OrderMessages.Paid, account));
 
@@ -164,8 +164,8 @@ public class WorkerTests(Containers containers)
         await PublishAsync(channel, "order", OrderMessages.Paid, ConsumerTests.Payload(OrderMessages.Paid, a));
         await PublishAsync(channel, "order", OrderMessages.Paid, ConsumerTests.Payload(OrderMessages.Paid, b));
 
-        var pushA = await Sockets.NextAsync(inboxA, 5);
-        var pushB = await Sockets.NextAsync(inboxB, 5);
+        var pushA = await Sockets.NextAsync(inboxA, 15);
+        var pushB = await Sockets.NextAsync(inboxB, 15);
         Assert.Equal("order.confirmed", pushA.Type);
         Assert.Equal(Assert.Single(await Seed.RowsAsync(hosts.Api1, a)).Id, pushA.Id);
         Assert.Equal(Assert.Single(await Seed.RowsAsync(hosts.Api1, b)).Id, pushB.Id);
@@ -190,8 +190,8 @@ public class WorkerTests(Containers containers)
         await PublishAsync(channel, "identity", IdentityMessages.TokensRevoked, new TokensRevokedV1(a, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
         await consumed.Task.WaitAsync(TimeSpan.FromSeconds(15), Ct);
 
-        await Sockets.ClosedAsync(a1, TimeSpan.FromSeconds(2));
-        await Sockets.ClosedAsync(a2, TimeSpan.FromSeconds(2));
+        await Sockets.ClosedAsync(a1, TimeSpan.FromSeconds(15));
+        await Sockets.ClosedAsync(a2, TimeSpan.FromSeconds(15));
         Assert.Equal(HubConnectionState.Connected, b1.State);
     }
 

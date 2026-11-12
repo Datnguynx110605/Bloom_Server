@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Mail;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using Bloom.Notification.Email;
 using Microsoft.Extensions.DependencyInjection;
@@ -70,6 +72,24 @@ public class EmailProviderTests(Containers containers)
         Assert.Equal(TimeSpan.Zero, (await Fail()).RetryAfter); // unparseable: as if absent
         Assert.Equal(TimeSpan.Zero, (await Fail()).RetryAfter);
         Assert.Null((await Fail()).RetryAfter); // only a 429 is throttled
+    }
+
+    [Fact]
+    public async Task N5_smtp_timeout_path()
+    {
+        using var silent = new TcpListener(IPAddress.Loopback, 0); // accepts the connection and never sends the 220 greeting
+        silent.Start();
+        await using var n = await TestNotification.StartAsync(containers, o =>
+        {
+            o.Config["Notification:Email:Provider"] = "smtp";
+            o.Config["Notification:Email:Smtp:Host"] = "127.0.0.1";
+            o.Config["Notification:Email:Smtp:Port"] = ((IPEndPoint)silent.LocalEndpoint).Port.ToString();
+        });
+
+        var e = await Assert.ThrowsAsync<EmailSendException>(() => Provider(n).SendAsync(Message(Address()), "bloom:email:k", TestContext.Current.CancellationToken));
+
+        Assert.True(e.Transient);
+        Assert.Equal("timeout", e.Reason);
     }
 
     [Fact]

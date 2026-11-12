@@ -34,13 +34,13 @@ public class SchemaTests(Containers containers)
         var source = Id();
         await using (var db = t.NewDb())
         {
-            db.Add(Seed.Notification(type: "order.confirmed", sourceMessageId: source));
-            db.Add(Seed.Notification(type: "order.shipped", sourceMessageId: source)); // another type is fine
+            db.Add(Seed.Notification(t, type: "order.confirmed", sourceMessageId: source));
+            db.Add(Seed.Notification(t, type: "order.shipped", sourceMessageId: source)); // another type is fine
             await db.SaveChangesAsync(Ct);
         }
 
         await using var again = t.NewDb();
-        Assert.Equal("23505", await SqlStateAsync(again, Seed.Notification(type: "order.confirmed", sourceMessageId: source)));
+        Assert.Equal("23505", await SqlStateAsync(again, Seed.Notification(t, type: "order.confirmed", sourceMessageId: source)));
     }
 
     [Fact]
@@ -50,13 +50,13 @@ public class SchemaTests(Containers containers)
         var source = Id();
         await using (var db = t.NewDb())
         {
-            db.Add(Seed.Job("order.confirmed", sourceMessageId: source));
-            db.Add(Seed.Job("order.shipped", sourceMessageId: source));
+            db.Add(Seed.Job(t, "order.confirmed", sourceMessageId: source));
+            db.Add(Seed.Job(t, "order.shipped", sourceMessageId: source));
             await db.SaveChangesAsync(Ct);
         }
 
         await using var again = t.NewDb();
-        Assert.Equal("23505", await SqlStateAsync(again, Seed.Job("order.confirmed", sourceMessageId: source)));
+        Assert.Equal("23505", await SqlStateAsync(again, Seed.Job(t, "order.confirmed", sourceMessageId: source)));
     }
 
     [Fact]
@@ -65,7 +65,7 @@ public class SchemaTests(Containers containers)
         await using var t = await TestNotification.StartAsync(containers);
         await using var db = t.NewDb();
 
-        Assert.Equal("23514", await SqlStateAsync(db, Seed.Job(status: "x")));
+        Assert.Equal("23514", await SqlStateAsync(db, Seed.Job(t, status: "x")));
     }
 
     [Fact]

@@ -240,7 +240,7 @@ public class ConsumerTests(Containers containers)
         var first = Guid.NewGuid();
         await Consume.Async(t, OrderMessages.Paid, Payload(OrderMessages.Paid, account), first);
 
-        await Consume.Async(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "New@Bloom.test", "Ada"), occurredAt: DateTime.UtcNow.AddMinutes(1));
+        await Consume.Async(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "New@Bloom.test", "Ada"), occurredAt: t.Clock.GetUtcNow().UtcDateTime.AddMinutes(1));
         var second = Guid.NewGuid();
         await Consume.Async(t, FulfillmentMessages.ShipmentShipped, Payload(FulfillmentMessages.ShipmentShipped, account), second);
 
@@ -253,8 +253,8 @@ public class ConsumerTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var account = Guid.NewGuid();
-        var t1 = DateTime.UtcNow.AddMinutes(-5);
-        var t2 = DateTime.UtcNow;
+        var t1 = t.Clock.GetUtcNow().UtcDateTime.AddMinutes(-5);
+        var t2 = t.Clock.GetUtcNow().UtcDateTime;
 
         await Consume.Async(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "t2@bloom.test", "Two"), occurredAt: t2);
         await Consume.Async(t, IdentityMessages.CustomerRegistered, new CustomerRegisteredV1(account, "t1@bloom.test", "One"), occurredAt: t1);
@@ -317,7 +317,7 @@ public class ConsumerTests(Containers containers)
         Guid pendingA, sentA, pendingB;
         await using (var db = t.NewDb())
         {
-            EmailJobRow Job(Guid account, string status) => Seed.Job(status: status, createdAt: t.Clock.GetUtcNow(), accountId: account);
+            EmailJobRow Job(Guid account, string status) => Seed.Job(t, status: status, createdAt: t.Clock.GetUtcNow(), accountId: account);
             var jobs = new[] { Job(a, EmailStatuses.Pending), Job(a, EmailStatuses.Sent), Job(b, EmailStatuses.Pending) };
             (pendingA, sentA, pendingB) = (jobs[0].Id, jobs[1].Id, jobs[2].Id);
             db.EmailJobs.AddRange(jobs);

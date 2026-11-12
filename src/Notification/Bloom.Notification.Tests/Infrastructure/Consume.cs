@@ -20,7 +20,7 @@ public static class Consume
         await using var scope = t.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<NotificationDbContext>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var envelope = new Envelope(messageId ?? Guid.NewGuid(), messageType, MessageKinds.Event, "test", occurredAt ?? DateTime.UtcNow, Guid.NewGuid(),
+        var envelope = new Envelope(messageId ?? Guid.NewGuid(), messageType, MessageKinds.Event, "test", occurredAt ?? t.Clock.GetUtcNow().UtcDateTime, Guid.NewGuid(),
             JsonSerializer.SerializeToElement(payload, Web));
         await scope.ServiceProvider.GetRequiredService<Consumers.EventConsumer>().HandleAsync(envelope, ct);
         await db.SaveChangesAsync(ct);
