@@ -50,9 +50,10 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 }
 
                 // Step 3.
-                // Read inside the transaction, on every attempt: a close or release may have committed since step 1. A plain read (no launches lock, §6.5).
-                var open = await db.Launches.AsNoTracking().Where(l => l.Id == launchId)
-                    .AnyAsync(l => l.Stage == LaunchStages.PreorderOpen && l.WaitingRoomClosedAt == null, ct);
+                // Read inside the transaction, on every attempt: a close or release may have committed since step 1. FOR SHARE, first, before any product or SKU lock (D5, §7):
+                // a room close or stage change takes the row FOR UPDATE, so it waits for this hold and a hold waits for it.
+                var open = (await db.Launches.FromSql($"SELECT * FROM launches WHERE id = {launchId} FOR SHARE").AsNoTracking().ToListAsync(ct))
+                    .Any(l => l.Stage == LaunchStages.PreorderOpen && l.WaitingRoomClosedAt == null);
                 if (!open)
                     throw LaunchErrors.Error(LaunchErrors.LaunchNotOpen, "The launch is not open for pre-orders.");
                 var skuIds = lines.Select(l => l.Sku).ToList();

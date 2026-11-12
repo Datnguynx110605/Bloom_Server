@@ -7,10 +7,12 @@ using Bloom.Launch.Contracts;
 using Bloom.Launch.Data;
 using Bloom.Launch.Errors;
 using Bloom.Launch.WaitingRoom;
+using Bloom.Launch.Worker;
 using Bloom.Shared.Errors;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace Bloom.Launch.Tests;
 
@@ -329,6 +331,54 @@ public class HoldTests(Containers containers)
         Assert.Equal(1, await ConsumedAsync(t, launch.Id)); // none of the other passes is used up
         Assert.Equal((1, 0), await Holds.SkuAsync(t, launch.Skus[0]));
         await Holds.InvariantAsync(t, launch.Id);
+    }
+
+    [Fact]
+    public async Task D5_hold_blocked_mid_transaction_delays_close_and_close_sees_hold()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, products: new SeedProduct(2, 2));
+        await t.SqlAsync($"UPDATE launch_skus SET sold = 1 WHERE launch_id = {launch.Id}"); // one unit left: the hold takes it, and sold out then needs the hold counted
+        var account = Guid.NewGuid();
+        var sku = launch.Skus[0];
+
+        // A side connection holds the SKU row, so the hold stops at §6.5 step 6, after it took the launches row FOR SHARE in step 3.
+        await using var side = new NpgsqlConnection(t.ConnectionString);
+        await side.OpenAsync(Ct);
+        await using var sideTx = await side.BeginTransactionAsync(Ct);
+        await using (var block = new NpgsqlCommand("SELECT 1 FROM launch_skus WHERE sku_id = @s FOR UPDATE", side, sideTx))
+        {
+            block.Parameters.AddWithValue("s", sku);
+            await block.ExecuteNonQueryAsync(Ct);
+        }
+        var hold = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (sku, 1))), Ct);
+        await Poll.UntilAsync(() => WaiterAsync(t, "%UPDATE launch_skus%"), 15, "the hold waits on the SKU row");
+
+        var close = Task.Run(async () =>
+        {
+            await using var db = t.NewDb();
+            await using var tx = await db.Database.BeginTransactionAsync(Ct);
+            var closed = await AdmissionWorker.TryCloseAsync(db, launch.Id, Ct);
+            await tx.CommitAsync(Ct);
+            return closed;
+        }, Ct);
+        await Poll.UntilAsync(() => WaiterAsync(t, "%FROM launches%FOR UPDATE%"), 15, "the close waits on the launches row");
+        Assert.False(close.IsCompleted);
+
+        await sideTx.CommitAsync(Ct);
+
+        Assert.NotEmpty((await hold).HoldId);
+        Assert.False(await close); // evaluated after the hold committed: it counts, so the room stays open
+        Assert.Null((await t.RowAsync(launch.Id)).WaitingRoomClosedAt);
+        Assert.Equal(1, await HoldsAsync(t, launch.Id));
+        Assert.Equal((1, 1), await Holds.SkuAsync(t, sku)); // sold is seeded by hand, so no InvariantAsync
+    }
+
+    /// <summary>True while a statement matching <paramref name="queryLike"/> waits for a lock.</summary>
+    private static async Task<bool> WaiterAsync(TestLaunch t, string queryLike)
+    {
+        await using var db = t.NewDb(); // a fresh transaction: pg_stat_activity is a per-transaction snapshot
+        return await db.Database.SqlQuery<long>($"SELECT count(*) AS \"Value\" FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE {queryLike}").SingleAsync(Ct) > 0;
     }
 
     [Fact]

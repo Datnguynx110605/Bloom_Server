@@ -120,16 +120,20 @@ public sealed class AdmissionWorker(
     }
 
     /// <summary>
-    /// The close of §6.4 step 5 as one statement that judges for itself: with READ COMMITTED a release can commit between the tick's reads
-    /// and this statement, and a close is permanent (LCH-R23), so both conditions are checked again here. Zero rows: do not close.
+    /// The close of §6.4 step 5. The <c>launches</c> row is locked <c>FOR UPDATE</c> first (D5, §7): a hold in flight holds it <c>FOR SHARE</c>, so the close waits for it.
+    /// Then one statement, a fresh READ COMMITTED snapshot, judges for itself: a hold or release can commit between the tick's reads and this statement,
+    /// and a close is permanent (LCH-R23), so both conditions are checked again here. Zero rows: do not close.
     /// </summary>
-    internal static async Task<bool> TryCloseAsync(LaunchDbContext db, Guid launchId, CancellationToken ct) =>
-        await db.Database.ExecuteSqlAsync($"""
+    internal static async Task<bool> TryCloseAsync(LaunchDbContext db, Guid launchId, CancellationToken ct)
+    {
+        await db.Database.ExecuteSqlAsync($"SELECT 1 FROM launches WHERE id = {launchId} FOR UPDATE", ct);
+        return await db.Database.ExecuteSqlAsync($"""
             UPDATE launches SET waiting_room_closed_at = now(), version = version + 1, updated_at = now()
             WHERE id = {launchId} AND waiting_room_closed_at IS NULL
               AND NOT EXISTS (SELECT 1 FROM holds WHERE launch_id = {launchId} AND status = {HoldStatuses.Held})
               AND (SELECT COALESCE(SUM(allocation - held - sold), 0) FROM launch_skus WHERE launch_id = {launchId}) = 0
             """, ct) == 1;
+    }
 
     private AdmissionResult Done(Guid launchId, string result, IReadOnlyList<Guid>? admitted = null)
     {

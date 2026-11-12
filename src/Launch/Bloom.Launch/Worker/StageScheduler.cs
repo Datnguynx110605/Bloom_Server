@@ -55,7 +55,7 @@ public sealed class StageScheduler(IServiceScopeFactory scopes, StateCache cache
         }
     }
 
-    /// <summary>One transaction: the conditional update (the single winner across replicas), then the event. Zero rows means another replica won.</summary>
+    /// <summary>One transaction: the <c>launches</c> row locked <c>FOR UPDATE</c> (D5: waits for a hold in flight), then the conditional update in its own statement (the single winner across replicas), then the event. Zero rows means another replica won.</summary>
     private async Task TransitionAsync(Guid id, bool release, CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
@@ -63,6 +63,7 @@ public sealed class StageScheduler(IServiceScopeFactory scopes, StateCache cache
         var outbox = scope.ServiceProvider.GetRequiredService<OutboxWriter>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
 
+        await db.Database.ExecuteSqlAsync($"SELECT 1 FROM launches WHERE id = {id} FOR UPDATE", ct);
         var rows = release
             ? await db.Database.ExecuteSqlAsync(
                 $"UPDATE launches SET stage = {LaunchStages.Released}, waiting_room_closed_at = COALESCE(waiting_room_closed_at, now()), version = version + 1, updated_at = now() WHERE id = {id} AND stage = {LaunchStages.PreorderOpen} AND release_date <= now()", ct)
