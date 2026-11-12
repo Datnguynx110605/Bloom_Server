@@ -426,6 +426,25 @@ public class DeliveryFailureTests(Containers containers)
     }
 
     [Fact]
+    public async Task D27_losing_a_concurrent_reship_of_the_same_shipment_releases_nothing()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var f = await PossiblyLostAsync(t);
+        t.Inventory.Before = async () =>   // while A is in CommitForReship, B (another key) passes the same check, commits the same reshipId and applies first
+        {
+            t.Inventory.Before = null;
+            await LostOkAsync(t, f.ShipmentId, "reship");
+        };
+
+        using (var a = await LostAsync(t, f.ShipmentId, "reship")) await a.ExpectErrorAsync(400, "INVALID_STATE");
+
+        Assert.Equal(2, t.Inventory.Count("CommitForReship"));
+        Assert.Equal(FailureStatuses.ResolvedReship, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
+        Assert.Single(await ReshipTasksAsync(t, f.Order.OrderId));
+        Assert.Empty(await Outbox.PayloadsAsync<ReleaseReservationV1>(t, InventoryMessages.ReleaseReservation)); // the winner's stock stays reserved
+    }
+
+    [Fact]
     public async Task Dismiss_restores_the_previous_status()
     {
         await using var t = await TestFulfillment.StartAsync(containers);

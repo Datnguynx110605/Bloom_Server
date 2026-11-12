@@ -211,8 +211,10 @@ public sealed class SupportService(
     /// <summary>
     /// The guard's apply step: failure → <c>resolved_reship</c> (guarded, so a failure that was dismissed or resolved while inventory was working is <c>INVALID_STATE</c>), shipment → <c>lost</c>,
     /// and the reship's pack task with the same lines and address. No refund, no <c>delivery-failed</c> (§6.5).
-    /// D27: a failure no longer open sends <c>inventory.release-reservation.v1 {orderId, reshipId}</c> before <c>INVALID_STATE</c>. The guard rolls a rejected apply back to its savepoint, so the release is
-    /// committed on its own scope first: if the process dies before the rejection is stored, the retry finds the failure still not open and sends it again (inventory releases by reshipId, idempotently).
+    /// D27: a failure no longer open sends <c>inventory.release-reservation.v1 {orderId, reshipId}</c> before <c>INVALID_STATE</c>, unless it is <c>resolved_reship</c> with this same <c>reshipId</c>
+    /// (a concurrent call applied it; the id is deterministic per shipment, so releasing it would free the applied reship's stock). The guard rolls a rejected apply back to its savepoint, so the
+    /// release is committed on its own scope first, with no cancellation: a client cancel must not drop it. A crash after that commit makes the retry fail <see cref="RequireLost"/> in
+    /// <see cref="CommitReshipAsync"/> before any inventory call, so no second release; a crash before it leaves the reservation held (the design's own window).
     /// </summary>
     private async Task<V1.DeliveryFailure> ReshipAsync(Caller caller, Guid shipmentId, Guid reshipId, CancellationToken ct)
     {
@@ -224,11 +226,13 @@ public sealed class SupportService(
             WHERE shipment_id = {shipmentId} AND kind = {FailureKinds.Lost} AND status IN ({FailureStatuses.PossiblyLost}, {FailureStatuses.Confirmed})
             """, ct) != 1)
         {
-            await using (var scope = scopes.CreateAsyncScope())
-            {
-                scope.ServiceProvider.GetRequiredService<OutboxWriter>().SendCommand("inventory", InventoryMessages.ReleaseReservation, new ReleaseReservationV1(shipment.OrderId, reshipId));
-                await scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>().SaveChangesAsync(ct);
-            }
+            var current = await db.DeliveryFailures.AsNoTracking().SingleAsync(f => f.ShipmentId == shipmentId, ct); // under the failure's lock
+            if (current is not { Status: FailureStatuses.ResolvedReship } || current.ReshipId != reshipId)
+                await using (var scope = scopes.CreateAsyncScope())
+                {
+                    scope.ServiceProvider.GetRequiredService<OutboxWriter>().SendCommand("inventory", InventoryMessages.ReleaseReservation, new ReleaseReservationV1(shipment.OrderId, reshipId));
+                    await scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>().SaveChangesAsync(CancellationToken.None);
+                }
             throw FulfillmentErrors.Error(FulfillmentErrors.InvalidState, "The failure is no longer open.");
         }
         var task = await MarkLostAsync(shipment, ct);
