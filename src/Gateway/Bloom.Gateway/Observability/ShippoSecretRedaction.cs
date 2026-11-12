@@ -8,7 +8,7 @@ public static partial class ShippoSecretRedaction
 {
     private static readonly string[] Tags = ["url.path", "http.target", "url.full"];
 
-    [GeneratedRegex("(?<=/webhooks/shippo/)[^/?#]+")]
+    [GeneratedRegex("(?<=/webhooks/shippo/)[^/?#]+", RegexOptions.IgnoreCase)]
     private static partial Regex Secret();
 
     public static void Redact(Activity activity)

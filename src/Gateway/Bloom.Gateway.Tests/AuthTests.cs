@@ -424,8 +424,10 @@ public class AuthTests(Containers containers)
         }
     }
 
-    [Fact]
-    public async Task D15_shippo_secret_absent_from_spans()
+    [Theory]
+    [InlineData("/webhooks/shippo/")]
+    [InlineData("/Webhooks/Shippo/")] // the route matches paths case-insensitively, so the redaction must too
+    public async Task D15_shippo_secret_absent_from_spans(string prefix)
     {
         await using var gateway = await TestGateway.StartAsync(containers);
         var secret = $"s3cret-{Guid.NewGuid():N}";
@@ -446,7 +448,7 @@ public class AuthTests(Containers containers)
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var response = await gateway.Client.PostAsync($"/webhooks/shippo/{secret}", new ByteArrayContent([]), Ct);
+        using var response = await gateway.Client.PostAsync($"{prefix}{secret}", new ByteArrayContent([]), Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         await Poll.UntilAsync(() => { lock (seen) return Task.FromResult(seen.Any(s => s.Kind == ActivityKind.Server) && seen.Any(s => s.Kind == ActivityKind.Client)); }, 5, "the request spans to stop");
@@ -454,7 +456,8 @@ public class AuthTests(Containers containers)
         {
             foreach (var tag in seen.SelectMany(s => s.Tags))
                 Assert.DoesNotContain(secret, tag);
-            Assert.Contains("url.path=/webhooks/shippo/***", seen.Single(s => s.Kind == ActivityKind.Server).Tags);
+            Assert.Contains($"url.path={prefix}***", seen.Single(s => s.Kind == ActivityKind.Server).Tags);
+            Assert.Contains(seen.Single(s => s.Kind == ActivityKind.Client).Tags, t => t.StartsWith("url.full=") && t.EndsWith("/webhooks/shippo/***", StringComparison.OrdinalIgnoreCase));
         }
     }
 
