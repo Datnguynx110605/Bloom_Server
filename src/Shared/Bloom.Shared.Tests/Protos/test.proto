@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package bloom.test.v1;
+
+option csharp_namespace = "Bloom.Shared.Tests.Protos";
+
+message ChargeRequest {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message ChargeResponse {
+  string charge_id = 1;
+}

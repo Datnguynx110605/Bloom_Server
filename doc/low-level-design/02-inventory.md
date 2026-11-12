@@ -4,10 +4,11 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
-| **Last updated** | 2026-10-31 |
+| **Status** | Approved (2026-11-12) |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [03-inventory](../product-design/03-inventory.md) (INV-R01 … R20), BI-02, BI-06, BI-07, LCH-R19, R20 |
 | **HLD** | [high-level-design.md §5, §8.5](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-013 |
+| **Decision records** | [LLD-ADR-014](adr/LLD-ADR-014-release-tombstone.md) |
 | **Depends on** | [00-reliability.md](00-reliability.md) |
 
 ## 1. Problem and scope
@@ -26,7 +27,7 @@
 | IR-02 | Received launch stock goes to the oldest backorders, strict FIFO, in the receipt's transaction. | INV-R10, R11 |
 | IR-03 | Every counter change writes a ledger entry in the same transaction; entries are never modified. | INV-R17, R18 |
 | IR-04 | Each shipped serial unit is linked to exactly one order (or reship). | BI-07, INV-R15 |
-| IR-05 | `inventory` never releases a reservation on its own; only `order` does. | Owner decision |
+| IR-05 | `inventory` never releases a reservation on its own; only a command from `order` (by order) or from `fulfillment` (by `reshipId`, §6.5) does. | Owner decision |
 | IR-06 | A decrease adjustment can't exceed available stock. | Owner decision |
 | IR-07 | A goods receipt is atomic: all lines and serials are recorded, or none. | Owner decision |
 | IR-08 | Reserve p95 fits the checkout budget (checkout start p95 < 300 ms overall). | QA-03 |
@@ -121,6 +122,15 @@ Index: `(sku_id, status)`.
 
 **Adjustment reason codes:** `damaged_in_warehouse` (−), `lost_in_warehouse` (−), `found` (+), `count_correction` (±), `other` (±).
 
+### 4.5 `released_orders`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `order_id` | `uuid` | PK |
+| `released_at` | `timestamptz` | not null |
+
+A tombstone for every order that had an order-level release command (§6.5, LLD-ADR-014). Purged after 30 days.
+
 ## 5. Interfaces
 
 ### 5.1 gRPC
@@ -133,10 +143,10 @@ Index: `(sku_id, status)`.
 | `AssignSerial` | fulfillment | `ref_id`, `sku_id`, `serial` → `ok` |
 | `UnassignSerial` | fulfillment | `ref_id`, `serial` → `ok` |
 | `ReplaceSerial` | fulfillment | `ref_id`, `old_serial`, `new_serial` → `ok` |
-| `RecordGoodsReceipt` | Warehouse, Admin | `note`, `lines[{sku_id, quantity, serials[]?, imeis[]?}]` → `receipt_id` |
-| `AdjustStock` | Warehouse, Admin | `sku_id`, `delta`, `reason_code`, `note`, `serial?` / `new_serials?` → `adjustment_id` |
-| `ListStockLevels` | Warehouse, Catalog manager, Support, Admin | filters → counters per SKU |
-| `GetLedger` | Warehouse, Admin | `sku_id`, time range, page → entries |
+| `RecordGoodsReceipt` | Warehouse, Admin | `note`, `lines[{sku_id, quantity, serials[]?, imeis[]?}]` → `receipt_id`. `imeis[]` is parallel to `serials[]` (`imeis[i]` belongs to `serials[i]`): empty or the same length, else the line is invalid; empty-string entries are not allowed; IMEIs on a non-serialized line are invalid (`RECEIPT_INVALID`). Requires `Idempotency-Key` |
+| `AdjustStock` | Warehouse, Admin | `sku_id`, `delta`, `reason_code`, `note`, `serial?` / `new_serials?` / `new_imeis?` → `adjustment_id`. Serialized SKU: one unit per call (`delta = ±1`), shapes in §6.8; non-serialized SKU: any non-zero `delta`, no `serial` / `new_serials`. Requires `Idempotency-Key` |
+| `ListStockLevels` | Warehouse, Catalog manager, Support, Admin | Filters, all optional and ANDed: `product_id`, `sku_ids[]`, `available_at_most` (≥ 0; `0` = sold out), `has_backorders` (SKU has ≥ 1 `backordered` allocation). Paged (`page` from 1, `page_size` 1–100, default 50), ordered by `sku_id` → items `sku_id`, `product_id`, `serialized`, `on_hand`, `reserved`, `available`, `committed`, `returned`, `damaged`, `lost`, `backordered` (sum of `backordered` quantities), `updated_at`. Never-received SKUs have no row and are not listed |
+| `GetLedger` | Warehouse, Admin | `sku_id`, `from?` (inclusive), `to?` (exclusive), paged as `ListStockLevels` → entries, newest first by `(created_at, id)`. Unknown SKU → empty page |
 | `GetSerial` | Warehouse, Support, Admin | `serial` → unit status and `ref_id` |
 
 ### 5.2 Outgoing calls
@@ -152,7 +162,7 @@ Index: `(sku_id, status)`.
 | `inventory.stock-allocated.v1` | Published → order | `orderId`; emitted when **every** pre-order line of the order is `committed` |
 | `identity.staff-action-recorded.v1` | Published | Receipts, adjustments, serial changes |
 | `order.paid.v1` | Consumed (`inventory.order-paid`) | Payload includes `launchId` (null for regular), `paidAt`, lines |
-| `inventory.release-reservation.v1` | Consumed (`inventory.release-reservation`) | Command from order: `orderId` |
+| `inventory.release-reservation.v1` | Consumed (`inventory.release-reservation`) | Command from order: `orderId`. Command from fulfillment: `orderId`, `reshipId` (optional field, additive, stays v1 per LLD-ADR-004): release by reship id, §6.5 |
 | `inventory.reservation-released.v1` | Published → order | `orderId`. Written in the same transaction as **every** applied release command, including no-ops (saga completion, [03-order](03-order.md)) |
 | `fulfillment.shipment-shipped.v1` | Consumed (`inventory.shipment-shipped`) | `refId`, lines |
 | `inventory.receive-customer-return.v1` | Consumed | Command from fulfillment: `orderId`, accepted units `[{skuId, serial?, quantity}]` |
@@ -165,13 +175,19 @@ Index: `(sku_id, status)`.
 |---|---|---|
 | `SOLD_OUT` | `FAILED_PRECONDITION` | Not enough available stock; metadata `skuId` |
 | `RESERVATION_CONFLICT` | `INVALID_ARGUMENT` | Same `order_id` / `reship_id` retried with different lines |
-| `SKU_NOT_STOCKED` | `FAILED_PRECONDITION` | No `stock_items` row (never received) |
-| `SERIAL_NOT_AVAILABLE` | `FAILED_PRECONDITION` | Serial unknown, other SKU, or not `in_stock` |
+| `SKU_NOT_STOCKED` | `FAILED_PRECONDITION` | No `stock_items` row (never received); also `AdjustStock` and `CommitForReship` on such a SKU |
+| `SERIAL_NOT_AVAILABLE` | `FAILED_PRECONDITION` | Serial unknown, other SKU, or not `in_stock`; also `UnassignSerial` / `ReplaceSerial` when the old serial isn't `assigned` to `ref_id` (and isn't the idempotent `in_stock` case of §6.6) |
 | `SERIAL_COUNT_EXCEEDED` | `FAILED_PRECONDITION` | All units of the line already have serials |
-| `NOT_COMMITTED` | `FAILED_PRECONDITION` | Assigning serials to an allocation that isn't `committed` |
+| `NOT_COMMITTED` | `FAILED_PRECONDITION` | Assigning serials to an allocation that isn't `committed`, or when no allocation `(ref_id, sku_id)` exists |
 | `RECEIPT_INVALID` | `INVALID_ARGUMENT` | Bad receipt; details list every bad serial / line |
 | `ADJUSTMENT_EXCEEDS_AVAILABLE` | `FAILED_PRECONDITION` | Decrease larger than `available` (IR-06) |
 | `SERIAL_ASSIGNED` | `FAILED_PRECONDITION` | Adjusting a serial that's assigned to an order |
+| `ORDER_RELEASED` | `FAILED_PRECONDITION` | `ReserveStock` for an order in `released_orders`; nothing reserved (LLD-ADR-014) |
+| `CATALOG_UNAVAILABLE` | `UNAVAILABLE` | Catalog `LockSkuForStock` failed on a first receipt (§5.2); nothing written |
+| `NOT_FOUND` | `NOT_FOUND` | `GetSerial` for an unknown serial |
+| `VALIDATION_FAILED` | `INVALID_ARGUMENT` | Bad request field, named in `ErrorInfo` metadata (e.g. empty `lines`, quantity ≤ 0, `delta = 0`, `page_size` out of range, reason code not allowed in that direction or for a serialized unit (§6.8), bad serial / IMEI format outside a receipt) |
+| `ROLE_NOT_ALLOWED` | `PERMISSION_DENIED` | Caller's role may not call the method (00-reliability §8) |
+| `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_INVALID`, `IDEMPOTENCY_KEY_REUSED` | `INVALID_ARGUMENT` | `RecordGoodsReceipt` / `AdjustStock` with the `Idempotency-Key` missing, not a UUID, or reused for a different request (00-reliability §7.4) |
 
 ## 6. Behaviour
 
@@ -185,16 +201,14 @@ All counter changes are guarded single-statement updates ([00-reliability.md §7
 
 ### 6.2 `order.paid.v1`
 
+- **Tombstone check:** if the order is in `released_orders`, create no allocations and log a warning (LLD-ADR-014).
 - **Regular** (`launchId` null): for each `reserved` allocation: `reserved −= q, on_hand −= q, committed += q`; status `committed`; ledger `committed`. Allocations not `reserved` → no-op.
 - **Pre-order** (`launchId` set): insert `backordered` allocations with `paid_at`; then run the allocator (§6.4) for each SKU.
 
 ### 6.3 Goods receipt (IR-07)
 
-1. Validate the whole request first; collect every error and return `RECEIPT_INVALID` with all of them if any:
-   - quantity > 0; no duplicate `sku_id` lines;
-   - serialized SKU: `serials` count = quantity, no duplicates within the request, none existing in `serial_units`; IMEIs (if given) unique;
-   - non-serialized SKU: no serials.
-2. For each SKU without a `stock_items` row: call catalog `LockSkuForStock` (outside the transaction, idempotent) and keep `serialized` and `product_id`.
+1. Validate the checks that don't need `serialized` first (a): quantity > 0; no duplicate `sku_id` lines; serial / IMEI format; no duplicate serials or IMEIs within the request; none already in `serial_units`; `imeis` length (empty or = `serials`). Errors → `RECEIPT_INVALID` listing every bad line / serial; (b) and (c) are skipped.
+2. (b) For each SKU without a `stock_items` row: call catalog `LockSkuForStock` (outside the transaction, idempotent) and keep `serialized` and `product_id`; catalog unavailable → `CATALOG_UNAVAILABLE`, nothing written (§8). Then (c) the checks that need `serialized`: serialized SKU: `serials` count = quantity; non-serialized SKU: no serials, no IMEIs. Errors of (a) and (c) are collected into one `RECEIPT_INVALID`. A receipt rejected at (c) may leave the SKU locked in catalog (accepted).
 3. `BEGIN`. Insert missing `stock_items` rows. Insert receipt, lines, `serial_units` (`in_stock`). `on_hand += q` per SKU; ledger `received`.
 4. Run the allocator for each SKU (§6.4).
 5. Audit event. `COMMIT`.
@@ -224,6 +238,10 @@ For each allocation of the order:
 
 Status → `released`. The same transaction writes `inventory.reservation-released.v1` to the outbox, also when nothing needed releasing, so `order`'s saga can complete.
 
+**Tombstone.** Every order-level release command inserts `released_orders(order_id)` (`ON CONFLICT DO NOTHING`); `ReserveStock` (§5.4 `ORDER_RELEASED`) and `order.paid.v1` (§6.2) check it (LLD-ADR-014).
+
+**`reshipId` branch.** If the command carries `reshipId`, release only the allocations with `ref_id = reshipId`, write **no** tombstone, and still publish `reservation-released {orderId}`.
+
 ### 6.6 Packing serial operations
 
 | Operation | Checks | Effect |
@@ -248,8 +266,8 @@ All three are idempotent for retries: assigning a serial already `assigned` to t
 
 | Direction | Rule |
 |---|---|
-| Decrease (`damaged_in_warehouse`, `lost_in_warehouse`, `count_correction −`, `other −`) | Guarded `UPDATE … SET on_hand = on_hand - @n WHERE sku_id = @s AND on_hand - reserved >= @n` → else `ADJUSTMENT_EXCEEDS_AVAILABLE`. `damaged` or `lost += n` for the first two codes. Serialized: the named serial must be `in_stock` (assigned → `SERIAL_ASSIGNED`); it becomes `damaged` / `lost`. |
-| Increase (`found`, `count_correction +`, `other +`) | `on_hand += n`. Serialized: either new serials (validated as in a receipt) or a `lost` serial back to `in_stock` (`lost −= 1`). Then run the allocator. |
+| Decrease (`damaged_in_warehouse`, `lost_in_warehouse`, `count_correction −`, `other −`) | Guarded `UPDATE … SET on_hand = on_hand - @n WHERE sku_id = @s AND on_hand - reserved >= @n` → else `ADJUSTMENT_EXCEEDS_AVAILABLE`. `damaged` or `lost += n` for the first two codes. Serialized: one unit per call (`delta = −1`) with `serial`, which must be of that SKU and `in_stock` (`assigned` → `SERIAL_ASSIGNED`; other states or unknown → `SERIAL_NOT_AVAILABLE`). Allowed only with `damaged_in_warehouse` (serial → `damaged`) or `lost_in_warehouse` (serial → `lost`); `count_correction` / `other` → `VALIDATION_FAILED` (`reason_code`). |
+| Increase (`found`, `count_correction +`, `other +`) | `on_hand += n`. Serialized: one unit per call (`delta = +1`) with exactly one of `serial` (a `lost` unit of that SKU back to `in_stock`, `lost −= 1`) or `new_serials` of length 1 plus optional parallel `new_imeis` of length 1 (validated as in a receipt; the new `serial_units` row's `receipt_id` is the adjustment id); any other combination → `VALIDATION_FAILED`. Then run the allocator. |
 
 Every adjustment requires a note, writes `stock_adjustments` + ledger `adjusted`, and is audited (INV-R12).
 
@@ -267,7 +285,8 @@ Every adjustment requires a note, writes `stock_adjustments` + ledger `adjusted`
 | Deadlocks | Ascending `sku_id` lock order everywhere |
 | Duplicate / reordered messages | Inbox + allocation-status guards (§6.5, §6.7 tables) |
 | Serial double-assigned | Primary key + status check in a guarded update (`WHERE status = 'in_stock'`) |
-| Delayed "paid" after a release | Impossible by design: only `order` releases (IR-05) |
+| Delayed "paid" after a release | Release tombstone: every order-level release command inserts `released_orders(order_id)`; a later `order.paid.v1` for that order creates no allocations and logs a warning; tombstones are purged after 30 days (§4.5, §6.5, LLD-ADR-014) |
+| Release vs concurrent reserve / paid | Per-order transaction advisory lock taken first by the release consumer, `ReserveStock` and `order.paid` (before the tombstone check and any SKU lock). Lock order: order lock → SKU locks → the allocator's order lock |
 
 ## 8. Edge cases
 
@@ -282,6 +301,7 @@ Every adjustment requires a note, writes `stock_adjustments` + ledger `adjusted`
 | Receipt with one duplicate serial among 100 | Whole receipt rejected with that serial listed. |
 | catalog unavailable on a first receipt | Receipt fails; nothing written. |
 | `GetAvailability` for a never-received SKU | `available = 0`. |
+| Repeated lost-in-transit for a serialized ref | No-op once its units are counted. |
 
 ## 9. Security and validation
 

@@ -1,0 +1,16 @@
+--- subject
+Your return for order {{ orderNumber }} expired
+--- html
+<p>Hi {{ name }},</p>
+<p>We did not receive your return for order {{ orderNumber }} in time, so the return is closed.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+We did not receive your return for order {{ orderNumber }} in time, so the return is closed.
+
+View your order: {{ orderUrl }}
+--- title
+Return expired
+--- body
+We did not receive your return for order {{ orderNumber }} in time, so it is closed.

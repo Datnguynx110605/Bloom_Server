@@ -1,0 +1,216 @@
+syntax = "proto3";
+
+package bloom.launch.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Launch";
+
+// 01-launch §5.1, Customer API, transcoded to JSON under /api/launches (spec §6). The internal HoldAllocation is in launch_internal.proto.
+service LaunchCustomer {
+  // Public view of a launch with the derived waiting-room state (§6.1). NOT_FOUND for a draft or unknown launch.
+  rpc GetLaunch(GetLaunchRequest) returns (PublicLaunch) {
+    option (google.api.http) = { get: "/api/launches/{launch_id}" };
+  }
+
+  // §6.2. Customers only.
+  rpc JoinWaitingRoom(WaitingRoomRequest) returns (WaitingRoomStatus) {
+    option (google.api.http) = { post: "/api/launches/{launch_id}/waiting-room" };
+  }
+
+  // §6.3. Customers only; never reads Postgres on the request path, except a 5 s cache miss (LR-04).
+  rpc GetWaitingRoomStatus(WaitingRoomRequest) returns (WaitingRoomStatus) {
+    option (google.api.http) = { get: "/api/launches/{launch_id}/waiting-room" };
+  }
+}
+
+message GetLaunchRequest {
+  string launch_id = 1;
+}
+
+message WaitingRoomRequest {
+  string launch_id = 1;
+}
+
+// No counts and no version.
+message PublicLaunch {
+  string id = 1;
+  string name = 2;
+  string stage = 3;
+  google.protobuf.Timestamp launch_time = 4;
+  google.protobuf.Timestamp release_date = 5;
+  repeated LaunchProduct products = 6;
+  repeated PublicSku skus = 7;
+  // not_open | open | sold_out | closed
+  string waiting_room_state = 8;
+}
+
+message LaunchProduct {
+  string product_id = 1;
+  int32 purchase_limit = 2;
+}
+
+message PublicSku {
+  string sku_id = 1;
+  string product_id = 2;
+}
+
+// Fields are set only in the states of 01-launch §5.1; "" and 0 mean unset.
+message WaitingRoomStatus {
+  // not_open | queued | admitted | sold_out | closed
+  string state = 1;
+  // 1-based; queued only.
+  int32 position = 2;
+  // admitted only.
+  string pass_token = 3;
+  google.protobuf.Timestamp pass_expires_at = 4;
+  // 4 to 6; not_open, queued and sold_out only.
+  int32 poll_after_seconds = 5;
+}
+
+// 01-launch §5.1, Admin API (staff: catalog_manager, admin), transcoded to JSON under /api/admin/launches (spec §6).
+// Every write returns the admin view with the new version.
+service LaunchAdmin {
+  rpc AdminListLaunches(AdminListLaunchesRequest) returns (AdminListLaunchesResponse) {
+    option (google.api.http) = { get: "/api/admin/launches" };
+  }
+
+  rpc CreateLaunch(CreateLaunchRequest) returns (AdminLaunch) {
+    option (google.api.http) = { post: "/api/admin/launches" body: "*" };
+  }
+
+  rpc AdminGetLaunch(AdminGetLaunchRequest) returns (AdminLaunch) {
+    option (google.api.http) = { get: "/api/admin/launches/{launch_id}" };
+  }
+
+  rpc AddLaunchProduct(AddLaunchProductRequest) returns (AdminLaunch) {
+    option (google.api.http) = { post: "/api/admin/launches/{launch_id}/products" body: "*" };
+  }
+
+  rpc AddLaunchSku(AddLaunchSkuRequest) returns (AdminLaunch) {
+    option (google.api.http) = { post: "/api/admin/launches/{launch_id}/skus" body: "*" };
+  }
+
+  rpc SetAllocation(SetAllocationRequest) returns (AdminLaunch) {
+    option (google.api.http) = { put: "/api/admin/launches/{launch_id}/skus/{sku_id}/allocation" body: "*" };
+  }
+
+  rpc SetPurchaseLimit(SetPurchaseLimitRequest) returns (AdminLaunch) {
+    option (google.api.http) = { put: "/api/admin/launches/{launch_id}/products/{product_id}/purchase-limit" body: "*" };
+  }
+
+  rpc SetReleaseDate(SetReleaseDateRequest) returns (AdminLaunch) {
+    option (google.api.http) = { put: "/api/admin/launches/{launch_id}/release-date" body: "*" };
+  }
+
+  rpc SetLaunchTime(SetLaunchTimeRequest) returns (AdminLaunch) {
+    option (google.api.http) = { put: "/api/admin/launches/{launch_id}/launch-time" body: "*" };
+  }
+
+  rpc SetAdmissionRate(SetAdmissionRateRequest) returns (AdminLaunch) {
+    option (google.api.http) = { put: "/api/admin/launches/{launch_id}/admission-rate" body: "*" };
+  }
+
+  rpc PublishLaunch(PublishLaunchRequest) returns (AdminLaunch) {
+    option (google.api.http) = { post: "/api/admin/launches/{launch_id}/publish" body: "*" };
+  }
+}
+
+// Every launches column, the products with their limits and the SKUs with their counters. The list leaves products and skus empty.
+message AdminLaunch {
+  string id = 1;
+  string name = 2;
+  string stage = 3;
+  google.protobuf.Timestamp launch_time = 4;
+  google.protobuf.Timestamp release_date = 5;
+  int32 admission_rate = 6;
+  // Unset until the waiting room is closed.
+  google.protobuf.Timestamp waiting_room_closed_at = 7;
+  int64 version = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  repeated LaunchProduct products = 11;
+  repeated AdminSku skus = 12;
+}
+
+message AdminSku {
+  string sku_id = 1;
+  string product_id = 2;
+  int32 allocation = 3;
+  int32 held = 4;
+  int32 sold = 5;
+}
+
+message AdminListLaunchesRequest {
+  // 0 means 20; 1 to 100.
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message AdminListLaunchesResponse {
+  repeated AdminLaunch launches = 1;
+  // Empty on the last page.
+  string next_page_token = 2;
+}
+
+message CreateLaunchRequest {
+  string name = 1;
+  google.protobuf.Timestamp launch_time = 2;
+  google.protobuf.Timestamp release_date = 3;
+  int32 admission_rate = 4;
+}
+
+message AdminGetLaunchRequest {
+  string launch_id = 1;
+}
+
+message AddLaunchProductRequest {
+  string launch_id = 1;
+  string product_id = 2;
+  int32 purchase_limit = 3;
+}
+
+message AddLaunchSkuRequest {
+  string launch_id = 1;
+  string sku_id = 2;
+  string product_id = 3;
+  int32 allocation = 4;
+}
+
+message SetAllocationRequest {
+  string launch_id = 1;
+  string sku_id = 2;
+  int32 allocation = 3;
+  int64 version = 4;
+}
+
+message SetPurchaseLimitRequest {
+  string launch_id = 1;
+  string product_id = 2;
+  int32 purchase_limit = 3;
+  int64 version = 4;
+}
+
+message SetReleaseDateRequest {
+  string launch_id = 1;
+  google.protobuf.Timestamp release_date = 2;
+  int64 version = 3;
+}
+
+message SetLaunchTimeRequest {
+  string launch_id = 1;
+  google.protobuf.Timestamp launch_time = 2;
+  int64 version = 3;
+}
+
+message SetAdmissionRateRequest {
+  string launch_id = 1;
+  int32 admission_rate = 2;
+  int64 version = 3;
+}
+
+message PublishLaunchRequest {
+  string launch_id = 1;
+  int64 version = 2;
+}

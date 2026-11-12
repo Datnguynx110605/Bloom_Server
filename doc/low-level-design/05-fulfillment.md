@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
-| **Last updated** | 2026-10-31 |
+| **Status** | Approved (2026-11-12) |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) ORD-R08 … R17, [07-returns-refunds](../product-design/07-returns-refunds.md) RET-R01 … R15, WAR-R01 … R06, BI-05, BI-07 |
 | **HLD** | [high-level-design.md §5, §8.4](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-018 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [02-inventory.md](02-inventory.md), [03-order.md](03-order.md), [04-payment.md](04-payment.md) |
@@ -33,8 +33,8 @@
 
 | Component | Deployment | Responsibility |
 |---|---|---|
-| Warehouse API | API | Start packing, scan / unassign / replace serials, complete packing, handover scan, receive return, record inspection, record returned-to-sender inspection |
-| Support API | API | Return decisions, confirm lost (refund or reship), dismiss possibly-lost |
+| Warehouse API | API | Start packing, scan / unassign / replace serials, complete packing, handover scan, receive return, record inspection, record returned-to-sender inspection, list pack tasks, list returns |
+| Support API | API | Return decisions, confirm lost (refund or reship), dismiss possibly-lost, list delivery failures |
 | Customer API | API | Request return, list own returns, warranty coverage lookup |
 | Internal API | API | `CancelPackTask` (order) |
 | Shippo webhook | API | Plain HTTP `POST /webhooks/shippo/{secret}` |
@@ -81,7 +81,12 @@
 | `label_url` | `text` | |
 | `last_tracking_at` | `timestamptz` | last carrier update |
 | `handed_over_at`, `delivered_at` | `timestamptz` | |
+| `label_attempts` | `int` | Label worker attempts (§6.6) |
+| `next_attempt_at` | `timestamptz` | Next label worker attempt (§6.6) |
+| `created_at` | `timestamptz` | |
 | `version` | `bigint` | |
+
+Every shipment takes its address from the order's `kind = order` pack task.
 
 ### 4.2 Money accounting per order line
 
@@ -113,9 +118,9 @@
 | `refund_cents` | price + tax for this unit |
 | `refund_tax_cents` | tax part (RET-R14) |
 
-**`delivery_failures`**: `shipment_id` (PK), `kind` (`returned_to_sender` \| `lost`), `status` (`possibly_lost` \| `confirmed` \| `resolved_refund` \| `resolved_reship` \| `dismissed`), `rts_outcomes` (jsonb per unit: `sealed` \| `failed`), `reship_id`, `decided_by`, timestamps.
+**`delivery_failures`**: `shipment_id` (PK), `kind` (`returned_to_sender` \| `lost`), `status` (`possibly_lost` \| `confirmed` \| `resolved_refund` \| `resolved_reship` \| `dismissed`), `rts_outcomes` (jsonb per unit: `sealed` \| `failed`), `reship_id`, `previous_status` (the shipment's status before it was flagged), `dismissed_at`, `decided_by`, timestamps. A re-flag of the same shipment reuses the row.
 
-**`fulfillment_sagas`** — PK `(ref_id, type)`: `type` = `return_refund` \| `delivery_failure`; `pending_steps` (`refund`); `started_at`, `completed_at`.
+**`fulfillment_sagas`** — PK `(ref_id, type)`: `type` = `return_refund` \| `delivery_failure`; `pending_steps` (`refund`); `refund_id` (unique); `refund_lines` (jsonb: that refund's per-line amounts); `refunded_shipping` (bool: true if that refund set `shipping_refunded`); `started_at`, `completed_at`.
 
 ### 4.4 Warranty
 
@@ -130,6 +135,8 @@
 | `status` | `pending_delivery` \| `active` \| `cancelled` |
 | `starts_at`, `ends_at` | set at delivery |
 
+`GetCoverage` returns `expired` when `status = active` and `ends_at ≤ now`. Nothing stored changes.
+
 ## 5. Interfaces
 
 ### 5.1 gRPC and HTTP
@@ -137,19 +144,22 @@
 | Method | Caller | Request → Response |
 |---|---|---|
 | `StartPacking` | Warehouse | `task_id`, `version` → task |
-| `ScanSerial` / `UnassignSerial` / `ReplaceSerial` | Warehouse | `task_id`, `line_no`, `serial` (…) → task |
+| `ScanSerial` / `UnassignSerial` / `ReplaceSerial` | Warehouse | `task_id`, `line_no`, `serial` (…) → task. `UnassignSerial` on an open task with no local record of the serial still calls inventory `UnassignSerial` for that order; inventory's own check decides |
 | `CompletePacking` | Warehouse | `task_id`, `version` → task + shipment (`label_pending`) |
 | `HandOver` | Warehouse | `tracking_number` or `shipment_id` → shipment |
 | `CancelPackTask` | order | `order_id`, `by` = `customer` \| `support` → `ok` |
-| `RequestReturn` | Customer | `order_id`, `units[{line_no, quantity}]` → return request |
+| `RequestReturn` | Customer | **`Idempotency-Key` required** (product and plan-only), single-transaction form ([00-reliability §7.4](00-reliability.md)). `order_id`, `units[{line_no, quantity}]` → return request |
 | `ListMyReturns` | Customer | → returns |
 | `ReceiveReturn` | Warehouse | `return_id` → return |
 | `RecordInspection` | Warehouse | `return_id`, `units[{unit_no, received_serial?, result, notes}]` → return |
 | `DecideReturn` | Support, Admin | **`Idempotency-Key` required.** `return_id`, `units[{unit_no, decision, partial_cents?}]` → refund summary |
-| `RecordReturnedToSender` | Warehouse | `shipment_id`, `units[{serial?, sku_id, outcome}]` → failure |
+| `RecordReturnedToSender` | Warehouse | **`Idempotency-Key` required.** `shipment_id`, `units[{serial?, sku_id, outcome}]` → failure |
 | `ConfirmLost` | Support, Admin | **`Idempotency-Key` required.** `shipment_id`, `resolution` = `refund` \| `reship` → failure |
 | `DismissPossiblyLost` | Support, Admin | `shipment_id` → failure |
-| `GetCoverage` | Customer (own), Support, Admin | `serial` → coverage |
+| `GetCoverage` | Customer (own), Support, Admin | `serial` → coverage (`status` includes `expired`, derived at read: §4.4) |
+| `ListPackTasks` | Warehouse | → pack tasks (§4.1) |
+| `ListReturns` | Warehouse | → returns (§4.3) |
+| `ListDeliveryFailures` | Support, Admin | → delivery failures (§4.3) |
 | `POST /webhooks/shippo/{secret}` | Shippo (gateway public route) | Tracking event → `200` |
 
 ### 5.2 Outgoing calls
@@ -164,7 +174,7 @@
 
 | Message | Direction | Payload / effect |
 |---|---|---|
-| `fulfillment.packing-started.v1` | Published → order | `orderId` |
+| `fulfillment.packing-started.v1` | Published → order | `orderId`; for `kind = order` tasks only |
 | `fulfillment.shipment-shipped.v1` | Published → order, inventory, notification | `orderId`, `refId`, `lines[{skuId, quantity, serials[]}]`, `trackingNumber` |
 | `fulfillment.shipment-delivered.v1` | Published → order, notification | `orderId`, `refId`, `deliveredAt` |
 | `fulfillment.delivery-failed.v1` | Published → order, notification | `orderId`, `kind` |
@@ -173,12 +183,12 @@
 | `fulfillment.return-label-issued.v1` | Published → notification | `orderId`, `returnId`, `labelUrl` (when the return label is bought) |
 | `fulfillment.return-received.v1` | Published → notification | `orderId`, `returnId` (on `ReceiveReturn`) |
 | `fulfillment.return-decided.v1` | Published → order, notification | `orderId`, `returnId`, `accepted[{lineNo, quantity}]`, `refundCents` |
-| `payment.refund-payment.v1` | Command → payment | `orderId`, `refundId`, `amountCents`, `lines[{lineNo, amountCents}]` |
+| `payment.refund-payment.v1` | Command → payment | `orderId`, `refundId`, `amountCents`, `reason` (`return` \| `delivery_failure`), `lines[{lineNo, amountCents}]` |
 | `inventory.receive-customer-return.v1` / `receive-returned-to-sender.v1` / `mark-lost-in-transit.v1` | Commands → inventory | per [02-inventory §5.3](02-inventory.md) |
 | `identity.staff-action-recorded.v1` | Published | Every staff action |
 | `order.ready-to-fulfill.v1` | Consumed | Creates the pack task and line accounts |
-| `payment.refund-completed.v1` / `refund-failed.v1` | Consumed | Saga step `refund` done / marked failed |
-| `identity.account-deleted.v1` | Consumed | Anonymize addresses |
+| `payment.refund-completed.v1` / `refund-failed.v1` | Consumed | Saga step `refund` done / marked failed (§6.7) |
+| `identity.account-deleted.v1` | Consumed | Anonymize addresses; close waiting return requests (§6.7) |
 
 ### 5.4 Error reasons
 
@@ -193,6 +203,14 @@
 | `INVALID_RETURN_STATE` | `FAILED_PRECONDITION` | Action not allowed in the return's status |
 | `PARTIAL_EXCEEDS_SHARE` | `INVALID_ARGUMENT` | Partial amount above the unit's share (RET-R07) |
 | `RESHIP_NO_STOCK` | `FAILED_PRECONDITION` | inventory `SOLD_OUT` on reship; choose refund |
+| `INVALID_STATE` | `FAILED_PRECONDITION` | A pack task, shipment or delivery failure is not in a status the action accepts (`INVALID_RETURN_STATE` stays for returns) |
+| `NOT_FOUND` | `NOT_FOUND` | The addressed record doesn't exist |
+| `VALIDATION_FAILED` | `INVALID_ARGUMENT` | Bad request field, named in `ErrorInfo` metadata |
+| `ROLE_NOT_ALLOWED` | `PERMISSION_DENIED` | Caller's role may not call the method (00-reliability §8) |
+| `CONCURRENCY_CONFLICT` | `ABORTED` | Stale `version` |
+| `IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_INVALID`, `IDEMPOTENCY_KEY_REUSED` | `INVALID_ARGUMENT` | Key missing, not a UUID, or reused for a different request on a method that requires it (00-reliability §7.4) |
+
+Inventory's reasons on scans and `CommitForReship` (for example `SERIAL_NOT_AVAILABLE`, `NOT_COMMITTED`) pass through unchanged, except `SOLD_OUT` → `RESHIP_NO_STOCK`.
 
 ## 6. Behaviour
 
@@ -211,7 +229,7 @@ stateDiagram-v2
 ```
 
 - `order.ready-to-fulfill.v1` for a `ref_id` that already has a `cancelled` marker → ignored.
-- **`CancelPackTask`** (guarded on status in one transaction): no task → insert marker, `ok`; `pending` → `cancelled`; `packing` / `packed` → customer `PACKING_STARTED`, Support `cancelled` (+ label `void_pending` if bought); `handed_over` → `ALREADY_SHIPPED`. Serials are unassigned by inventory when it processes order's release command.
+- **`CancelPackTask`** (guarded on status in one transaction): no task → insert marker, `ok`; `pending` → `cancelled`; `packing` / `packed` → customer `PACKING_STARTED`, Support `cancelled` (+ label `void_pending` if bought, and the order's `pending_delivery` coverages `cancelled`); `handed_over` → `ALREADY_SHIPPED`. Serials are unassigned by inventory when it processes order's release command.
 
 ### 6.2 Packing
 
@@ -233,26 +251,30 @@ Webhook: wrong secret → `404`. Otherwise read `tracking_number`, **re-fetch** 
 
 Every update sets `last_tracking_at`. Transitions are guarded, so repeated or late callbacks are no-ops.
 
-**Possibly-lost sweep (hourly):** outbound `handed_over` / `in_transit` with `last_tracking_at` (or `handed_over_at`) older than 7 days → `possibly_lost`, `delivery_failures` row, alert.
+**A carrier scan implies handover.** `TRANSIT` or `DELIVERED` on a `label_ready` outbound shipment first applies the HandOver step (§6.2 step 4: task → `handed_over`, publish `shipment-shipped`, `handed_over_at` = the carrier's `status_date` (processing time if absent)), then the normal transition.
+
+**A lost parcel delivered later is recorded and alerted.** `DELIVERED` on a `lost` shipment sets `delivered_at`, keeps status `lost`, and logs an Error (alert → Support). No stock or money moves.
+
+**Possibly-lost sweep (hourly):** outbound `handed_over` / `in_transit` with the latest of `last_tracking_at`, `handed_over_at` and `dismissed_at` older than 7 days → `possibly_lost`, `delivery_failures` row (a re-flag reuses the existing row), alert.
 
 ### 6.4 Returns
 
 | Step | Rule |
 |---|---|
-| `RequestReturn` | Order delivered and `now ≤ delivered_at + 14 days` (RET-R01). Units per line ≤ `quantity − refunded_units −` units in open requests. Product units → request `requested`, label worker buys a **return label** → `label_issued`. **Plan-only** request (WAR-R06): decided immediately as a full refund (no shipping, no inspection). Publish `return-requested`. |
-| Expiry (hourly) | `label_issued` past `expires_at` → `expired`; return label voided; publish `return-closed` (RET-R15). |
-| `ReceiveReturn` | `in_transit` / `label_issued` → `received`; publish `return-received`. |
-| `RecordInspection` | Per unit: `result`, notes, `received_serial` for serialized lines (must be one shipped on this order, else `wrong_item`). → `inspected`. |
+| `RequestReturn` | Order delivered and `now ≤ delivered_at + 14 days` (RET-R01). Units per line ≤ `quantity − refunded_units −` units in open requests. Product units → request `requested`, label worker buys a **return label** → `label_issued`. **Plan-only** request (WAR-R06): decided immediately as a full refund (no shipping, no inspection). A request is plan-only or product-only; any mix → `VALIDATION_FAILED` (`units`). Publish `return-requested`. |
+| Expiry (hourly) | `requested` and `label_issued` past `expires_at` → `expired` (RET-R15: label not scanned); return label voided; publish `return-closed`. Skips requests whose return shipment is already `in_transit` or `delivered`. |
+| `ReceiveReturn` | `in_transit` / `label_issued` / `expired` → `received`; publish `return-received`. An `expired` return then follows the normal inspection and decision; Support may reject. |
+| `RecordInspection` | Per unit: `result`, notes, `received_serial` for serialized lines (must be one shipped on this order, else `wrong_item`). A serial is stored as `wrong_item` when it was not shipped on that unit's own line, or when another return of the order already holds it (a return holds a serial while it is `received` or `inspected`, or `decided` with a decision other than `reject`). The same serial on two units of one call → `VALIDATION_FAILED` (`units`). → `inspected`. |
 | `DecideReturn` | §6.4.1. → `decided`; publish `return-decided` and `return-closed`. |
 
 #### 6.4.1 Refund amount (one transaction)
 
-1. **Unit share** for line L: `floor(paid_cents / quantity)`, except the unit that would make `refunded_units = quantity`, which gets `paid_cents − refunded_cents` (FR-02). Tax part: the same rule applied to `tax_cents`.
+1. **Unit share** for line L: `floor(paid_cents / quantity)`, except the unit that would make `refunded_units = quantity`, which gets `paid_cents − (quantity − 1) × floor(paid_cents / quantity)` (FR-02). Tax part: the same rule applied to `tax_cents`.
 2. Per unit decision: `full` → share; `partial` → `partial_cents ≤ share` (else `PARTIAL_EXCEEDS_SHARE`), tax part = `round_half_up(partial × unit_tax / share)` (RET-R14); `reject` → 0.
-3. **Plans** (WAR-R05): for each accepted (`full` or `partial`) device unit whose serial has a coverage, add that plan unit's full share and set the coverage `cancelled`.
+3. **Plans** (WAR-R05): for each accepted (`full` or `partial`) device unit whose serial has a coverage, add that plan unit's full share and set the coverage `cancelled`. Units inspected `wrong_item` are skipped (a foreign serial never cancels a coverage); the unit's own share is still refunded.
 4. **Express fee** (RET-R13): if, after this decision, every product unit of the order is refunded (`refunded_units = quantity` on all product lines) and `shipping_refunded` is false → add `shipping_cents`, set `shipping_refunded`.
 5. Guarded updates on `order_line_accounts` (`refunded_cents + x <= paid_cents`).
-6. Outbox: `payment.refund-payment.v1` (`refundId` = new UUIDv7, total, per-line breakdown); `inventory.receive-customer-return.v1` for accepted product units; `return-decided`; `return-closed`. Saga `return_refund` (step `refund`).
+6. Outbox: `payment.refund-payment.v1` (`refundId` = new UUIDv7, total, per-line breakdown); `inventory.receive-customer-return.v1` for accepted product units (accepted serialized units whose inspection is `wrong_item` are left out, with a warning log: the item isn't Bloom stock); `return-decided`; `return-closed`. Saga `return_refund` (step `refund`). If the amount is 0: no `payment.refund-payment.v1` and no saga; the response has `refund_id = ""` and `amount_cents = 0`; `return-decided` and `return-closed` are still published.
 7. Rejected units: insert a `ship_back` shipment (`label_pending`) to the customer at Bloom's cost (RET-R08).
 
 ### 6.5 Delivery failures (ORD-R12, R13, R17)
@@ -261,14 +283,23 @@ Every update sets `last_tracking_at`. Transitions are guarded, so repeated or la
 |---|---|
 | `RecordReturnedToSender` (after `RETURNED`) | `inventory.receive-returned-to-sender.v1` with per-unit `sealed` / `failed`; refund **remaining order total** (`total_cents − Σ refunded`, includes Express); coverages `cancelled`; publish `delivery-failed`; failure `resolved_refund` |
 | `ConfirmLost(refund)` | `inventory.mark-lost-in-transit.v1`; same full refund; coverages `cancelled`; publish `delivery-failed`; `resolved_refund` |
-| `ConfirmLost(reship)` | inventory `CommitForReship(reship_id, product lines)` (sync; `SOLD_OUT` → `RESHIP_NO_STOCK`); `inventory.mark-lost-in-transit.v1` for the original; new pack task (`kind = reship`, `ref_id = reship_id`, same lines and address); coverages move to the new serials at its packing; `resolved_reship`. Order stays *Shipped*. |
-| `DismissPossiblyLost` | Shipment back to its previous status; failure `dismissed` |
+| `ConfirmLost(reship)` | inventory `CommitForReship(reship_id, product lines)` (sync; `SOLD_OUT` → `RESHIP_NO_STOCK`); `inventory.mark-lost-in-transit.v1` for the original; new pack task (`kind = reship`, `ref_id = reship_id`, same lines and address); coverages move to the new serials at its packing; `resolved_reship`. Order stays *Shipped*. If the apply transaction finds the failure no longer confirmed and not resolved by this same reship, it writes `inventory.release-reservation.v1 {orderId, reshipId}` to the outbox, commits, and then returns `INVALID_STATE`. |
+| `DismissPossiblyLost` | Shipment back to its previous status (`delivery_failures.previous_status`); failure `dismissed`, `dismissed_at` set |
+
+If the refund amount is 0 (for example the order is already fully refunded): no `payment.refund-payment.v1` and no saga; the response has `refund_id = ""` and `amount_cents = 0`; `delivery-failed` is still published.
 
 ### 6.6 Label worker
 
 - **Buy** (`label_pending`, every 5 s, `SKIP LOCKED`): search Shippo transactions by `metadata = shipment.id`; if one exists, reuse it; else create shipment + transaction with that metadata. Store transaction ID, tracking number, label URL → `label_ready`. For a return label, the same transaction sets the return request to `label_issued` and publishes `return-label-issued`. Errors retry with the 1 s / 5 s / 30 s / 2 min schedule, then alert.
 - **Void** (`void_pending`): Shippo refund request → `voided`.
 - **Daily check:** labels found in Shippo with Bloom metadata but no matching `shipments` row, or a second transaction for one shipment, are voided and reported (FR-05).
+
+### 6.7 Consumers
+
+| Message | Action |
+|---|---|
+| `payment.refund-failed.v1` | Under the `order_accounts` lock: subtract that refund's per-line amounts (`fulfillment_sagas.refund_lines`) from `order_line_accounts.refunded_cents`, and reset `shipping_refunded` if that refund set it (`refunded_shipping`). The saga stays failed for Support. Coverages it cancelled stay cancelled (Error log names them). |
+| `identity.account-deleted.v1` | Moves the account's return requests in `requested` to `expired` and publishes `return-closed` (reason `expired`). |
 
 ## 7. Concurrency and consistency
 
@@ -291,9 +322,11 @@ Every update sets `last_tracking_at`. Transitions are guarded, so repeated or la
 | Every unit returned across two requests | Express fee added on the request that completes the order. |
 | Wrong serial comes back | Inspection `wrong_item`; Support usually rejects; unit shipped back. |
 | Plan returned alone after 14 days | `RETURN_WINDOW_CLOSED`. |
-| Customer never ships the return | Expires after 14 days; label voided; `return-closed`. |
+| Customer never ships the return | Expires after 14 days; label voided; `return-closed`. If the parcel reaches the warehouse anyway, Warehouse receives it (`ReceiveReturn` accepts `expired`) and it is inspected and decided as usual; Support may reject. |
+| Duplicate return request (same `Idempotency-Key`) | The same return request is returned. |
 | Package flagged possibly lost, then delivered | `DELIVERED` applies; possibly-lost dismissed automatically. |
 | Reship with no stock | `RESHIP_NO_STOCK`; Support chooses refund. |
+| Reship after a released reship | The reship id is per flag occurrence (shipment id + `dismissed_at`), so inventory commits stock again. |
 | Returned-to-sender after a partial earlier refund | Refunds the remaining total only. |
 
 ## 9. Security and validation
@@ -301,7 +334,7 @@ Every update sets `last_tracking_at`. Transitions are guarded, so repeated or la
 - Customers can only request returns and look up coverage for their own orders (`account_id` from the trusted context vs `order_accounts.account_id`).
 - Warehouse and Support methods check roles; every staff action is audited.
 - Shippo webhook secret and API key are Sealed Secrets; the webhook route accepts `POST` only, ≤ 64 KB, rate-limited per IP.
-- **Account deleted:** `ship_to` on tasks and shipments anonymized (`"[deleted]"`), keeping tracking numbers and amounts.
+- **Account deleted:** `ship_to` on pack tasks anonymized (`"[deleted]"`), keeping tracking numbers and amounts.
 
 ## 10. Observability
 

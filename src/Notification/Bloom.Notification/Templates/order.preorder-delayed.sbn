@@ -1,0 +1,16 @@
+--- subject
+Your pre-order {{ orderNumber }} is delayed
+--- html
+<p>Hi {{ name }},</p>
+<p>We are sorry: the pre-order in order {{ orderNumber }} is delayed. We will email you when it ships.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+We are sorry: the pre-order in order {{ orderNumber }} is delayed. We will email you when it ships.
+
+View your order: {{ orderUrl }}
+--- title
+Pre-order delayed
+--- body
+The pre-order in order {{ orderNumber }} is delayed.

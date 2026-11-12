@@ -1,0 +1,50 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Catalog/">
+    <Project Path="src/Catalog/Bloom.Catalog.Contracts/Bloom.Catalog.Contracts.csproj" />
+    <Project Path="src/Catalog/Bloom.Catalog.Tests/Bloom.Catalog.Tests.csproj" />
+    <Project Path="src/Catalog/Bloom.Catalog/Bloom.Catalog.csproj" />
+  </Folder>
+  <Folder Name="/src/Fulfillment/">
+    <Project Path="src/Fulfillment/Bloom.Fulfillment.Contracts/Bloom.Fulfillment.Contracts.csproj" />
+    <Project Path="src/Fulfillment/Bloom.Fulfillment.Tests/Bloom.Fulfillment.Tests.csproj" />
+    <Project Path="src/Fulfillment/Bloom.Fulfillment/Bloom.Fulfillment.csproj" />
+  </Folder>
+  <Folder Name="/src/Gateway/">
+    <Project Path="src/Gateway/Bloom.Gateway.Tests/Bloom.Gateway.Tests.csproj" />
+    <Project Path="src/Gateway/Bloom.Gateway/Bloom.Gateway.csproj" />
+  </Folder>
+  <Folder Name="/src/Identity/">
+    <Project Path="src/Identity/Bloom.Identity.Contracts/Bloom.Identity.Contracts.csproj" />
+    <Project Path="src/Identity/Bloom.Identity.Tests/Bloom.Identity.Tests.csproj" />
+    <Project Path="src/Identity/Bloom.Identity/Bloom.Identity.csproj" />
+  </Folder>
+  <Folder Name="/src/Inventory/">
+    <Project Path="src/Inventory/Bloom.Inventory.Contracts/Bloom.Inventory.Contracts.csproj" />
+    <Project Path="src/Inventory/Bloom.Inventory.Tests/Bloom.Inventory.Tests.csproj" />
+    <Project Path="src/Inventory/Bloom.Inventory/Bloom.Inventory.csproj" />
+  </Folder>
+  <Folder Name="/src/Launch/">
+    <Project Path="src/Launch/Bloom.Launch.Contracts/Bloom.Launch.Contracts.csproj" />
+    <Project Path="src/Launch/Bloom.Launch.Tests/Bloom.Launch.Tests.csproj" />
+    <Project Path="src/Launch/Bloom.Launch/Bloom.Launch.csproj" />
+  </Folder>
+  <Folder Name="/src/Notification/">
+    <Project Path="src/Notification/Bloom.Notification.Tests/Bloom.Notification.Tests.csproj" />
+    <Project Path="src/Notification/Bloom.Notification/Bloom.Notification.csproj" />
+  </Folder>
+  <Folder Name="/src/Order/">
+    <Project Path="src/Order/Bloom.Order.Contracts/Bloom.Order.Contracts.csproj" />
+    <Project Path="src/Order/Bloom.Order.Tests/Bloom.Order.Tests.csproj" />
+    <Project Path="src/Order/Bloom.Order/Bloom.Order.csproj" />
+  </Folder>
+  <Folder Name="/src/Payment/">
+    <Project Path="src/Payment/Bloom.Payment.Contracts/Bloom.Payment.Contracts.csproj" />
+    <Project Path="src/Payment/Bloom.Payment.Tests/Bloom.Payment.Tests.csproj" />
+    <Project Path="src/Payment/Bloom.Payment/Bloom.Payment.csproj" />
+  </Folder>
+  <Folder Name="/src/Shared/">
+    <Project Path="src/Shared/Bloom.Shared.Tests/Bloom.Shared.Tests.csproj" />
+    <Project Path="src/Shared/Bloom.Shared/Bloom.Shared.csproj" />
+  </Folder>
+</Solution>

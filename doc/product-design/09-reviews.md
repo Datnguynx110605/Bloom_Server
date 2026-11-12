@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Related ADRs** | — |
 
@@ -14,7 +14,7 @@ Verified buyers rate and review products. Kept deliberately thin.
 
 **In scope:** verified-buyer reviews, star rating and text, post-moderation, average rating and count per product.
 
-**Out of scope:** review photos, helpful votes, staff replies, pre-moderation, per-variant reviews.
+**Out of scope:** review photos, helpful votes, staff replies, pre-moderation, per-variant reviews, reviews of warranty plans (plans have no public page and are not reviewable).
 
 ## 2. Business rules
 

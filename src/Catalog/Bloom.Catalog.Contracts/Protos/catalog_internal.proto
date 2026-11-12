@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package bloom.catalog.v1;
+
+option csharp_namespace = "Bloom.Catalog.Contracts";
+
+// 08-catalog §5.1 and §6.8: internal API for order (GetPricing), launch (GetSku) and inventory (LockSkuForStock). Not routed by the gateway.
+service CatalogInternal {
+  rpc GetPricing(GetPricingRequest) returns (GetPricingResponse);
+  rpc GetSku(GetSkuRequest) returns (GetSkuResponse);
+  rpc LockSkuForStock(LockSkuForStockRequest) returns (LockSkuForStockResponse);
+}
+
+message GetPricingRequest {
+  repeated string sku_ids = 1;
+}
+
+// One item per distinct requested id, in request order. An unknown or malformed id carries only `sku_id` and `buyable = false`.
+message GetPricingResponse {
+  repeated SkuPricing items = 1;
+}
+
+message SkuPricing {
+  string sku_id = 1;
+  optional int64 price_cents = 2;
+  string name = 3; // product name, then the SKU's option values in option-type order: "iPhone 17 Pro (256 GB, Black)"
+  string product_id = 4;
+  string category_id = 5;
+  string kind = 6; // product | warranty_plan
+  bool serialized = 7;
+  bool buyable = 8;
+  optional LaunchInfo launch = 9;
+  repeated string eligible_product_ids = 10;
+  int32 coverage_months = 11;
+}
+
+message LaunchInfo {
+  string launch_id = 1;
+  string stage = 2;
+}
+
+message GetSkuRequest {
+  string sku_id = 1;
+}
+
+message GetSkuResponse {
+  string product_id = 1;
+  string status = 2;
+  bool active = 3;
+  string launch_id = 4; // empty = not in a launch
+}
+
+message LockSkuForStockRequest {
+  string sku_id = 1;
+}
+
+message LockSkuForStockResponse {
+  string product_id = 1;
+  bool serialized = 2;
+}

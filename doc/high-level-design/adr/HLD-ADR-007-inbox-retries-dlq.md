@@ -8,6 +8,7 @@
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
 | **Related** | QA-07, HG-3, HLD-ADR-006 |
+| **Amended by** | [HLD-ADR-019](HLD-ADR-019-consumers-pause-during-own-db-outage.md) |
 
 ## Context
 At-least-once delivery means duplicates. Consumers also fail, transiently or permanently.

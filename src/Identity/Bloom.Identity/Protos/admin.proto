@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package bloom.identity.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Identity.V1";
+
+// 06-identity §5.1, admin only.
+service Admin {
+  rpc InviteStaff(InviteStaffRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/invitations" body: "*" };
+  }
+  rpc ListStaff(google.protobuf.Empty) returns (ListStaffResponse) {
+    option (google.api.http) = { get: "/api/admin/staff/members" };
+  }
+  rpc ChangeStaffRole(ChangeStaffRoleRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/role" body: "*" };
+  }
+  rpc DeactivateStaff(StaffMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/deactivate" };
+  }
+  rpc ReactivateStaff(StaffMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/reactivate" };
+  }
+  rpc ResetStaffMfa(StaffMemberRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/admin/staff/members/{id}/reset-mfa" };
+  }
+  rpc QueryAuditLog(QueryAuditLogRequest) returns (QueryAuditLogResponse) {
+    option (google.api.http) = { get: "/api/admin/audit/entries" };
+  }
+}
+
+message InviteStaffRequest {
+  string email = 1;
+  string role = 2;
+}
+
+message StaffMemberRequest {
+  string id = 1;
+}
+
+message ChangeStaffRoleRequest {
+  string id = 1;
+  string role = 2;
+}
+
+message StaffMember {
+  string account_id = 1;
+  string email = 2;
+  string name = 3;
+  string role = 4;
+  string status = 5;
+  bool mfa_enrolled = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp last_sign_in_at = 8;
+}
+
+message ListStaffResponse {
+  repeated StaffMember staff = 1;
+}
+
+// All filters are optional and ANDed; from is inclusive, to exclusive. Newest first; page_size 0 means 50, at most 200.
+message QueryAuditLogRequest {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  string actor_id = 3;
+  string service = 4;
+  string action = 5;
+  string target_type = 6;
+  string target_id = 7;
+  int32 page_size = 8;
+  string page_token = 9;
+}
+
+message AuditLogEntry {
+  string id = 1;
+  google.protobuf.Timestamp occurred_at = 2;
+  string actor_id = 3;
+  string actor_role = 4;
+  string service = 5;
+  string action = 6;
+  string target_type = 7;
+  string target_id = 8;
+  string details_json = 9;
+}
+
+message QueryAuditLogResponse {
+  repeated AuditLogEntry entries = 1;
+  string next_page_token = 2; // empty on the last page
+}

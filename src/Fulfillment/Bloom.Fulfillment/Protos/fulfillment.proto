@@ -1,0 +1,363 @@
+syntax = "proto3";
+
+package bloom.fulfillment.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Fulfillment.V1";
+
+// 05-fulfillment §5.1, Warehouse API: staff only (warehouse, admin), transcoded to JSON under /api/admin/fulfillment (spec §6).
+service FulfillmentWarehouse {
+  // Oldest first by (created_at, id); cancellation markers are left out.
+  rpc ListPackTasks(ListPackTasksRequest) returns (ListPackTasksResponse) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/tasks" };
+  }
+
+  // pending -> packing at `version`. Publishes packing-started for order tasks.
+  rpc StartPacking(StartPackingRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/start" body: "*" };
+  }
+
+  // Calls inventory first, then records the serial on the line. The same serial again on the same line changes nothing.
+  rpc ScanSerial(ScanSerialRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/serials" body: "*" };
+  }
+
+  rpc UnassignSerial(UnassignSerialRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/serials/unassign" body: "*" };
+  }
+
+  // The new serial takes the old one's line and position.
+  rpc ReplaceSerial(ReplaceSerialRequest) returns (PackTask) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/serials/replace" body: "*" };
+  }
+
+  // packing -> packed at `version`: SERIALS_INCOMPLETE unless every serialized line is full. Creates the outbound shipment and the warranty coverages.
+  rpc CompletePacking(CompletePackingRequest) returns (CompletePackingResponse) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/tasks/{task_id}/complete" body: "*" };
+  }
+
+  // The label scan: label_ready -> handed_over (shipment and, for outbound, its pack task). A shipment already handed over is returned unchanged.
+  rpc HandOver(HandOverRequest) returns (Shipment) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/handover" body: "*" };
+  }
+
+  // Oldest first by (created_at, id). ReturnViewers: warehouse, support, admin.
+  rpc ListReturns(ListReturnsRequest) returns (ListReturnsResponse) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/returns" };
+  }
+
+  // label_issued | in_transit -> received. INVALID_RETURN_STATE otherwise.
+  rpc ReceiveReturn(ReceiveReturnRequest) returns (ReturnRequest) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/receive" body: "*" };
+  }
+
+  // received -> inspected. Covers every unit exactly once. A serial the order never shipped is stored with result wrong_item.
+  rpc RecordInspection(RecordInspectionRequest) returns (ReturnRequest) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/inspection" body: "*" };
+  }
+
+  // A confirmed returned-to-sender failure -> resolved_refund: the units back, the rest of the order refunded. Needs an Idempotency-Key.
+  rpc RecordReturnedToSender(RecordReturnedToSenderRequest) returns (DeliveryFailure) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/shipments/{shipment_id}/returned-to-sender" body: "*" };
+  }
+}
+
+// 05-fulfillment §5.1, Customer API: customers only, transcoded to JSON under /api/returns (spec §6).
+service FulfillmentCustomer {
+  // Product units of a delivered order, within 14 days of delivery. Needs an Idempotency-Key.
+  rpc RequestReturn(RequestReturnRequest) returns (ReturnRequest) {
+    option (google.api.http) = { post: "/api/returns" body: "*" };
+  }
+
+  // The caller's own returns, newest first.
+  rpc ListMyReturns(ListMyReturnsRequest) returns (ListMyReturnsResponse) {
+    option (google.api.http) = { get: "/api/returns" };
+  }
+
+  // The warranty coverage of one of the caller's serials; anyone else's serial is NOT_FOUND like an unknown one.
+  rpc GetCoverage(GetCoverageRequest) returns (Coverage) {
+    option (google.api.http) = { get: "/api/warranty/{serial}" };
+  }
+}
+
+// 05-fulfillment §5.1, Support API: staff only (support, admin), transcoded to JSON under /api/admin/fulfillment (spec §6).
+service FulfillmentSupport {
+  // inspected -> decided in one transaction (§6.4.1): the refund command and its saga, the line accounts, the inventory command and the events. Needs an Idempotency-Key.
+  rpc DecideReturn(DecideReturnRequest) returns (DecideReturnResponse) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/returns/{return_id}/decision" body: "*" };
+  }
+
+  // possibly_lost | confirmed lost -> resolved_refund or resolved_reship. Needs an Idempotency-Key.
+  rpc ConfirmLost(ConfirmLostRequest) returns (DeliveryFailure) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/shipments/{shipment_id}/lost" body: "*" };
+  }
+
+  // possibly_lost -> dismissed: the shipment goes back to its previous status.
+  rpc DismissPossiblyLost(DismissPossiblyLostRequest) returns (DeliveryFailure) {
+    option (google.api.http) = { post: "/api/admin/fulfillment/shipments/{shipment_id}/dismiss" body: "*" };
+  }
+
+  // Oldest first by (created_at, shipment_id).
+  rpc ListDeliveryFailures(ListDeliveryFailuresRequest) returns (ListDeliveryFailuresResponse) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/failures" };
+  }
+
+  // The coverage of any serial.
+  rpc GetCoverage(GetCoverageRequest) returns (Coverage) {
+    option (google.api.http) = { get: "/api/admin/fulfillment/warranty/{serial}" };
+  }
+}
+
+message GetCoverageRequest {
+  string serial = 1;
+}
+
+// The active | pending_delivery coverage of the serial, else its newest cancelled one. `starts_at` and `ends_at` are set once the order is delivered.
+// `status` is pending_delivery | active | cancelled | expired; `expired` is derived at read (active and `ends_at` <= now), never stored.
+message Coverage {
+  string serial = 1;
+  string order_id = 2;
+  string status = 3;
+  int32 coverage_months = 4;
+  google.protobuf.Timestamp starts_at = 5;
+  google.protobuf.Timestamp ends_at = 6;
+}
+
+// Every unit that shipped exactly once: a serialized unit by `serial`, any other unit by `sku_id` (one entry per unit).
+message RecordReturnedToSenderRequest {
+  string shipment_id = 1;
+  repeated RtsUnit units = 2;
+}
+
+// `outcome` is sealed | failed. `sku_id` is only read when `serial` is empty.
+message RtsUnit {
+  string serial = 1;
+  string sku_id = 2;
+  string outcome = 3;
+}
+
+// `resolution` is refund | reship.
+message ConfirmLostRequest {
+  string shipment_id = 1;
+  string resolution = 2;
+}
+
+message DismissPossiblyLostRequest {
+  string shipment_id = 1;
+}
+
+// `status` is a delivery failure status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
+message ListDeliveryFailuresRequest {
+  optional string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListDeliveryFailuresResponse {
+  repeated DeliveryFailure items = 1;
+}
+
+// `kind` is lost | returned_to_sender; `status` is possibly_lost | confirmed | resolved_refund | resolved_reship | dismissed.
+// `previous_status` (the shipment's status before it was flagged) and `reship_id` are empty when not set.
+message DeliveryFailure {
+  string shipment_id = 1;
+  string order_id = 2;
+  string kind = 3;
+  string status = 4;
+  string previous_status = 5;
+  string reship_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// Every unit of the return exactly once.
+message DecideReturnRequest {
+  string return_id = 1;
+  repeated UnitDecision units = 2;
+}
+
+// `decision` is full | partial | reject. `partial_cents` is above 0 for partial and 0 otherwise.
+message UnitDecision {
+  int32 unit_no = 1;
+  string decision = 2;
+  int64 partial_cents = 3;
+}
+
+// `refund_id` is empty and `amount_cents` 0 when nothing is refunded. `lines` is what the refund command carries; shipping is in `amount_cents` only.
+message DecideReturnResponse {
+  string return_id = 1;
+  string refund_id = 2;
+  int64 amount_cents = 3;
+  repeated RefundLine lines = 4;
+}
+
+message RefundLine {
+  int32 line_no = 1;
+  int64 amount_cents = 2;
+}
+
+// `status` is a return status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
+message ListReturnsRequest {
+  optional string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListReturnsResponse {
+  repeated ReturnRequest items = 1;
+}
+
+message ListMyReturnsRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message ListMyReturnsResponse {
+  repeated ReturnRequest items = 1;
+}
+
+message ReceiveReturnRequest {
+  string return_id = 1;
+}
+
+message RequestReturnRequest {
+  string order_id = 1;
+  repeated ReturnLine units = 2;
+}
+
+message ReturnLine {
+  int32 line_no = 1;
+  int32 quantity = 2;
+}
+
+message RecordInspectionRequest {
+  string return_id = 1;
+  repeated InspectionUnit units = 2;
+}
+
+// `received_serial` is required for serialized lines and empty for the others; `result` is ok | damaged | missing_parts | wrong_item; `notes` up to 500 characters.
+message InspectionUnit {
+  int32 unit_no = 1;
+  string received_serial = 2;
+  string result = 3;
+  string notes = 4;
+}
+
+// `status` is requested | label_issued | in_transit | received | inspected | decided | expired; `label_url` is empty until the label is bought.
+message ReturnRequest {
+  string id = 1;
+  string order_id = 2;
+  string status = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  string label_url = 5;
+  int64 version = 6;
+  repeated ReturnUnit units = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// The inspection and decision fields are empty (0 for the amounts) until recorded.
+message ReturnUnit {
+  int32 unit_no = 1;
+  int32 line_no = 2;
+  string received_serial = 3;
+  string inspection_result = 4;
+  string inspection_notes = 5;
+  string decision = 6;
+  int64 refund_cents = 7;
+  int64 refund_tax_cents = 8;
+}
+
+// `status` is a pack task status. `page` 0 = 1; `page_size` 0 = 50, 1 to 100.
+message ListPackTasksRequest {
+  optional string status = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListPackTasksResponse {
+  repeated PackTask items = 1;
+}
+
+message StartPackingRequest {
+  string task_id = 1;
+  int64 version = 2;
+}
+
+message ScanSerialRequest {
+  string task_id = 1;
+  int32 line_no = 2;
+  string serial = 3;
+}
+
+message UnassignSerialRequest {
+  string task_id = 1;
+  string serial = 2;
+}
+
+message ReplaceSerialRequest {
+  string task_id = 1;
+  string old_serial = 2;
+  string new_serial = 3;
+}
+
+message CompletePackingRequest {
+  string task_id = 1;
+  int64 version = 2;
+}
+
+// Exactly one of the two; neither is VALIDATION_FAILED `target`.
+message HandOverRequest {
+  oneof target {
+    string shipment_id = 1;
+    string tracking_number = 2;
+  }
+}
+
+message CompletePackingResponse {
+  PackTask task = 1;
+  Shipment shipment = 2;
+}
+
+// `kind` is order | reship; `status` is pending | packing | packed | handed_over | cancelled; `ref_id` is the order id or the reship id.
+message PackTask {
+  string id = 1;
+  string order_id = 2;
+  string ref_id = 3;
+  string kind = 4;
+  string status = 5;
+  string shipping_option = 6;
+  int64 version = 7;
+  repeated PackTaskLine lines = 8;
+  repeated ScannedSerial serials = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message PackTaskLine {
+  int32 line_no = 1;
+  string kind = 2;
+  string sku_id = 3;
+  string product_id = 4;
+  bool serialized = 5;
+  int32 quantity = 6;
+  optional int32 parent_line_no = 7;
+  optional int32 coverage_months = 8;
+}
+
+// `seq` is the scan order within the task.
+message ScannedSerial {
+  int32 line_no = 1;
+  string serial = 2;
+  int32 seq = 3;
+}
+
+message Shipment {
+  string id = 1;
+  string order_id = 2;
+  string direction = 3;
+  string service = 4;
+  string status = 5;
+  string tracking_number = 6;
+  string label_url = 7;
+  int64 version = 8;
+}

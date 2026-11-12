@@ -1,0 +1,298 @@
+syntax = "proto3";
+
+package bloom.catalog.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "Protos/common.proto";
+
+option csharp_namespace = "Bloom.Catalog.V1";
+
+// 08-catalog §5, staff only (catalog_manager, admin unless a method says otherwise).
+service CatalogAdmin {
+  rpc CreateCategory(CreateCategoryRequest) returns (Category) {
+    option (google.api.http) = { post: "/api/admin/catalog/categories" body: "*" };
+  }
+  rpc UpdateCategory(UpdateCategoryRequest) returns (Category) {
+    option (google.api.http) = { put: "/api/admin/catalog/categories/{id}" body: "*" };
+  }
+  rpc AdminListProducts(AdminListProductsRequest) returns (AdminListProductsResponse) {
+    option (google.api.http) = { get: "/api/admin/catalog/products" };
+  }
+  rpc AdminGetProduct(AdminGetProductRequest) returns (AdminProduct) {
+    option (google.api.http) = { get: "/api/admin/catalog/products/{id}" };
+  }
+  rpc CreateProduct(CreateProductRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products" body: "*" };
+  }
+  rpc UpdateProduct(UpdateProductRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{id}" body: "*" };
+  }
+  rpc SetOptions(SetOptionsRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{product_id}/options" body: "*" };
+  }
+  rpc SetPlanEligibility(SetPlanEligibilityRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{plan_product_id}/eligibility" body: "*" };
+  }
+  rpc PublishProduct(LifecycleRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{id}/publish" body: "*" };
+  }
+  rpc ArchiveProduct(LifecycleRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{id}/archive" body: "*" };
+  }
+  rpc ReactivateProduct(LifecycleRequest) returns (AdminProduct) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{id}/reactivate" body: "*" };
+  }
+  rpc CreateSku(CreateSkuRequest) returns (AdminSku) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{product_id}/skus" body: "*" };
+  }
+  rpc UpdateSku(UpdateSkuRequest) returns (AdminSku) {
+    option (google.api.http) = { put: "/api/admin/catalog/skus/{id}" body: "*" };
+  }
+  rpc SetSkuPrice(SetSkuPriceRequest) returns (AdminSku) {
+    option (google.api.http) = { put: "/api/admin/catalog/skus/{id}/price" body: "*" };
+  }
+  rpc SetSkuActive(SetSkuActiveRequest) returns (AdminSku) {
+    option (google.api.http) = { put: "/api/admin/catalog/skus/{id}/active" body: "*" };
+  }
+  rpc CreateImageUpload(CreateImageUploadRequest) returns (CreateImageUploadResponse) {
+    option (google.api.http) = { post: "/api/admin/catalog/products/{product_id}/images" body: "*" };
+  }
+  rpc ConfirmImage(ImageRequest) returns (Image) {
+    option (google.api.http) = { post: "/api/admin/catalog/images/{id}/confirm" };
+  }
+  rpc ReorderImages(ReorderImagesRequest) returns (AdminProduct) {
+    option (google.api.http) = { put: "/api/admin/catalog/products/{product_id}/images/order" body: "*" };
+  }
+  rpc DeleteImage(ImageRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { delete: "/api/admin/catalog/images/{id}" };
+  }
+  // The review methods are for support and admin (plan R7).
+  rpc AdminListReviews(AdminListReviewsRequest) returns (AdminListReviewsResponse) {
+    option (google.api.http) = { get: "/api/admin/catalog/reviews" };
+  }
+  rpc HideReview(ModerateReviewRequest) returns (AdminReview) {
+    option (google.api.http) = { post: "/api/admin/catalog/reviews/{id}/hide" body: "*" };
+  }
+  rpc UnhideReview(ModerateReviewRequest) returns (AdminReview) {
+    option (google.api.http) = { post: "/api/admin/catalog/reviews/{id}/unhide" body: "*" };
+  }
+}
+
+message CreateCategoryRequest {
+  string parent_id = 1; // empty = top level
+  string name = 2;
+  string slug = 3;
+  int32 sort_order = 4;
+}
+
+// Replaces every field; `version` is the one the caller read.
+message UpdateCategoryRequest {
+  string id = 1;
+  string parent_id = 2; // empty = top level
+  string name = 3;
+  string slug = 4;
+  int32 sort_order = 5;
+  int64 version = 6;
+}
+
+message CreateProductRequest {
+  string category_id = 1;
+  string kind = 2; // physical | warranty_plan, immutable
+  string name = 3;
+  string slug = 4;
+  string description_md = 5;
+  repeated SpecGroup specs = 6;
+  bool serialized = 7; // physical only
+  int32 coverage_months = 8; // warranty plans only
+}
+
+// Replaces every field except `kind`; `version` is the one the caller read. Status changes go through the lifecycle methods.
+message UpdateProductRequest {
+  string id = 1;
+  string category_id = 2;
+  string name = 3;
+  string slug = 4;
+  string description_md = 5;
+  repeated SpecGroup specs = 6;
+  bool serialized = 7;
+  int32 coverage_months = 8;
+  int64 version = 9;
+}
+
+// The whole option list (R15): entries with an `id` keep it, entries without get new ids, missing ones are deleted; positions are list
+// order. `version` is the product version.
+message SetOptionsRequest {
+  string product_id = 1;
+  repeated OptionType option_types = 2;
+  int64 version = 3;
+}
+
+// The whole set of physical products a plan covers. `version` is the plan's product version.
+message SetPlanEligibilityRequest {
+  string plan_product_id = 1;
+  repeated string eligible_product_ids = 2;
+  int64 version = 3;
+}
+
+// `version` is the product version the caller read.
+message LifecycleRequest {
+  string id = 1;
+  int64 version = 2;
+}
+
+// One value id per option type of the product; none for a plan. New SKUs are active.
+message CreateSkuRequest {
+  string product_id = 1;
+  string code = 2;
+  repeated string option_value_ids = 3;
+  int64 price_cents = 4;
+}
+
+// Changes the code only; `version` is the SKU version.
+message UpdateSkuRequest {
+  string id = 1;
+  string code = 2;
+  int64 version = 3;
+}
+
+message SetSkuPriceRequest {
+  string id = 1;
+  int64 price_cents = 2;
+  int64 version = 3;
+}
+
+message SetSkuActiveRequest {
+  string id = 1;
+  bool active = 2;
+  int64 version = 3;
+}
+
+// A presigned PUT for one image (`image/jpeg`, `image/png`, `image/webp`); `sku_id` empty = the whole product.
+message CreateImageUploadRequest {
+  string product_id = 1;
+  string sku_id = 2;
+  string content_type = 3;
+  string alt_text = 4;
+}
+
+message CreateImageUploadResponse {
+  string image_id = 1;
+  string upload_url = 2;
+  string storage_key = 3;
+}
+
+message ImageRequest {
+  string id = 1;
+}
+
+// Must list every image of the product (both statuses); positions follow the list order.
+message ReorderImagesRequest {
+  string product_id = 1;
+  repeated string image_ids = 2;
+}
+
+message AdminGetProductRequest {
+  string id = 1;
+}
+
+// `q` is a case-insensitive "contains" on name, slug or any SKU code.
+message AdminListProductsRequest {
+  string status = 1;
+  string category_id = 2;
+  string q = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message AdminListProductsResponse {
+  repeated AdminProductSummary items = 1;
+  int32 total = 2;
+}
+
+message AdminProductSummary {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string kind = 4;
+  string status = 5;
+  string category_id = 6;
+  optional int64 min_price_cents = 7;
+  string launch_stage = 8;
+  int64 version = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message AdminSku {
+  string id = 1;
+  string code = 2;
+  repeated string option_value_ids = 3;
+  int64 price_cents = 4;
+  bool active = 5;
+  string launch_id = 6;
+  int64 version = 7;
+}
+
+// Everything staff see: Markdown source, inactive SKUs, images of both statuses, plan eligibility.
+message AdminProduct {
+  string id = 1;
+  string category_id = 2;
+  string kind = 3;
+  string name = 4;
+  string slug = 5;
+  string description_md = 6;
+  string description_html = 7;
+  repeated SpecGroup specs = 8;
+  bool serialized = 9;
+  bool serialized_locked = 10;
+  int32 coverage_months = 11;
+  string status = 12;
+  string launch_id = 13;
+  string launch_stage = 14;
+  google.protobuf.Timestamp published_at = 15;
+  optional int64 min_price_cents = 16;
+  int32 rating_sum = 17;
+  int32 rating_count = 18;
+  int64 version = 19;
+  google.protobuf.Timestamp updated_at = 20;
+  repeated OptionType options = 21;
+  repeated AdminSku skus = 22;
+  repeated Image images = 23;
+  repeated string eligible_product_ids = 24; // plans only
+}
+
+// Newest first; `product_id` and `status` (visible | hidden) are optional filters. `page_size` 1 to 100 (0 = 50).
+message AdminListReviewsRequest {
+  string product_id = 1;
+  string status = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message AdminListReviewsResponse {
+  repeated AdminReview items = 1;
+  int32 total = 2;
+}
+
+// A review as staff see it: the storefront fields plus the author's account (empty once the account is deleted) and the moderation state.
+message AdminReview {
+  string id = 1;
+  string product_id = 2;
+  int32 rating = 3;
+  string text = 4;
+  string author_display = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  int64 version = 8;
+  string account_id = 9;
+  string status = 10; // visible | hidden
+  string hidden_by = 11; // staff id, empty while visible
+  string hidden_reason = 12;
+}
+
+// `reason` is 1 to 500 characters and goes to the audit log; hiding a hidden or unhiding a visible review changes nothing.
+message ModerateReviewRequest {
+  string id = 1;
+  string reason = 2;
+}

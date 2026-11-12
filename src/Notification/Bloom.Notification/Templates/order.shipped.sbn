@@ -1,0 +1,16 @@
+--- subject
+Order {{ orderNumber }} has shipped
+--- html
+<p>Hi {{ name }},</p>
+<p>Order {{ orderNumber }} is on its way. Tracking number: {{ trackingNumber }}.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+Order {{ orderNumber }} is on its way. Tracking number: {{ trackingNumber }}.
+
+View your order: {{ orderUrl }}
+--- title
+Order shipped
+--- body
+Order {{ orderNumber }} is on its way. Tracking number: {{ trackingNumber }}.

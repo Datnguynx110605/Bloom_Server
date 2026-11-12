@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
-| **Last updated** | 2026-10-31 |
+| **Status** | Approved (2026-11-12) |
+| **Last updated** | 2026-11-12 |
 | **Product design** | [doc/product-design](../product-design/00-overview.md) |
-| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 018) |
+| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 019) |
 
 ## Summary
 
@@ -329,7 +329,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Transactional outbox + polling relay (`SKIP LOCKED`, batch 100, loop while rows remain, ~200 ms idle sleep) | Every message producer | No message lost; safe with several relay instances | [006](adr/HLD-ADR-006-transactional-outbox.md) |
 | Inbox in the consumer's transaction (message ID = outbox UUIDv7) | Every consumer | No message applied twice | [007](adr/HLD-ADR-007-inbox-retries-dlq.md) |
 | 5 attempts in total (retries after 1 s, 5 s, 30 s, 2 min) → DLQ, alert, replay tool | Every consumer | Transient failures absorbed; poison messages isolated | [007](adr/HLD-ADR-007-inbox-retries-dlq.md) |
-| Idempotency key (per user, 24 h, claimed in the same transaction) | Payment operations | Duplicate requests return the first result | [008](adr/HLD-ADR-008-idempotency-payments.md) |
+| Idempotency key (per user, 24 h, claimed in the same transaction) | Payment operations; stock-changing staff operations (goods receipt, stock adjustment) | Duplicate requests return the first result | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Four layers against double charge | payment | BI-05 | [008](adr/HLD-ADR-008-idempotency-payments.md) |
 | Atomic conditional update + affected-row check | Counters: stock, allocation, limits, coupon uses | No overselling under concurrency | [009](adr/HLD-ADR-009-concurrency-control.md) |
 | Optimistic locking (row version) → 409 | Read-modify-write flows | No lost updates | [009](adr/HLD-ADR-009-concurrency-control.md) |
@@ -399,6 +399,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | [HLD-ADR-016](adr/HLD-ADR-016-audit-log.md) | Audit log in identity, fed by events |
 | [HLD-ADR-017](adr/HLD-ADR-017-postgres-full-text-search.md) | Catalog search on PostgreSQL full-text |
 | [HLD-ADR-018](adr/HLD-ADR-018-external-providers.md) | Stripe, Shippo, Resend behind interfaces |
+| [HLD-ADR-019](adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage |
 
 ## 11. Risks
 

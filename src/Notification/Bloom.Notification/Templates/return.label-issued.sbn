@@ -1,0 +1,16 @@
+--- subject
+Your return label for order {{ orderNumber }}
+--- html
+<p>Hi {{ name }},</p>
+<p>Your return for order {{ orderNumber }} is approved. <a href="{{ labelUrl }}">Print the return label</a> and send the package back.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+Your return for order {{ orderNumber }} is approved. Print the return label and send the package back: {{ labelUrl }}
+
+View your order: {{ orderUrl }}
+--- title
+Return label ready
+--- body
+Your return label for order {{ orderNumber }} is ready.

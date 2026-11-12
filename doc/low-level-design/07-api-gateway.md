@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | ACC-R10, [10-accounts-access §3](../product-design/10-accounts-access.md) (permission matrix) |
 | **HLD** | [high-level-design.md §4, §9.1](../high-level-design/high-level-design.md), HLD-ADR-003, HLD-ADR-010, HLD-ADR-011 |
@@ -98,6 +98,7 @@ Paths are the contract between gateway and services (services declare them in `.
 |---|---|---|---|---|
 | `GET /api/catalog/**` | catalog | Public | — | `global` (+ `user` when signed in) |
 | `/api/admin/catalog/**` | catalog | Staff | Catalog manager, Admin; reviews moderation: Support, Admin | `user` |
+| `/api/reviews/**` | catalog | Customer | — | `user` |
 | `/api/auth/**` | identity | Public | — | `auth` |
 | `POST /auth/refresh` | identity | Cookie (Origin checked) | — | `refresh` |
 | `/api/me/**` | identity | Customer or staff | — | `user` |
@@ -117,6 +118,7 @@ Paths are the contract between gateway and services (services declare them in `.
 | `/api/admin/fulfillment/**` | fulfillment | Staff | Warehouse, Support, Admin | `user` |
 | `/api/notifications/**` | notification | Customer | — | `user` |
 | `/api/notifications/hub` (WebSocket) | notification | One-time ticket validated by notification (no JWT on upgrade); `Origin` must be allowed | — | `global` |
+| `/api/admin/dlq/{service}/**` (`{service}` = catalog, inventory, launch, order, payment, fulfillment, identity, notification) | that service | Staff | Admin | `user` |
 | `POST /webhooks/stripe` | payment | None (signature in service) | — | `webhook` |
 | `POST /webhooks/shippo/{secret}` | fulfillment | None (secret in service) | — | `webhook` |
 | anything else | — | — | — | `404` |
@@ -139,7 +141,7 @@ Same JSON shape as transcoded gRPC errors (`google.rpc.Status` with `ErrorInfo`,
 
 | HTTP | `code` | `reason` | When |
 |---|---|---|---|
-| 401 | `UNAUTHENTICATED` | `TOKEN_MISSING` / `TOKEN_INVALID` | No / bad / expired token |
+| 401 | `UNAUTHENTICATED` | `TOKEN_MISSING` / `TOKEN_INVALID` | No / bad / expired token. An `Authorization` header that isn't `Bearer` → `TOKEN_INVALID` |
 | 401 | `UNAUTHENTICATED` | `TOKEN_REVOKED` | `iat < rev:{sub}` |
 | 403 | `PERMISSION_DENIED` | `ROLE_NOT_ALLOWED` | Wrong user type or role for the route |
 | 403 | `PERMISSION_DENIED` | `ORIGIN_NOT_ALLOWED` | `/auth/refresh` from a foreign Origin |
@@ -147,6 +149,7 @@ Same JSON shape as transcoded gRPC errors (`google.rpc.Status` with `ErrorInfo`,
 | 413 | `INVALID_ARGUMENT` | `PAYLOAD_TOO_LARGE` | Body above limit |
 | 429 | `RESOURCE_EXHAUSTED` | `RATE_LIMITED` | Empty bucket; `Retry-After` header |
 | 503 | `UNAVAILABLE` | `AUTH_STORE_UNAVAILABLE` | Staff request while gateway Redis is unreachable |
+| 503 | `UNAVAILABLE` | `UPSTREAM_UNAVAILABLE` | Upstream unreachable |
 | 504 | `DEADLINE_EXCEEDED` | `UPSTREAM_TIMEOUT` | Route timeout |
 
 ### 5.4 Messages
@@ -161,17 +164,18 @@ Same JSON shape as transcoded gRPC errors (`google.rpc.Status` with `ErrorInfo`,
 
 - Algorithm **ES256 only** (reject `none`, HS*, RS*); `iss = bloom-identity`; `aud = bloom`; `exp` and `iat` with 30 s clock skew; `kid` must be in the JWKS cache.
 - **JWKS cache:** loaded at startup (readiness waits for it), refreshed every 10 min; an unknown `kid` triggers one refetch, at most once per 30 s.
+- An `Authorization` header that isn't a `Bearer` token gets `TOKEN_INVALID`, on every route that reads a token.
 - Refresh tokens never reach the gateway's validator; `/auth/refresh` is proxied with its cookie.
 
 ### 6.2 Revocation and rate limit (one Redis round trip)
 
 A single Lua script per request, given `sub` (if authenticated), `iat`, client IP, the route policy and its parameters, and `now`:
 
-1. **Revocation:** if `sub` present, `rev = GET rev:{sub}`; revoked if `iat < rev` → return.
+1. **Revocation:** if `sub` present, `rev = GET rev:{sub}`; revoked if `iat × 1000 < rev` (`iat` in s, `rev` in ms) → return. Revocation stays fail-closed: a token issued in the same second as a revoke-all is treated as revoked, and the client recovers by refreshing.
 2. **Global** (skipped for webhooks), fixed window: `INCR fw:global:{ip}:{floor(now/60s)}` (set expiry on first increment); over 300 → denied, `retry_after` = seconds to the next window.
 3. **Route policy**, by algorithm:
    - *Fixed window:* as step 2 with the policy's key and limit.
-   - *Sliding window (log):* `ZREMRANGEBYSCORE sw:{p}:{s} -inf (now − window)`; if `ZCARD < limit` → `ZADD now` (member `now:random`), allowed; else denied, `retry_after` = oldest entry + window − now.
+   - *Sliding window (log):* `ZREMRANGEBYSCORE sw:{p}:{s} -inf <now − window>` (the upper bound has no `(` prefix, so the trim is inclusive: an entry exactly one window old is expired, so the window is `(now − W, now]`, which keeps `retry_after` above 0); if `ZCARD < limit` → `ZADD now` (member `now:random`), allowed; else denied, `retry_after` = oldest entry + window − now.
    - *Token bucket:* `tokens = min(burst, tokens + (now − ts) × rate)`; if `tokens ≥ 1` → `tokens −= 1`, allowed; else denied, `retry_after = (1 − tokens) / rate`.
 4. A denied route policy doesn't refund the global count (simple, conservative).
 5. Return `{revoked, allowed, retry_after}`.
@@ -185,11 +189,11 @@ A single Lua script per request, given `sub` (if authenticated), `iat`, client I
 
 ### 6.3 Revocation consumer
 
-On `tokens-revoked {accountId, issuedBefore}`: Lua `SET rev:{accountId} max(existing, issuedBefore)` with TTL 16 min. The operation is idempotent and order-independent, so the gateway (which has no database) uses this instead of an inbox table. Any token issued before `issuedBefore` expires within 15 min, after which the entry is no longer needed.
+On `tokens-revoked {accountId, issuedBefore}`: Lua `SET rev:{accountId} max(existing, issuedBefore)` with TTL 16 min. The operation is idempotent and order-independent, so the gateway (which has no database) uses this instead of an inbox table. Any token issued before `issuedBefore` expires within 15 min, after which the entry is no longer needed. On a Redis error the worker holds the delivery and retries every 1 s (no NACK/requeue).
 
 ### 6.4 Client IP and CORS
 
-- `ForwardedHeaders` trusts `X-Forwarded-For` only from the ingress controller's addresses (`KnownNetworks`); the client IP is the first untrusted hop (GW-06).
+- `ForwardedHeaders` trusts `X-Forwarded-For` only from the ingress controller's addresses (`KnownNetworks`); the client IP is the first untrusted hop (GW-06). `X-Forwarded-*` from an untrusted hop are replaced with values from the actual connection; from a trusted proxy (`Gateway:TrustedProxies`), the existing processing applies.
 - CORS: allowed origins from configuration (the frontend origin); `AllowCredentials` (refresh cookie); preflight cached 10 min.
 - `/auth/refresh` additionally requires `Origin` to be an allowed origin (CSRF defence on top of `SameSite=Strict`).
 - Constraint for the frontend: the site and the API must be on the same registrable domain (for example `bloom.example` and `api.bloom.example`) for the `SameSite=Strict` cookie to be sent.
@@ -236,6 +240,7 @@ On `tokens-revoked {accountId, issuedBefore}`: Lua `SET rev:{accountId} max(exis
 - TLS ends at the ingress; ingress → gateway → services runs inside Linkerd mTLS.
 - Response headers: `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`; server version headers removed.
 - Logs never contain `Authorization` or `Cookie` values.
+- The Shippo webhook secret is redacted from gateway spans (`url.path`, `http.target`, `url.full`) as `/webhooks/shippo/***`.
 - The gateway holds no secrets except its Redis credentials (JWKS is public).
 
 ## 10. Observability

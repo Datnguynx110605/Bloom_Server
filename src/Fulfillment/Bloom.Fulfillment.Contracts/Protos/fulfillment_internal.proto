@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package bloom.fulfillment.v1;
+
+import "google/protobuf/empty.proto";
+
+option csharp_namespace = "Bloom.Fulfillment.Contracts";
+
+// 05-fulfillment §5.1: internal API for order. Not routed by the gateway.
+service FulfillmentInternal {
+  // Customer cancel (PACKING_STARTED once packing began) or Support cancel (ALREADY_SHIPPED after handover).
+  rpc CancelPackTask(CancelPackTaskRequest) returns (google.protobuf.Empty);
+}
+
+message CancelPackTaskRequest {
+  string order_id = 1;
+  // "customer" or "support".
+  string by = 2;
+}

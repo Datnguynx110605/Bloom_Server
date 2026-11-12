@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [02-catalog](../product-design/02-catalog.md) CAT-R01 … R15, [09-reviews](../product-design/09-reviews.md) REV-R01 … R08, WAR-R01, LCH-R13 |
 | **HLD** | [high-level-design.md §5, §6](../high-level-design/high-level-design.md), HLD-ADR-017 |
@@ -34,7 +34,7 @@
 | Component | Deployment | Responsibility |
 |---|---|---|
 | Public API | API | Categories, search, product detail, reviews list |
-| Customer API | API | Write / edit / delete own review |
+| Customer API | API | Write / edit / delete own review (served under `/api/reviews/**`) |
 | Admin API | API | Categories, products, options, SKUs, prices, plans, images, lifecycle, review moderation |
 | Internal API | API | `GetPricing` (order), `GetSku` (launch), `LockSkuForStock` (inventory) |
 | Consumers | Worker | `launch.stage-changed.v1`, `order.delivered.v1`, `identity.customer-registered.v1`, `identity.contact-changed.v1`, `identity.account-deleted.v1` |
@@ -55,6 +55,7 @@
 | `kind` | `text` | `physical` \| `warranty_plan` (CAT-R06) |
 | `name`, `slug` | `text` | `slug` unique |
 | `description_md` | `text` | Markdown, ≤ 20,000 chars |
+| `description_html` | `text` | Rendered from `description_md` on write (Markdig, raw HTML disabled) |
 | `specs` | `jsonb` | `[{group, items: [{label, value}]}]`, display-only |
 | `serialized` | `bool` | physical only |
 | `serialized_locked` | `bool` | set by `LockSkuForStock` (CR-03) |
@@ -64,7 +65,7 @@
 | `published_at` | `timestamptz` | first activation (sort "newest") |
 | `min_price_cents` | `bigint` | lowest price among active SKUs (maintained on write) |
 | `rating_sum`, `rating_count` | `int` | visible reviews only (CAT-R10) |
-| `search_vector` | `tsvector` | generated: name (A), option values (B), category name (B), description (C); English config |
+| `search_vector` | `tsvector` | maintained on write: name (A), option values (B), category name (B), description (C); English config |
 | `version` | `bigint` | |
 
 Indexes: GIN on `search_vector`; `(category_id, status)`; `(min_price_cents)`; `(published_at)`.
@@ -108,7 +109,7 @@ Indexes: GIN on `search_vector`; `(category_id, status)`; `(min_price_cents)`; `
 `UNIQUE (product_id, account_id) WHERE account_id IS NOT NULL` (REV-R03).
 
 **`review_eligibility`**: PK `(account_id, product_id)`, `first_delivered_at` (REV-R01).
-**`reviewer_names`**: PK `account_id`, `display_name` ("First L."), from identity events.
+**`reviewer_names`**: PK `account_id`, `display_name` ("First L."), `updated_at`, from identity events. `display_name` derives from identity's `name`: trim, split on whitespace: first word + space + first letter of the last word + `.` (`Mary Jane Watson` → `Mary W.`). One word → that word (`Cher`). Empty → `Bloom customer` (§8 fallback). `updated_at` is set from the event's `OccurredAt`; an upsert applies only if it is newer (the newest event wins).
 
 ### 4.2 Redis (catalog's own instance)
 
@@ -131,14 +132,17 @@ Bucket `bloom-product-images` (MinIO locally, S3-compatible in the cloud), publi
 |---|---|---|
 | `ListCategories` | Public | → tree |
 | `SearchProducts` | Public | `q?`, `category_id?`, `price_min?`, `price_max?`, `option_value_ids[]?`, `sort` (`relevance` \| `price_asc` \| `price_desc` \| `newest` \| `rating`), `page`, `page_size ≤ 48` → products with min price, rating, first image |
-| `GetProduct` | Public | `slug` or `id` → product, SKUs (active, visible), options, images, specs, rating, launch info |
+| `GetProduct` | Public | `slug` or `id` → product, SKUs (active, visible), options, images, specs, rating, launch info; for a physical product also `warranty_plans[]`: each eligible plan whose product is visible and whose SKU is active, with plan `product_id`, `name`, `coverage_months`, `sku_id`, `price_cents` |
 | `ListReviews` | Public | `product_id`, `page` → visible reviews, newest first |
-| `UpsertMyReview` / `DeleteMyReview` | Customer | `product_id`, `rating`, `text?`, `version?` |
+| `UpsertMyReview` / `DeleteMyReview` | Customer | `product_id`, `rating`, `text?`, `version?`. `UpsertMyReview` without `version` = create; if the customer already has a review on that product → `CONCURRENCY_CONFLICT`. With `version` = edit with optimistic locking: no review → `NOT_FOUND`; stale version → `CONCURRENCY_CONFLICT`; identical rating and text → success, nothing written (version, aggregates and cache unchanged). |
 | `GetPricing` | order | `sku_ids[]` → per SKU: `price_cents`, `name`, `product_id`, `category_id`, `kind`, `serialized`, `buyable`, `launch {launch_id, stage}?`, plans: `eligible_product_ids`, `coverage_months` |
-| `GetSku` | launch | `sku_id` → `product_id`, `status`, `active`, `launch_id` |
-| `LockSkuForStock` | inventory | `sku_id` → `product_id`, `serialized` (sets `serialized_locked`) |
+| `GetSku` | launch | `sku_id` → `product_id`, `status`, `active`, `launch_id`; unknown SKU → `NOT_FOUND` |
+| `LockSkuForStock` | inventory | `sku_id` → `product_id`, `serialized` (sets `serialized_locked`); unknown SKU → `NOT_FOUND` |
 | Admin: `Create/UpdateCategory`, `Create/UpdateProduct`, `SetOptions`, `Create/UpdateSku`, `SetSkuPrice`, `SetSkuActive`, `SetPlanEligibility`, `PublishProduct`, `ArchiveProduct`, `ReactivateProduct`, `CreateImageUpload`, `ConfirmImage`, `ReorderImages`, `DeleteImage` | Catalog manager, Admin | optimistic `version` on updates |
 | `HideReview` / `UnhideReview` | Support, Admin | `review_id`, `reason` |
+| `AdminListProducts` | Catalog manager, Admin | any status; filters `status?`, `category_id?`, `q?` (name/slug/SKU code contains, case-insensitive); paged (`page`, `page_size ≤ 100`), newest-updated first. Never cached. |
+| `AdminGetProduct` | Catalog manager, Admin | `id` → everything, including Markdown source, inactive SKUs, images in both statuses, plan eligibility, `serialized_locked`, `version`. Never cached. |
+| `AdminListReviews` | Support, Admin | filters `product_id?`, `status?`; paged; newest first; includes `hidden_by`, `hidden_reason`. Never cached. |
 
 ### 5.2 Messages
 
@@ -146,7 +150,7 @@ Bucket `bloom-product-images` (MinIO locally, S3-compatible in the cloud), publi
 |---|---|---|
 | `launch.stage-changed.v1` | Consumed | §6.4 |
 | `order.delivered.v1` | Consumed | Upsert `review_eligibility` for each `productId` |
-| `identity.customer-registered.v1` / `contact-changed.v1` | Consumed | Upsert `reviewer_names` |
+| `identity.customer-registered.v1` / `contact-changed.v1` | Consumed | Upsert `reviewer_names`; `updated_at` = the event's `OccurredAt`, applied only if newer (a `contact-changed` applied before `customer-registered` keeps the newer name) |
 | `identity.account-deleted.v1` | Consumed | §6.6 |
 | `identity.staff-action-recorded.v1` | Published | Every admin action (prices, lifecycle, moderation) |
 
@@ -161,6 +165,10 @@ Bucket `bloom-product-images` (MinIO locally, S3-compatible in the cloud), publi
 | `PUBLISH_INCOMPLETE` | `FAILED_PRECONDITION` | Publish without an active SKU with a price |
 | `NOT_VERIFIED_BUYER` | `PERMISSION_DENIED` | Review without eligibility (REV-R01) |
 | `IMAGE_INVALID` | `INVALID_ARGUMENT` | Wrong type, too large, or object missing at confirm |
+| `NOT_FOUND` | `NOT_FOUND` | Unknown product / SKU / category / image / review, a public read of a non-visible product, or editing / deleting a review the caller doesn't have |
+| `VALIDATION_FAILED` | `INVALID_ARGUMENT` | Bad field (for example rating outside 1–5, text > 2,000, price ≤ 0, plan eligibility pointing at a non-physical product); field name in `ErrorInfo` metadata |
+| `SLUG_TAKEN` | `ALREADY_EXISTS` | Category or product slug in use |
+| `SKU_CODE_TAKEN` | `ALREADY_EXISTS` | SKU code in use |
 
 ## 6. Behaviour
 
@@ -185,10 +193,13 @@ stateDiagram-v2
 
 Products are never hard-deleted (CR-06); archiving is the removal path.
 
+Warranty plans have no public page: a public `GetProduct` (id or slug) of a plan → `NOT_FOUND`. A plan exists publicly only inside a device's `warranty_plans[]`. Plans carry no rating. Admin reads and `GetPricing` still see plans.
+
 ### 6.2 Search (HLD-ADR-017)
 
 - Text: `websearch_to_tsquery('english', q)` against `search_vector`; rank with `ts_rank_cd`.
-- Filters: category (a top-level category includes its sub-categories); price on `min_price_cents`; each selected option value must match at least one active SKU.
+- Filters: category (a top-level category includes its sub-categories); price on `min_price_cents`; option values of the same option type are ORed, different types ANDed, all on the same active SKU (storage {256, 512} + color {Black} matches a product with an active SKU that is (256 or 512) and Black).
+- Warranty plans are excluded from search results and category listings.
 - Sorts: relevance, `min_price_cents` asc/desc, `published_at` desc, rating (`rating_sum / rating_count` desc, then count desc; products without reviews last).
 - Only visible products (§6.1). Offset pagination (catalog size is a few hundred products).
 
@@ -201,18 +212,20 @@ Products are never hard-deleted (CR-06); archiving is the removal path.
 
 ### 6.4 Launch stage events
 
-On `launch.stage-changed.v1`: set `launch_id` on the listed SKUs and `launch_id`, `launch_stage` on their products; bump the cache. On `stage = released`: set the products `active` (and `published_at` if null). Events are applied with a stage-order guard (`draft < announced < preorder_open < released`), so a late older event is a no-op.
+On `launch.stage-changed.v1`: set `launch_id` on the listed SKUs and `launch_id`, `launch_stage` on their products; bump the cache. On `stage = released`: set the products `active` (and `published_at` if null). Events are applied with a stage-order guard (`draft < announced < preorder_open < released`), so a late older event is a no-op. Archived is final for launch events: the launch consumer never changes an `archived` product; only staff can un-archive (`ReactivateProduct`).
 
 ### 6.5 Reviews
 
 | Action | Rules |
 |---|---|
-| Write | Customer must have `review_eligibility (account, product)` (REV-R01; returns don't remove it). One per product (REV-R03). `author_display` copied from `reviewer_names` (never from the request). Visible immediately (REV-R05). Same transaction: `rating_sum += r`, `rating_count += 1`. |
-| Edit | Own review; `rating_sum += new − old` if visible. |
-| Delete | Own review; row deleted; aggregate decreased if visible. A new review may be written later. |
+| Write | The product must be visible (§6.1), else `NOT_FOUND`; a warranty plan is not reviewable (`NOT_FOUND`). Customer must have `review_eligibility (account, product)` (REV-R01; returns don't remove it). One per product (REV-R03). `author_display` copied from `reviewer_names` (never from the request). Visible immediately (REV-R05). Same transaction: `rating_sum += r`, `rating_count += 1`. |
+| Edit | Own review; the product must be visible (§6.1); `rating_sum += new − old` if visible. |
+| Delete | Own review; always allowed, even if the product is not visible; row deleted; aggregate decreased if visible. A new review may be written later. |
 | Hide / unhide | Support; aggregate decreased / increased (REV-R06). The author isn't notified. |
 
 All aggregate changes are in the same transaction as the review change, on the product row.
+
+The `order.delivered.v1` consumer skips warranty-plan product ids (no `review_eligibility`).
 
 ### 6.6 Account deleted
 
@@ -252,13 +265,14 @@ All aggregate changes are in the same transaction as the review change, on the p
 | Customer renames themselves | Existing reviews keep the snapshot name; new reviews use the new name. |
 | Review written before the name event arrives | `author_display = 'Bloom customer'` fallback. |
 | Image upload never confirmed | Cleaned after 24 h. |
+| Launch event for an `archived` product | The product is not changed; only staff can un-archive (§6.4). |
 | Search query with only stop words | Empty text filter; returns filtered/sorted results. |
 
 ## 9. Security and validation
 
 - Public endpoints return only visible products and visible reviews.
 - Review text is stored as plain text and HTML-escaped by clients; no Markdown or links in reviews.
-- Product Markdown is authored by staff only; rendered with a safe subset (no raw HTML).
+- Product Markdown is authored by staff only; rendered on write with Markdig, raw HTML disabled, and stored in `description_html`.
 - Presigned URLs are scoped to one key, one content type, 5 minutes.
 - Staff methods check roles; all admin actions are audited.
 
@@ -286,7 +300,7 @@ All aggregate changes are in the same transaction as the review change, on the p
 | C-06 | Launch SKU in `announced` | Visible, `buyable = false` |
 | C-07 | Launch released | Product `active`, regular buyable |
 | C-08 | Review without delivery | `NOT_VERIFIED_BUYER` |
-| C-09 | Second review on the same product | Rejected (unique) |
+| C-09 | Second review on the same product | `CONCURRENCY_CONFLICT` |
 | C-10 | Hide a 5-star review on a 2-review product averaging 4 | Average becomes 3 |
 | C-11 | Account deleted | Reviews show "Former customer", still counted |
 | C-12 | Search "pro max 256" with storage filter | Matching products only |

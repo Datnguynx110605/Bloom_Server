@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package bloom.payment.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Payment.Contracts";
+
+// 04-payment §5.1: internal API for order.
+service PaymentInternal {
+  rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
+}
+
+message CreatePaymentRequest {
+  string order_id = 1;
+  string order_number = 2;
+  string account_id = 3;
+  int64 amount_cents = 4;
+  repeated DisplayLine display_lines = 5;
+}
+
+message DisplayLine {
+  string name = 1;
+  int64 amount_cents = 2;
+}
+
+message CreatePaymentResponse {
+  string payment_id = 1;
+  string checkout_url = 2;
+  google.protobuf.Timestamp session_expires_at = 3;
+}

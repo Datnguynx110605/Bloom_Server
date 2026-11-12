@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package bloom.notification.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "Bloom.Notification.Protos";
+
+// 09-notification §5.1, customer API: transcoded to JSON under /api/notifications (spec §6). Customers only; every query filters on the caller's account.
+service Notifications {
+  // Newest first, 20 per page. An empty next_page_token marks the last page.
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse) {
+    option (google.api.http) = { get: "/api/notifications" };
+  }
+  rpc GetUnreadCount(GetUnreadCountRequest) returns (GetUnreadCountResponse) {
+    option (google.api.http) = { get: "/api/notifications/unread-count" };
+  }
+  // 1 to 100 ids; ids that don't exist or belong to someone else are ignored.
+  rpc MarkRead(MarkReadRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/notifications/read" body: "*" };
+  }
+  rpc MarkAllRead(MarkAllReadRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = { post: "/api/notifications/read-all" body: "*" };
+  }
+  // A single-use ticket (30 s) to open the WebSocket.
+  rpc GetWsTicket(GetWsTicketRequest) returns (GetWsTicketResponse) {
+    option (google.api.http) = { get: "/api/notifications/ws-ticket" };
+  }
+}
+
+message ListNotificationsRequest {
+  string page_token = 1;
+}
+
+message ListNotificationsResponse {
+  repeated NotificationItem notifications = 1;
+  string next_page_token = 2;
+}
+
+message NotificationItem {
+  string id = 1;
+  string type = 2;
+  string title = 3;
+  string body = 4;
+  string link = 5;
+  bool read = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message GetUnreadCountRequest {}
+
+message GetUnreadCountResponse {
+  int32 count = 1;
+}
+
+message MarkReadRequest {
+  repeated string ids = 1;
+}
+
+message MarkAllReadRequest {}
+
+message GetWsTicketRequest {}
+
+message GetWsTicketResponse {
+  string ticket = 1;
+}

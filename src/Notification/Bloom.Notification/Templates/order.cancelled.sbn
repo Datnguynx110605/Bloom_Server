@@ -1,0 +1,16 @@
+--- subject
+Order {{ orderNumber }} was cancelled
+--- html
+<p>Hi {{ name }},</p>
+<p>{{ if reason == "customer" }}As you asked, we cancelled order {{ orderNumber }}.{{ else if reason == "support" }}Our support team cancelled order {{ orderNumber }}.{{ else if reason == "checkout_expired" }}Order {{ orderNumber }} was cancelled because the payment was not completed in time.{{ else if reason == "late_payment" }}Order {{ orderNumber }} was cancelled because your payment arrived after the order expired.{{ else if reason == "checkout_failed" }}Order {{ orderNumber }} was cancelled because the checkout failed.{{ else }}Order {{ orderNumber }} was cancelled.{{ end }}</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+{{ if reason == "customer" }}As you asked, we cancelled order {{ orderNumber }}.{{ else if reason == "support" }}Our support team cancelled order {{ orderNumber }}.{{ else if reason == "checkout_expired" }}Order {{ orderNumber }} was cancelled because the payment was not completed in time.{{ else if reason == "late_payment" }}Order {{ orderNumber }} was cancelled because your payment arrived after the order expired.{{ else if reason == "checkout_failed" }}Order {{ orderNumber }} was cancelled because the checkout failed.{{ else }}Order {{ orderNumber }} was cancelled.{{ end }}
+
+View your order: {{ orderUrl }}
+--- title
+Order cancelled
+--- body
+{{ if reason == "customer" }}As you asked, order {{ orderNumber }} was cancelled.{{ else if reason == "support" }}Our support team cancelled order {{ orderNumber }}.{{ else if reason == "checkout_expired" }}Order {{ orderNumber }} was cancelled: the payment was not completed in time.{{ else if reason == "late_payment" }}Order {{ orderNumber }} was cancelled: your payment arrived after the order expired.{{ else if reason == "checkout_failed" }}Order {{ orderNumber }} was cancelled: the checkout failed.{{ else }}Order {{ orderNumber }} was cancelled.{{ end }}

@@ -1,0 +1,16 @@
+--- subject
+Delivery problem with order {{ orderNumber }}
+--- html
+<p>Hi {{ name }},</p>
+<p>{{ if kind == "returned_to_sender" }}We could not deliver order {{ orderNumber }}, and the carrier sent it back to us.{{ else if kind == "lost" }}The carrier lost the package for order {{ orderNumber }}.{{ else }}We could not deliver order {{ orderNumber }}.{{ end }} Our team will contact you about the next steps.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+{{ if kind == "returned_to_sender" }}We could not deliver order {{ orderNumber }}, and the carrier sent it back to us.{{ else if kind == "lost" }}The carrier lost the package for order {{ orderNumber }}.{{ else }}We could not deliver order {{ orderNumber }}.{{ end }} Our team will contact you about the next steps.
+
+View your order: {{ orderUrl }}
+--- title
+Delivery problem
+--- body
+{{ if kind == "returned_to_sender" }}The carrier sent order {{ orderNumber }} back to us.{{ else if kind == "lost" }}The carrier lost the package for order {{ orderNumber }}.{{ else }}We could not deliver order {{ orderNumber }}.{{ end }}

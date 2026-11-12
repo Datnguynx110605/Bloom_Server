@@ -4,11 +4,11 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
-| **Last updated** | 2026-10-31 |
+| **Status** | Approved (2026-11-12) |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [10-accounts-access](../product-design/10-accounts-access.md) ACC-R01 … R14, BI-06 |
 | **HLD** | [high-level-design.md §5, §9.1](../high-level-design/high-level-design.md), HLD-ADR-010, HLD-ADR-011, HLD-ADR-016 |
-| **Decision records** | [LLD-ADR-008](adr/LLD-ADR-008-verify-first-signup.md) |
+| **Decision records** | [LLD-ADR-008](adr/LLD-ADR-008-verify-first-signup.md), [LLD-ADR-013](adr/LLD-ADR-013-revoked-refresh-not-reuse.md) |
 | **Depends on** | [00-reliability.md](00-reliability.md), [03-order.md](03-order.md) (`HasUnsettledOrders`) |
 
 ## 1. Problem and scope
@@ -115,6 +115,7 @@ Indexes: `(occurred_at)`, `(actor_id, occurred_at)`, `(target_type, target_id)`.
 | `signin:block:{accountId}` | present = blocked | 15 min |
 | `mfa:challenge:{id}` | `accountId`, attempts | 5 min |
 | `mfa:fail:{accountId}` / `mfa:block:{accountId}` | as sign-in | 15 min |
+| `mfa:used:{accountId}:{step}` | TOTP replay block | 90 s |
 | `code:cooldown:{email}:{purpose}` | resend cooldown | 60 s |
 | `code:hourly:{email}:{purpose}` | codes sent this hour | 1 h |
 
@@ -129,6 +130,7 @@ Indexes: `(occurred_at)`, `(actor_id, occurred_at)`, `(target_type, target_id)`.
 | `typ` | `customer` \| `staff` |
 | `role` | staff only |
 | `auth_time` | interactive sign-in time (for ID-06) |
+| `sid` | `family_id` of the refresh-token family |
 | `iat`, `exp`, `jti` | |
 
 **Refresh token:** 256-bit random, base64url, in cookie `bloom_rt`: `Secure; HttpOnly; SameSite=Strict; Path=/auth/refresh`. Stored only as SHA-256.
@@ -150,7 +152,7 @@ Indexes: `(occurred_at)`, `(actor_id, occurred_at)`, `(target_type, target_id)`.
 | `VerifyStaffMfa` | Staff | challenge, TOTP code → tokens |
 | `SignInWithGoogle` | Anyone | Google ID token (from Google Identity Services on the client) → tokens |
 | `Refresh` | Cookie | → new access token + rotated cookie |
-| `SignOut` / `SignOutEverywhere` | Signed in | revoke family / all sessions |
+| `SignOut` / `SignOutEverywhere` | Signed in | revoke family / all sessions. `SignOut` takes `sid` in the request (read by the client from its own token). |
 | `RequestPasswordReset` / `ResetPassword` | Anyone | email → code; email + code + new password |
 | `GetMe` | Signed in | profile |
 | `ChangeEmail` / `ConfirmEmailChange` | Customer, re-auth | new email → code to new email; code → switch |
@@ -167,22 +169,22 @@ Indexes: `(occurred_at)`, `(actor_id, occurred_at)`, `(target_type, target_id)`.
 
 | Message | Direction | Payload |
 |---|---|---|
-| `identity.customer-registered.v1` | → notification | `accountId`, `email`, `name` |
-| `identity.contact-changed.v1` | → notification | `accountId`, `email`, `name` |
-| `identity.account-deleted.v1` | → notification, catalog, order, fulfillment | `accountId` |
-| `identity.tokens-revoked.v1` | → api-gateway | `accountId`, `issuedBefore` |
-| `identity.verification-code.v1` | → notification | `email`, `purpose`, `encryptedCode`, `expiresAt` (email-only; NTF-R04). `encryptedCode` = AES-256-GCM with a key shared only by identity and notification (Sealed Secret), so outbox rows and broker messages never hold a usable code. |
-| `identity.staff-invited.v1` | → notification | `email`, `role`, `inviteUrl` (email-only) |
+| `identity.customer-registered.v1` | → notification | `accountId` (uuid), `email` (string), `name` (string) |
+| `identity.contact-changed.v1` | → notification | `accountId` (uuid), `email` (string), `name` (string) |
+| `identity.account-deleted.v1` | → notification, catalog, order, fulfillment | `accountId` (uuid) |
+| `identity.tokens-revoked.v1` | → api-gateway | `accountId` (uuid), `issuedBefore` (Unix ms, number) |
+| `identity.verification-code.v1` | → notification | `email` (string), `purpose` (string), `encryptedCode` (string), `expiresAt` (timestamp) (email-only; NTF-R04). `encryptedCode` = AES-256-GCM with a key shared only by identity and notification (Sealed Secret), so outbox rows and broker messages never hold a usable code. Layout: base64url(nonce ‖ ciphertext ‖ tag) of the UTF-8 code, 12-byte random nonce, 16-byte tag, no associated data. |
+| `identity.staff-invited.v1` | → notification | `email` (string), `role` (string), `inviteUrl` (string) (email-only) |
 | `identity.staff-action-recorded.v1` | Consumed (`identity.audit`) from every service | actor, action, target, details |
 
 ### 5.3 Error reasons
 
 | Reason | Status | When |
 |---|---|---|
-| `INVALID_CREDENTIALS` | `UNAUTHENTICATED` | Wrong email / password, unknown email, or blocked (same response, ID-05) |
-| `MFA_INVALID` | `UNAUTHENTICATED` | Wrong / expired TOTP or challenge |
+| `INVALID_CREDENTIALS` | `UNAUTHENTICATED` | Wrong email / password, unknown email, or blocked (same response, ID-05). Also: wrong current password (`ChangePassword`, re-enrol accept), counted toward the `signin:fail` / `signin:block` lockout; invalid Google ID token; a staff account with no TOTP secret, after the password check (§6.1) |
+| `MFA_INVALID` | `UNAUTHENTICATED` | Wrong / expired TOTP or challenge; wrong first TOTP code at enrolment |
 | `EMAIL_ALREADY_REGISTERED` | `ALREADY_EXISTS` | `StartSignUp` with an email that has an account (customer or staff) |
-| `EMAIL_TAKEN` | `ALREADY_EXISTS` | `CompleteSignUp` race, or change email to an existing email (ID-01) |
+| `EMAIL_TAKEN` | `ALREADY_EXISTS` | `CompleteSignUp` race, change email to an existing email (ID-01), or `InviteStaff` for an email with an account |
 | `REGISTRATION_TOKEN_INVALID` | `FAILED_PRECONDITION` | Token tampered, wrong purpose, or older than 30 min |
 | `PASSWORD_WEAK` | `INVALID_ARGUMENT` | Length or breached-list rule |
 | `CODE_INVALID` | `FAILED_PRECONDITION` | Wrong, expired, consumed, or 5 attempts used |
@@ -193,6 +195,14 @@ Indexes: `(occurred_at)`, `(actor_id, occurred_at)`, `(target_type, target_id)`.
 | `UNSETTLED_ORDERS` | `FAILED_PRECONDITION` | Deletion refused (ACC-R13); metadata: earliest retry date if known |
 | `ORDER_SERVICE_UNAVAILABLE` | `UNAVAILABLE` | Deletion check failed (fail safe, "try later") |
 | `LAST_ADMIN` | `FAILED_PRECONDITION` | Deactivating or demoting the only active Admin |
+| `INVITATION_INVALID` | `FAILED_PRECONDITION` | Unknown, expired or used invite token |
+| `VALIDATION_FAILED` | `INVALID_ARGUMENT` | Bad email, name, address field or TOTP secret; field name in `ErrorInfo` metadata |
+| `NOT_FOUND` | `NOT_FOUND` | Unknown address, staff id, or a customer id given to a staff action |
+| `ADDRESS_LIMIT_REACHED` | `FAILED_PRECONDITION` | 11th address |
+| `PASSWORD_REQUIRED` | `FAILED_PRECONDITION` | `UnlinkGoogle` with no password |
+| `GOOGLE_ALREADY_LINKED` | `ALREADY_EXISTS` | Google account linked to another account |
+
+Deactivating a deactivated account or reactivating an active one succeeds as a no-op.
 
 ## 6. Behaviour
 
@@ -230,7 +240,7 @@ No account row exists until step 3, so an unverified email can never become an a
 2. `signin:block` present → `INVALID_CREDENTIALS`.
 3. Verify Argon2id. Failure → increment `signin:fail`; at 5 → set `signin:block` (15 min) → `INVALID_CREDENTIALS`.
 4. Status must be `active` (deactivated staff, deleted customer → `INVALID_CREDENTIALS`).
-5. Customer → issue tokens (§6.3). Staff → create `mfa:challenge` → return `mfa_challenge_id`.
+5. Customer → issue tokens (§6.3). Staff → create `mfa:challenge` → return `mfa_challenge_id`. A staff account with no TOTP secret (after `ResetStaffMfa`) gets `INVALID_CREDENTIALS` after the password check (failures count toward lockout), with no challenge.
 6. `VerifyStaffMfa`: TOTP (RFC 6238, 30 s step, ±1 step window, a code can't be reused within its window); 5 failures → `mfa:block`. Success → issue tokens.
 
 Argon2id parameters: memory 64 MiB, iterations 3, parallelism 1, tuned so one hash takes ~100 ms in production pods (ID-07); stored in the PHC string so they can be raised later (rehash on next sign-in).
@@ -243,7 +253,8 @@ Verify the ID token: signature (Google JWKS, cached), `iss`, `aud` = Bloom's cli
 |---|---|
 | `google_sub` matches an account | Sign in |
 | Email matches a **staff** account | `GOOGLE_NOT_ALLOWED` |
-| Email matches a customer | Link (`google_sub` set), sign in. Safe because every customer email was proven at sign-up, so it can't be pre-hijacked. |
+| Email matches a customer whose `google_sub` is set to a different value | `EMAIL_TAKEN` (a linked Google identity is never replaced) |
+| Email matches a customer (`google_sub` null) | Link (`google_sub` set), sign in. Safe because every customer email was proven at sign-up, so it can't be pre-hijacked. |
 | No match | Create customer (no password), publish `customer-registered`, sign in |
 
 ### 6.3 Issuing and refreshing tokens
@@ -256,7 +267,8 @@ Verify the ID token: signature (Google JWKS, cached), `iss`, `aud` = Bloom's cli
 |---|---|
 | Not found / expired | `REFRESH_INVALID` |
 | `active` | Mark `rotated`, insert a new `active` token in the same family (customers: `expires_at = now + 7 days`; staff: keep the family's absolute expiry), issue access token with the family's `auth_time` |
-| `rotated` or `revoked` (**reuse**) | Revoke every token of the account; `tokens_valid_after = now`; outbox `tokens-revoked`; `REFRESH_INVALID` (ID-03) |
+| `rotated` (**reuse**) | Revoke every token of the account; `tokens_valid_after = now`; outbox `tokens-revoked`; `REFRESH_INVALID` (ID-03) |
+| `revoked` | `REFRESH_INVALID`, no side effects: no revoke-all, no `refresh_total{result="reuse"}` ([LLD-ADR-013](adr/LLD-ADR-013-revoked-refresh-not-reuse.md)) |
 
 Account not `active` → revoke and `REFRESH_INVALID`.
 
@@ -266,13 +278,13 @@ Account not `active` → revoke and `REFRESH_INVALID`.
 
 | Trigger | Scope |
 |---|---|
-| `SignOut` | Current family only (its access token expires naturally within 15 min) |
+| `SignOut` | The family in the request's `sid`, only if it belongs to the caller; the cookie is cleared (its access token expires naturally within 15 min) |
 | `SignOutEverywhere`, password change / reset, refresh reuse, account deletion | `revoke_all` |
 | Staff deactivation, role change, MFA reset | `revoke_all` (ACC-R10) |
 
 ### 6.5 Codes (verification, reset, email change)
 
-- 6 digits from a CSPRNG; stored as HMAC-SHA256(pepper, account ‖ purpose ‖ code).
+- 6 digits from a CSPRNG; stored as HMAC-SHA256(pepper, subject ‖ purpose ‖ code), where subject is the account ID, or the normalized email for `signup`.
 - Lifetime: `signup` 15 min, `reset_password` 10 min, `change_email` 15 min. Issuing a new code invalidates the previous one for that email and purpose.
 - Max 5 attempts per code; resend cooldown 60 s; max 5 codes per hour per email and purpose.
 - Delivery: outbox `identity.verification-code.v1` with the code AES-256-GCM encrypted (only notification can decrypt).
@@ -298,11 +310,11 @@ Protected methods check `now − auth_time ≤ 5 min` from the trusted identity 
 | Action | Rule |
 |---|---|
 | `InviteStaff` | Email not used by any account (ID-01); invite token (72 h, hashed); outbox `staff-invited` |
-| `AcceptStaffInvitation` | Valid token; set name and password; generate TOTP secret, confirm with a first code; create account (`staff`, role; the invitation proved the email); issue tokens |
+| `AcceptStaffInvitation` | Valid token; set name and password; generate TOTP secret, confirm with a first code; create account (`staff`, role; the invitation proved the email); issue tokens. If the token's email already has a staff account (re-enrol link, see `ResetStaffMfa`): requires the current password (failures count toward sign-in lockout) and a new TOTP enrolment, no name or new password; sets the new secret; issue tokens |
 | `ChangeStaffRole` | Exactly one role (ACC-R08); `revoke_all` so new tokens carry the new role |
 | `DeactivateStaff` | `deactivated` + `revoke_all` (ACC-R10) |
-| `ResetStaffMfa` | Clears the TOTP secret, `revoke_all`, sends a new invitation-style link to re-enrol |
-| Any of the above on the last active Admin | `LAST_ADMIN` |
+| `ResetStaffMfa` | Clears the TOTP secret, `revoke_all`, sends a new invitation-style link to re-enrol: a `staff_invitations` row for the existing staff email, and `staff-invited` published |
+| Demote or deactivate on the last active Admin | `LAST_ADMIN` |
 
 Every staff management action is written directly to `audit_log` (same database) in its transaction.
 
@@ -319,6 +331,8 @@ Inbox transaction: insert `audit_log` with `id = messageId` (`ON CONFLICT DO NOT
 | Revocation vs gateway | Outbox event + gateway Redis within ~1 s; `tokens_valid_after` is the source of truth |
 | Code brute force | Per-code attempt cap + hourly cap + HMAC storage |
 | Losing the last Admin | `LAST_ADMIN` guard in the same transaction |
+| Two default addresses | `UpsertAddress(is_default = true)` locks the account row (`FOR UPDATE`) before it clears the old default. `DeleteAccount` takes the account row first as well, so both lock in the order account → addresses. |
+| Concurrent deletes | `DeleteAccount` re-checks `status` under the account row lock: a second concurrent delete gets `NOT_FOUND` and publishes nothing (one `account-deleted`) |
 
 ## 8. Edge cases
 
@@ -332,6 +346,7 @@ Inbox transaction: insert `audit_log` with `id = messageId` (`ON CONFLICT DO NOT
 | Staff member loses the TOTP device | Admin `ResetStaffMfa`. |
 | Deleted customer's email registers again | Allowed: the email was freed. |
 | order down during deletion | `ORDER_SERVICE_UNAVAILABLE`, nothing changed. |
+| Address change racing a delete | `UpsertAddress` re-checks `status` under the account row lock: `NOT_FOUND`. |
 
 ## 9. Security and validation
 

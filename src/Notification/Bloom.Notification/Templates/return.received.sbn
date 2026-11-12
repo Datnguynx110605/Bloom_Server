@@ -1,0 +1,16 @@
+--- subject
+We received your return for order {{ orderNumber }}
+--- html
+<p>Hi {{ name }},</p>
+<p>We received your return for order {{ orderNumber }}. We will check it and email you the result.</p>
+<p><a href="{{ orderUrl }}">View your order</a></p>
+--- text
+Hi {{ name }},
+
+We received your return for order {{ orderNumber }}. We will check it and email you the result.
+
+View your order: {{ orderUrl }}
+--- title
+Return received
+--- body
+We received your return for order {{ orderNumber }}.

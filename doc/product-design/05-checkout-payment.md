@@ -4,9 +4,9 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
-| **Last updated** | 2026-10-31 |
-| **Related ADRs** | [PD-ADR-002](adr/PD-ADR-002-us-market-flat-sales-tax.md), [PD-ADR-003](adr/PD-ADR-003-charge-at-checkout-online-only.md), [PD-ADR-004](adr/PD-ADR-004-reserve-stock-at-checkout.md), [PD-ADR-007](adr/PD-ADR-007-coupon-allocation-and-holding.md), [PD-ADR-008](adr/PD-ADR-008-account-required-staff-mfa.md) |
+| **Status** | Approved (2026-11-12) |
+| **Last updated** | 2026-11-12 |
+| **Related ADRs** | [PD-ADR-002](adr/PD-ADR-002-us-market-flat-sales-tax.md), [PD-ADR-003](adr/PD-ADR-003-charge-at-checkout-online-only.md), [PD-ADR-004](adr/PD-ADR-004-reserve-stock-at-checkout.md), [PD-ADR-007](adr/PD-ADR-007-coupon-allocation-and-holding.md), [PD-ADR-008](adr/PD-ADR-008-account-required-staff-mfa.md), [PD-ADR-009](adr/PD-ADR-009-no-price-change-flag-in-cart.md) |
 
 ## 1. Purpose and scope
 
@@ -25,7 +25,7 @@ Checkout turns a cart into a paid order: it locks the price, reserves stock, hol
 | CHK-R01 | Buying requires a signed-in customer account with a verified email. |
 | CHK-R02 | The cart is saved per account, holds no stock, and shows current prices. |
 | CHK-R03 | A regular SKU line can have at most 10 units. |
-| CHK-R18 | When the cart is shown, each line displays its current price and flags items that are out of stock or have changed price. These flags are informational. The binding check is at checkout start (CHK-R04). |
+| CHK-R18 | When the cart is shown, each line displays its current price and flags items that are out of stock. The flag is informational. The binding check is at checkout start (CHK-R04). |
 
 ### Checkout start
 
@@ -37,6 +37,7 @@ Checkout turns a cart into a paid order: it locks the price, reserves stock, hol
 | CHK-R07 | Shipping options: **Standard** (free) or **Express** (flat fee set by Admin). |
 | CHK-R08 | Sales tax is one flat rate, set in configuration, applied to physical product lines only, on the price **after** the line's discount share. Shipping fees and warranty plans are not taxed. |
 | CHK-R09 | At most one coupon per order. Its discount is split across eligible lines (PRM-R06). |
+| CHK-R20 | An order's total must be at least $0.50, the card processor's minimum. Checkout refuses to start otherwise. |
 
 ### Payment
 
@@ -47,6 +48,7 @@ Checkout turns a cart into a paid order: it locks the price, reserves stock, hol
 | CHK-R12 | When payment succeeds, the order becomes *Paid*, reservations become sales, and the coupon use is consumed. |
 | CHK-R13 | If payment fails, the customer can retry while the checkout is still valid. |
 | CHK-R14 | When the checkout expires without successful payment, stock and the coupon use are released, and the order becomes *Cancelled* (reason: checkout expired). |
+| CHK-R19 | When payment succeeds, the items bought leave the cart; items added during the checkout stay. |
 
 ### Amounts and refunds
 

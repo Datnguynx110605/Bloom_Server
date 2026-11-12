@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-10-31) |
-| **Last updated** | 2026-10-31 |
+| **Status** | Approved (2026-11-12) |
+| **Last updated** | 2026-11-12 |
 | **Scope** | Business domain and product scope. No technical design (see `doc/high-level-design/`). |
 
 ## Summary
@@ -140,6 +140,7 @@ The full permission matrix is in [10-accounts-access](10-accounts-access.md).
 | [PD-ADR-006](adr/PD-ADR-006-per-product-serial-tracking.md) | Serial tracking per product flag; returned units never resold |
 | [PD-ADR-007](adr/PD-ADR-007-coupon-allocation-and-holding.md) | Coupon discount split per line; coupon uses held at checkout |
 | [PD-ADR-008](adr/PD-ADR-008-account-required-staff-mfa.md) | Account required to buy; staff invited with required MFA |
+| [PD-ADR-009](adr/PD-ADR-009-no-price-change-flag-in-cart.md) | No price-change flag in the cart |
 
 ## 10. Document map
 
