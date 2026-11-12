@@ -184,13 +184,6 @@ public sealed class TestPayment : IAsyncDisposable
         return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()").SingleAsync(Ct);
     }
 
-    /// <summary>Sessions of this database that hold an open transaction and are not running a statement (for example awaiting a Stripe answer).</summary>
-    public async Task<int> IdleTransactionsAsync()
-    {
-        await using var db = NewDb();
-        return await db.Database.SqlQuery<int>($"SELECT count(*)::int AS \"Value\" FROM pg_stat_activity WHERE state = 'idle in transaction' AND datname = current_database()").SingleAsync(Ct);
-    }
-
     /// <summary>One pass of the provider executor.</summary>
     public Task RunExecutorAsync() => ActivatorUtilities.CreateInstance<ProviderExecutor>(Services).RunOnceAsync(Ct);
 

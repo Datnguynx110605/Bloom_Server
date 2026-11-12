@@ -259,6 +259,24 @@ public class WebhookTests(Containers containers)
     }
 
     [Fact]
+    public async Task P4_dispute_alert_not_logged_on_rollback()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var p = await OpenAsync(t);
+        using var paid = await Complete(t, p);
+        // the upsert succeeds and the commit fails, so the row is rolled back
+        await t.SqlAsync($"CREATE FUNCTION fail_at_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'commit refused'; END $$");
+        await t.SqlAsync($"CREATE CONSTRAINT TRIGGER ck_test_never AFTER INSERT ON disputes DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_at_commit()");
+
+        using var failed = await Post(t, "charge.dispute.created", StripeEvents.Dispute("dp_1", p.Pi, "needs_response", 1000, "fraudulent"));
+
+        Assert.Equal(System.Net.HttpStatusCode.InternalServerError, failed.StatusCode);
+        await using var db = t.NewDb();
+        Assert.Empty(await db.Disputes.AsNoTracking().ToListAsync(Ct));
+        Assert.DoesNotContain(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("Stripe dispute"));
+    }
+
+    [Fact]
     public async Task D25_late_created_after_closed_keeps_final_status()
     {
         await using var t = await TestPayment.StartAsync(containers);

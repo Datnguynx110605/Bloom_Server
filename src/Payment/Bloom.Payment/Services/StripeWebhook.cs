@@ -77,10 +77,11 @@ public static class StripeWebhook
                 }
 
                 var obj = root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object && data.TryGetProperty("object", out var o) && o.ValueKind == JsonValueKind.Object ? o : default;
-                if (obj.ValueKind == JsonValueKind.Object) await ApplyAsync(type, obj, created, db, transitions, outbox, logger, ct);
+                var alert = obj.ValueKind == JsonValueKind.Object ? await ApplyAsync(type, obj, created, db, transitions, outbox, logger, ct) : null;
                 await db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
                 transitions.Emit();
+                alert?.Invoke(); // after the commit, like the transitions' own logs (P-4)
 
                 metrics.Webhook(type, "processed");
                 metrics.WebhookLag((clock.GetUtcNow() - DateTimeOffset.FromUnixTimeSeconds(created)).TotalSeconds);
@@ -102,8 +103,8 @@ public static class StripeWebhook
         return Results.BadRequest();
     }
 
-    /// <summary>Spec §7 "Finding the record for an event": a miss leaves the event stored only.</summary>
-    private static async Task ApplyAsync(
+    /// <summary>Spec §7 "Finding the record for an event": a miss leaves the event stored only. Returns the alert to log once the transaction has committed, or null.</summary>
+    private static async Task<Action?> ApplyAsync(
         string type, JsonElement obj, long created, PaymentDbContext db, Transitions transitions, OutboxWriter outbox, ILogger logger, CancellationToken ct)
     {
         switch (type)
@@ -131,9 +132,9 @@ public static class StripeWebhook
                 break;
 
             case "charge.dispute.created" or "charge.dispute.updated" or "charge.dispute.closed":
-                await UpsertDisputeAsync(obj, created, db, logger, ct);
-                break;
+                return await UpsertDisputeAsync(obj, created, db, logger, ct);
         }
+        return null;
     }
 
     /// <summary>The refund is found by its Stripe id, else by <c>metadata.refund_id</c> (the executor may have crashed before storing the id).</summary>
@@ -144,11 +145,11 @@ public static class StripeWebhook
         if (id is { } found) await transitions.ApplyRefundAsync(found, status, stripeId, Str(refund, "failure_reason"), ct);
     }
 
-    private static async Task UpsertDisputeAsync(JsonElement dispute, long eventCreated, PaymentDbContext db, ILogger logger, CancellationToken ct)
+    private static async Task<Action?> UpsertDisputeAsync(JsonElement dispute, long eventCreated, PaymentDbContext db, ILogger logger, CancellationToken ct)
     {
-        if (Str(dispute, "payment_intent") is not { } intent) return; // a null would match every payment without an intent
+        if (Str(dispute, "payment_intent") is not { } intent) return null; // a null would match every payment without an intent
         var paymentId = await db.Payments.AsNoTracking().Where(p => p.StripePaymentIntentId == intent).Select(p => (Guid?)p.Id).SingleOrDefaultAsync(ct);
-        if (paymentId is null) return;
+        if (paymentId is null) return null;
 
         var id = Str(dispute, "id") ?? throw new InvalidOperationException("A dispute has no id.");
         var status = Str(dispute, "status") ?? throw new InvalidOperationException($"Dispute {id} has no status.");
@@ -163,8 +164,8 @@ public static class StripeWebhook
             ON CONFLICT (stripe_dispute_id) DO UPDATE SET status = EXCLUDED.status, amount_cents = EXCLUDED.amount_cents, reason = EXCLUDED.reason, updated_at = EXCLUDED.updated_at
             WHERE disputes.updated_at <= EXCLUDED.updated_at
             """, ct);
-        if (applied == 1) // 0: a newer event already won, so this status is stale and must not alert Support
-            logger.LogError("Stripe dispute {DisputeId} on payment {PaymentId} is {Status}", id, paymentId, status);
+        // 0: a newer event already won, so this status is stale and must not alert Support
+        return applied == 1 ? () => logger.LogError("Stripe dispute {DisputeId} on payment {PaymentId} is {Status}", id, paymentId, status) : null;
     }
 
     private static Guid? PaymentId(JsonElement obj) => MetadataId(obj, "payment_id");
