@@ -132,7 +132,6 @@ public class OrderRow
     public bool StockAllocated { get; set; }
     public bool LaunchReleased { get; set; }
     public bool HandedToFulfillment { get; set; }
-    public int OpenReturns { get; set; }
     public DateTimeOffset? DeadlineAt { get; set; }
     public required string ShippingOption { get; set; }
     /// <summary>jsonb address snapshot.</summary>
@@ -201,6 +200,14 @@ public class CheckoutKey
     public Guid AccountId { get; set; }
     public Guid IdempotencyKey { get; set; }
     public Guid OrderId { get; set; }
+}
+
+/// <summary>One row per return (spec §4): open while <see cref="ClosedAt"/> is null.</summary>
+public class OrderReturn
+{
+    public Guid OrderId { get; set; }
+    public Guid ReturnId { get; set; }
+    public DateTimeOffset? ClosedAt { get; set; }
 }
 
 public class Cart

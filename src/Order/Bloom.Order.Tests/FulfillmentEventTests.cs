@@ -223,25 +223,82 @@ public class FulfillmentEventTests(Containers containers)
         Assert.Equal([("delivered", "partially_returned", "system"), ("partially_returned", "returned", "system")], last);
     }
 
+    private static async Task<int> OpenReturnsAsync(TestOrder t, Guid orderId)
+    {
+        await using var db = t.NewDb();
+        return await db.OrderReturns.CountAsync(r => r.OrderId == orderId && r.ClosedAt == null, Ct);
+    }
+
+    private static Task ReturnRequestedAsync(TestOrder t, Guid orderId, Guid returnId) =>
+        Consume.Async<ReturnRequestedConsumer>(t, FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(orderId, returnId));
+
+    private static Task ReturnClosedAsync(TestOrder t, Guid orderId, Guid returnId, string reason = "decided") =>
+        Consume.Async<ReturnClosedConsumer>(t, FulfillmentMessages.ReturnClosed, new ReturnClosedV1(orderId, returnId, reason));
+
     [Fact]
-    public async Task Open_returns_count_up_and_down()
+    public async Task Two_returns_one_closed_twice_leaves_one_open()
     {
         await using var t = await TestOrder.StartAsync(containers);
         var (_, orderId, _) = await PaidAsync(t);
-        Task RequestedAsync() => Consume.Async<ReturnRequestedConsumer>(t, FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(orderId, Guid.NewGuid()));
-        Task ClosedAsync() => Consume.Async<ReturnClosedConsumer>(t, FulfillmentMessages.ReturnClosed, new ReturnClosedV1(orderId, Guid.NewGuid(), "decided"));
+        Guid first = Guid.NewGuid(), second = Guid.NewGuid();
 
-        await ClosedAsync(); // at 0 stays 0
-        Assert.Equal(0, (await OrderAsync(t, orderId)).OpenReturns);
-        await RequestedAsync();
-        await RequestedAsync();
-        Assert.Equal(2, (await OrderAsync(t, orderId)).OpenReturns);
-        await ClosedAsync();
-        Assert.Equal(1, (await OrderAsync(t, orderId)).OpenReturns);
-        await ClosedAsync();
-        await ClosedAsync();
-        Assert.Equal(0, (await OrderAsync(t, orderId)).OpenReturns);
-        await Consume.Async<ReturnRequestedConsumer>(t, FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(Guid.NewGuid(), Guid.NewGuid())); // unknown order
+        await ReturnRequestedAsync(t, orderId, first);
+        await ReturnRequestedAsync(t, orderId, second);
+        Assert.Equal(2, await OpenReturnsAsync(t, orderId));
+        await ReturnClosedAsync(t, orderId, first);
+        await ReturnClosedAsync(t, orderId, first);
+        Assert.Equal(1, await OpenReturnsAsync(t, orderId));
+    }
+
+    [Fact]
+    public async Task Closed_before_requested_ends_closed()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (_, orderId, _) = await PaidAsync(t);
+        var returnId = Guid.NewGuid();
+
+        await ReturnClosedAsync(t, orderId, returnId, "expired");
+        await ReturnRequestedAsync(t, orderId, returnId); // reordered: the request arrives after its close
+
+        Assert.Equal(0, await OpenReturnsAsync(t, orderId));
+        await using var db = t.NewDb();
+        Assert.NotNull(Assert.Single(await db.OrderReturns.Where(r => r.OrderId == orderId).ToListAsync(Ct)).ClosedAt);
+    }
+
+    [Fact]
+    public async Task Return_events_bump_version_only_when_they_change_a_row()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (_, orderId, _) = await PaidAsync(t);
+        var returnId = Guid.NewGuid();
+        var v = (await OrderAsync(t, orderId)).Version;
+        async Task<bool> BumpedAsync(Func<Task> act)
+        {
+            await act();
+            var now = (await OrderAsync(t, orderId)).Version;
+            var bumped = now == v + 1;
+            Assert.True(bumped || now == v);
+            v = now;
+            return bumped;
+        }
+
+        Assert.True(await BumpedAsync(() => ReturnRequestedAsync(t, orderId, returnId)));
+        Assert.False(await BumpedAsync(() => ReturnRequestedAsync(t, orderId, returnId)));
+        Assert.True(await BumpedAsync(() => ReturnClosedAsync(t, orderId, returnId)));
+        Assert.False(await BumpedAsync(() => ReturnClosedAsync(t, orderId, returnId)));
+    }
+
+    [Fact]
+    public async Task Return_events_for_unknown_order_are_noops()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        Guid unknown = Guid.NewGuid(), returnId = Guid.NewGuid();
+
+        await ReturnRequestedAsync(t, unknown, returnId);
+        await ReturnClosedAsync(t, unknown, returnId);
+
+        await using var db = t.NewDb();
+        Assert.Empty(await db.OrderReturns.ToListAsync(Ct));
     }
 
     [Fact]
@@ -268,22 +325,21 @@ public class FulfillmentEventTests(Containers containers)
     }
 
     [Fact]
-    public async Task D33_return_closed_decided_after_expired_is_handled()
+    public async Task D33_requested_closed_closed_leaves_no_open_return()
     {
         await using var t = await TestOrder.StartAsync(containers);
         var (_, orderId, _) = await PaidAsync(t);
         await SetStatusAsync(t, orderId, OrderStatuses.Delivered);
         var returnId = Guid.NewGuid();
-        Task ClosedAsync(string reason) => Consume.Async<ReturnClosedConsumer>(t, FulfillmentMessages.ReturnClosed, new ReturnClosedV1(orderId, returnId, reason));
-        await Consume.Async<ReturnRequestedConsumer>(t, FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(orderId, returnId));
-        await ClosedAsync("expired"); // the request lapsed
-        Assert.Equal(0, (await OrderAsync(t, orderId)).OpenReturns);
+        await ReturnRequestedAsync(t, orderId, returnId);
+        await ReturnClosedAsync(t, orderId, returnId, "expired"); // the request lapsed
+        Assert.Equal(0, await OpenReturnsAsync(t, orderId));
 
-        await ClosedAsync("decided"); // the parcel arrived anyway and was decided (D33): a second close of the same return
+        await ReturnClosedAsync(t, orderId, returnId, "decided"); // the parcel arrived anyway and was decided (D33): a second close of the same return
         await DecidedAsync(t, orderId, (1, 1));
 
         var order = await OrderAsync(t, orderId);
-        Assert.Equal((0, OrderStatuses.PartiallyReturned), (order.OpenReturns, order.Status)); // never below 0, and the decision still counts
+        Assert.Equal((0, OrderStatuses.PartiallyReturned), (await OpenReturnsAsync(t, orderId), order.Status)); // none open, and the decision still counts
         Assert.Equal([1, 0], (await LinesAsync(t, orderId)).Select(l => l.ReturnedQty));
     }
 

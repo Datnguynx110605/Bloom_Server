@@ -17,7 +17,7 @@ namespace Bloom.Order.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -414,6 +414,25 @@ namespace Bloom.Order.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Bloom.Order.Data.OrderReturn", b =>
+                {
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<Guid>("ReturnId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("return_id");
+
+                    b.Property<DateTimeOffset?>("ClosedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("closed_at");
+
+                    b.HasKey("OrderId", "ReturnId");
+
+                    b.ToTable("order_returns", (string)null);
+                });
+
             modelBuilder.Entity("Bloom.Order.Data.OrderRow", b =>
                 {
                     b.Property<Guid>("Id")
@@ -474,12 +493,6 @@ namespace Bloom.Order.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("number");
-
-                    b.Property<int>("OpenReturns")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(0)
-                        .HasColumnName("open_returns");
 
                     b.Property<Guid?>("PaymentId")
                         .HasColumnType("uuid")
@@ -561,8 +574,6 @@ namespace Bloom.Order.Data.Migrations
                             t.HasCheckConstraint("ck_orders_cancel_reason", "cancel_reason IN ('checkout_failed', 'checkout_expired', 'customer', 'support')");
 
                             t.HasCheckConstraint("ck_orders_kind", "kind IN ('regular', 'launch')");
-
-                            t.HasCheckConstraint("ck_orders_open_returns_non_negative", "open_returns >= 0");
 
                             t.HasCheckConstraint("ck_orders_shipping_option", "shipping_option IN ('standard', 'express')");
 
@@ -871,6 +882,15 @@ namespace Bloom.Order.Data.Migrations
                 });
 
             modelBuilder.Entity("Bloom.Order.Data.OrderLine", b =>
+                {
+                    b.HasOne("Bloom.Order.Data.OrderRow", null)
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Bloom.Order.Data.OrderReturn", b =>
                 {
                     b.HasOne("Bloom.Order.Data.OrderRow", null)
                         .WithMany()
