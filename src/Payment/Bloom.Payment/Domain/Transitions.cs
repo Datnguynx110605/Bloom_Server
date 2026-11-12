@@ -2,7 +2,6 @@ using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
 using Bloom.Payment.Observability;
 using Bloom.Payment.Stripe;
-using Bloom.Payment.Worker;
 using Bloom.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 
@@ -62,7 +61,7 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
 
     /// <summary>
     /// Applies a Stripe refund status (spec §4 "Refund completion", §7): <c>succeeded</c> → <c>succeeded</c> + <c>refund-completed</c>; <c>failed</c> / <c>canceled</c> → <c>failed</c>, the amount is
-    /// released from <c>refunded_cents</c>, <c>refund-failed</c> + error log (owner item 5); <c>pending</c> / <c>requires_action</c> → <c>submitted</c>. Locks <c>refunds</c> then <c>payments</c> (plan R8),
+    /// released from <c>refunded_cents</c>, <c>refund-failed</c> + error log (owner item 5); <c>pending</c> / <c>requires_action</c> / an unknown status (error log, D24) → <c>submitted</c>. Locks <c>refunds</c> then <c>payments</c> (plan R8),
     /// so two callers settle a refund once. A final refund never changes: a contradicting status only logs an error. True when the status changed; false for an unknown refund too.
     /// </summary>
     public async Task<bool> ApplyRefundAsync(Guid refundId, string stripeStatus, string? stripeRefundId, string? failureReason, CancellationToken ct)
@@ -81,14 +80,9 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
         };
         if (target is null)
         {
-            logger.LogError("Stripe reports refund {RefundId} of order {OrderId} in the unknown status {Status}; ignored", refundId, refund.OrderId, stripeStatus);
-            // A pending row would be due again at once and, as the oldest, block every other refund: look again after the longest backoff.
-            var at = clock.GetUtcNow();
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE refunds SET next_attempt_at = {at + ProviderExecutor.Backoff[^1]}, updated_at = {at}
-                WHERE id = {refundId} AND status = {RefundStatuses.Pending}
-                """, ct);
-            return false;
+            // D24: Stripe has the refund, so it is never created again; the webhook and the reconciler settle it.
+            logger.LogError("Stripe reports refund {RefundId} of order {OrderId} in the unknown status {Status}; submitted", refundId, refund.OrderId, stripeStatus);
+            target = RefundStatuses.Submitted;
         }
         if (refund.Status is RefundStatuses.Succeeded or RefundStatuses.Failed)
         {

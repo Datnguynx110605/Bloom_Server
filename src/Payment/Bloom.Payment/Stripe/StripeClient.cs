@@ -123,7 +123,8 @@ public sealed class StripeClient(HttpClient http, PaymentOptions options) : IPay
     private static ProviderException Failure(HttpStatusCode status, string body, HttpMethod method, string url)
     {
         var message = $"Stripe answered {(int)status} to {method} {url}.";
-        if ((int)status >= 500 || status == HttpStatusCode.TooManyRequests) return new(true, ProviderException.Unavailable, message);
+        // 409: Stripe answers it while the same idempotency key is still in flight (04-payment §6.3, D24), so the retry gets the same refund.
+        if ((int)status >= 500 || status is HttpStatusCode.TooManyRequests or HttpStatusCode.Conflict) return new(true, ProviderException.Unavailable, message);
         string? reason = null;
         try
         {

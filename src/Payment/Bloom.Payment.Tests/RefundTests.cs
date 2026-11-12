@@ -395,21 +395,69 @@ public class RefundTests(Containers containers)
     }
 
     [Fact]
-    public async Task Unknown_stripe_status_backs_off_instead_of_blocking_the_queue()
+    public async Task D24_409_then_success_creates_one_refund()
     {
         await using var t = await TestPayment.StartAsync(containers);
         var (orderId, _, _) = await Seed.PaidAsync(t, 1000);
+        var command = Command(orderId, 400);
+        await Send(t, command);
+        t.Stripe.Fail(Refunds, 409, "idempotency_key_in_use");
+
+        await t.RunExecutorAsync();
+
+        var retrying = await t.RefundAsync(command.RefundId);
+        Assert.Equal((RefundStatuses.Pending, 1), (retrying.Status, retrying.Attempts));
+        t.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        await t.RunExecutorAsync();
+
+        var done = await t.RefundAsync(command.RefundId);
+        Assert.Equal(RefundStatuses.Succeeded, done.Status);
+        Assert.Equal(2, Creates(t).Count());
+        Assert.Single(Creates(t).Select(r => r.Form.Single(p => p.Key == "metadata[refund_id]").Value).Distinct()); // one refund at Stripe
+        Assert.Single(await Completed(t));
+    }
+
+    [Fact]
+    public async Task D24_unknown_status_goes_submitted_no_second_create()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, paymentId, _) = await Seed.PaidAsync(t, 1000);
         t.Stripe.NextRefundStatus = "some_new_status";
         var command = Command(orderId, 400);
         await Send(t, command);
 
         await t.RunExecutorAsync();
 
-        Assert.Single(Creates(t));
         var row = await t.RefundAsync(command.RefundId);
-        Assert.Equal(RefundStatuses.Pending, row.Status);
-        Assert.Equal(t.Clock.GetUtcNow() + TimeSpan.FromMinutes(2), row.NextAttemptAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.Equal((RefundStatuses.Submitted, "re_test_1"), (row.Status, row.StripeRefundId));
         Assert.Equal(1, t.ErrorLogs);
+        Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
+
+        t.Clock.Advance(TimeSpan.FromMinutes(5));
+        await t.RunExecutorAsync(); // a later pass (or a restart) must not create again
+
+        Assert.Single(Creates(t));
+        Assert.Equal(RefundStatuses.Submitted, (await t.RefundAsync(command.RefundId)).Status);
+    }
+
+    [Fact]
+    public async Task D24_other_4xx_still_permanent()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, paymentId, _) = await Seed.PaidAsync(t, 1000);
+        var command = Command(orderId, 400);
+        await Send(t, command);
+        t.Stripe.Fail(Refunds, 404, "resource_missing");
+
+        await t.RunExecutorAsync();
+        t.Clock.Advance(TimeSpan.FromMinutes(5));
+        await t.RunExecutorAsync();
+
+        var row = await t.RefundAsync(command.RefundId);
+        Assert.Equal((RefundStatuses.Failed, "resource_missing"), (row.Status, row.FailureReason));
+        Assert.Single(Creates(t));
+        Assert.Equal(0, (await t.PaymentAsync(paymentId)).RefundedCents);
     }
 
     [Fact]

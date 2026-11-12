@@ -135,6 +135,26 @@ public class ReconcileTests(Containers containers)
     }
 
     [Fact]
+    public async Task D24_reconciler_settles_submitted_unknown_refund()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, _, _) = await Seed.PaidAsync(t, 1000);
+        t.Stripe.NextRefundStatus = "some_new_status";
+        var refundId = Guid.NewGuid();
+        await Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, refundId, 400, "return", null));
+        await t.RunExecutorAsync();
+        var row = await t.RefundAsync(refundId);
+        Assert.Equal(RefundStatuses.Submitted, row.Status);
+        t.Stripe.SetRefund(row.StripeRefundId!, "succeeded");
+        t.Clock.Advance(StuckRefund);
+
+        await Reconcile(t);
+
+        Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(refundId)).Status);
+        Assert.Equal(new RefundCompletedV1(orderId, refundId, 400, null), Assert.Single(await Completed(t)));
+    }
+
+    [Fact]
     public async Task Webhook_and_reconciler_apply_once()
     {
         await using var t = await TestPayment.StartAsync(containers);
