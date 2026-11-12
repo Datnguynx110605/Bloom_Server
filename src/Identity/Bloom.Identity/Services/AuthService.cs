@@ -124,6 +124,9 @@ public sealed class AuthService(
             metrics.SignIn(account.Type, "google", "invalid");
             throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "The Google sign-in is not valid.");
         }
+        // §6.2: a linked Google identity is never replaced (found by sub, GoogleSub equals it; so a difference means found by email).
+        if (account?.GoogleSub is { } linked && linked != identity.Sub)
+            throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
 
         if (account is null)
         {

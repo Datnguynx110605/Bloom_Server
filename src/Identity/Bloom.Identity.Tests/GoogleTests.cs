@@ -108,6 +108,23 @@ public class GoogleTests(Containers containers)
     }
 
     [Fact]
+    public async Task D10_google_sign_in_with_different_linked_sub_is_email_taken()
+    {
+        await using var google = await FakeGoogle.StartAsync();
+        await using var t = await StartAsync(google);
+        var linked = NewSub();
+        var account = await Seed.CustomerAsync(t, googleSub: linked);
+
+        var response = await SignInAsync(t, google.Mint(NewSub(), account.EmailNormalized));
+
+        await response.ExpectErrorAsync(409, "EMAIL_TAKEN");
+        Assert.Null(response.RefreshCookie());
+        Assert.Equal(linked, (await t.AccountAsync(account.Id)).GoogleSub);
+        await using var db = t.NewDb();
+        Assert.Empty(await db.RefreshTokens.Where(r => r.AccountId == account.Id).ToListAsync(Ct));
+    }
+
+    [Fact]
     public async Task ID_T09_google_email_of_staff_is_GOOGLE_NOT_ALLOWED()
     {
         await using var google = await FakeGoogle.StartAsync();
