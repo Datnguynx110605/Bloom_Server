@@ -1,3 +1,5 @@
+using System.Net.Mail;
+
 namespace Bloom.Notification;
 
 /// <summary>Section <c>Notification</c> (plan N4). Both modes need every key: the DLQ admin of the API needs the same consumers as the worker.</summary>
@@ -65,6 +67,7 @@ public sealed class NotificationOptions
 
         Require("Notification:Email:Provider", Email.Provider);
         Require("Notification:Email:From", Email.From);
+        if (!MailAddress.TryCreate(Email.From, out _)) throw Bad("Notification:Email:From", "must be an email address, for example 'Bloom <no-reply@example.com>'"); // never echo the value
         switch (Email.Provider)
         {
             case "resend":

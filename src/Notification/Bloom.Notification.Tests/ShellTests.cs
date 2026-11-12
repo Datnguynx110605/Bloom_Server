@@ -69,6 +69,15 @@ public class ShellTests(Containers containers)
     }
 
     [Fact]
+    public void D40_malformed_from_fails_startup_naming_key_not_value()
+    {
+        var e = Assert.Throws<InvalidOperationException>(() => Build("worker", With("Notification:Email:From", "not-an-address-ZZZ")));
+
+        Assert.Contains("Notification:Email:From", e.Message);
+        Assert.DoesNotContain("ZZZ", e.Message);
+    }
+
+    [Fact]
     public async Task Smtp_needs_no_resend_keys()
     {
         await using var app = Build("api", new()
