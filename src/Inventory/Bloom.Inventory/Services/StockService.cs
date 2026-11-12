@@ -24,7 +24,7 @@ public sealed class StockService(InventoryDbContext db, StockLocks locks, Ledger
         {
             await CommitAsync(orderId, orderId, lines, AllocationKinds.Regular, AllocationStatuses.Reserved, context.CancellationToken);
         }
-        catch (RpcException e) when (e.StatusCode == StatusCode.FailedPrecondition && !IsOrderReleased(e)) // SOLD_OUT or SKU_NOT_STOCKED; ORDER_RELEASED is no outcome the metric knows
+        catch (RpcException e) when (e.StatusCode == StatusCode.FailedPrecondition && e.GetRpcStatus()?.GetDetail<ErrorInfo>()?.Reason != InventoryErrors.OrderReleased) // SOLD_OUT or SKU_NOT_STOCKED; ORDER_RELEASED is no outcome the metric knows
         {
             metrics.Reserve("sold_out", Stopwatch.GetElapsedTime(started).TotalSeconds);
             throw;
@@ -32,9 +32,6 @@ public sealed class StockService(InventoryDbContext db, StockLocks locks, Ledger
         metrics.Reserve("ok", Stopwatch.GetElapsedTime(started).TotalSeconds);
         return new Empty();
     }
-
-    private static bool IsOrderReleased(RpcException e) =>
-        e.GetRpcStatus()!.Details.Single(d => d.Is(ErrorInfo.Descriptor)).Unpack<ErrorInfo>().Reason == InventoryErrors.OrderReleased;
 
     /// <summary>Plan R20: one item per distinct id in request order; a SKU never received has none to sell.</summary>
     public override async Task<GetAvailabilityResponse> GetAvailability(GetAvailabilityRequest request, ServerCallContext context)

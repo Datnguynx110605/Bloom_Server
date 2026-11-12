@@ -280,18 +280,11 @@ public class ReleaseTests(Containers containers)
         Assert.Equal((5, 0, 0), (lowItem.OnHand, lowItem.Reserved, lowItem.Committed));
     }
 
-    /// <summary>A release blocked after its insert: holds the order's lock and an uncommitted tombstone until <c>COMMIT</c> on the returned connection.</summary>
-    private static async Task<NpgsqlConnection> HoldReleaseAsync(TestInventory t, Guid orderId)
-    {
-        var release = await SideDb.OpenAsync(t);
-        await release.ExecAsync($"BEGIN; SELECT pg_advisory_xact_lock({StockLocks.Key(orderId)}); INSERT INTO released_orders (order_id) VALUES ('{orderId}')");
-        return release;
-    }
-
     /// <summary>Starts <paramref name="start"/> against a held release, waits until it queues on the order's lock, lets the release commit, and returns the call's task.</summary>
     private static async Task<Task> RaceReleaseAsync(TestInventory t, Guid orderId, Func<Task> start)
     {
-        await using var release = await HoldReleaseAsync(t, orderId);
+        await using var release = await SideDb.OpenAsync(t);
+        await release.ExecAsync($"BEGIN; SELECT pg_advisory_xact_lock({StockLocks.Key(orderId)}); INSERT INTO released_orders (order_id) VALUES ('{orderId}')");
         await using var probe = await SideDb.OpenAsync(t);
         var running = start();
         try { await probe.WaitForAsync(SideDb.WaitersOn(StockLocks.Key(orderId)), 1, "the call waits for the order's lock"); }
