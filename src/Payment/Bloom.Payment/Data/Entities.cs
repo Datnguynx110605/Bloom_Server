@@ -89,3 +89,10 @@ public class DisputeRow
     public DateTimeOffset OpenedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 }
+
+/// <summary>One row per periodic job; the nightly comparison claims its night here (D26).</summary>
+public class JobRunRow
+{
+    public required string Name { get; set; }
+    public DateOnly LastRunDate { get; set; }
+}

@@ -17,7 +17,7 @@ namespace Bloom.Payment.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -69,6 +69,28 @@ namespace Bloom.Payment.Data.Migrations
                         .HasDatabaseName("ux_disputes_stripe_dispute_id");
 
                     b.ToTable("disputes", (string)null);
+                });
+
+            modelBuilder.Entity("Bloom.Payment.Data.JobRunRow", b =>
+                {
+                    b.Property<string>("Name")
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<DateOnly>("LastRunDate")
+                        .HasColumnType("date")
+                        .HasColumnName("last_run_date");
+
+                    b.HasKey("Name");
+
+                    b.ToTable("job_runs", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Name = "nightly_compare",
+                            LastRunDate = new DateOnly(2000, 1, 1)
+                        });
                 });
 
             modelBuilder.Entity("Bloom.Payment.Data.PaymentRow", b =>

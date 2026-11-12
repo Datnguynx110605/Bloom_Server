@@ -14,6 +14,7 @@ public sealed partial class PaymentDbContext(DbContextOptions<PaymentDbContext> 
     public DbSet<RefundRow> Refunds => Set<RefundRow>();
     public DbSet<ProviderEvent> ProviderEvents => Set<ProviderEvent>();
     public DbSet<DisputeRow> Disputes => Set<DisputeRow>();
+    public DbSet<JobRunRow> JobRuns => Set<JobRunRow>();
 
     private static string In(IEnumerable<string> values) => string.Join(", ", values.Select(v => $"'{v}'"));
 
@@ -77,6 +78,13 @@ public sealed partial class PaymentDbContext(DbContextOptions<PaymentDbContext> 
             e.HasOne<PaymentRow>().WithMany().HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.Restrict);
             e.HasIndex(x => x.PaymentId).HasDatabaseName("ix_disputes_payment_id");
             e.HasIndex(x => x.StripeDisputeId).IsUnique().HasDatabaseName("ux_disputes_stripe_dispute_id");
+        });
+
+        mb.Entity<JobRunRow>(e =>
+        {
+            e.ToTable("job_runs");
+            e.HasKey(x => x.Name);
+            e.HasData(new JobRunRow { Name = "nightly_compare", LastRunDate = new DateOnly(2000, 1, 1) }); // R6: older than any real night
         });
 
         // Ids come from the app (UUIDv7); columns are snake_case. The reliability tables name their own columns.

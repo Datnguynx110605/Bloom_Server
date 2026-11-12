@@ -28,7 +28,7 @@ public sealed class NightlyJob(IServiceScopeFactory scopes, TimeProvider clock, 
             if (wait > TimeSpan.Zero) await Task.Delay(wait, clock, ct);
             try
             {
-                await RunAsync(DateOnly.FromDateTime(next.UtcDateTime).AddDays(-1), ct);
+                if (await ClaimAsync(ct)) await RunAsync(DateOnly.FromDateTime(next.UtcDateTime).AddDays(-1), ct);
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -43,6 +43,17 @@ public sealed class NightlyJob(IServiceScopeFactory scopes, TimeProvider clock, 
                 logger.LogError(ex, "Purge of provider events failed");
             }
         }
+    }
+
+    /// <summary>D26: true for the one replica that moves <c>job_runs.last_run_date</c> to today's UTC date (the database's), so the comparison runs once per night.</summary>
+    public async Task<bool> ClaimAsync(CancellationToken ct)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
+        return await db.Database.ExecuteSqlAsync($"""
+            UPDATE job_runs SET last_run_date = (now() AT TIME ZONE 'UTC')::date
+            WHERE name = 'nightly_compare' AND last_run_date < (now() AT TIME ZONE 'UTC')::date
+            """, ct) == 1;
     }
 
     /// <summary>

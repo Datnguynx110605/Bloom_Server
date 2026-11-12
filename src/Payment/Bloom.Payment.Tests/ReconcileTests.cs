@@ -333,6 +333,23 @@ public class ReconcileTests(Containers containers)
     }
 
     [Fact]
+    public async Task D26_two_workers_same_night_one_run()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var today = await t.NewDb().Database.SqlQuery<DateTime>($"SELECT (now() AT TIME ZONE 'UTC')::date AS \"Value\"").SingleAsync(Ct);
+
+        var claims = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Nightly(t).ClaimAsync(Ct)));
+
+        Assert.Equal(1, claims.Count(c => c));
+        Assert.False(await Nightly(t).ClaimAsync(Ct)); // a third replica, later the same night
+        await using var db = t.NewDb();
+        Assert.Equal(DateOnly.FromDateTime(today), (await db.JobRuns.AsNoTracking().SingleAsync(j => j.Name == "nightly_compare", Ct)).LastRunDate);
+
+        await t.SqlAsync($"UPDATE job_runs SET last_run_date = last_run_date - 1"); // the next night
+        Assert.True(await Nightly(t).ClaimAsync(Ct));
+    }
+
+    [Fact]
     public async Task Provider_events_older_than_90_days_are_purged()
     {
         await using var t = await TestPayment.StartAsync(containers);
