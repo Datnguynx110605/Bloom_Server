@@ -85,8 +85,6 @@ public sealed class CheckoutService(
             var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == state.OrderId, ct);
             if (state.Existed && !SameRequest(order, request, shipTo)) // a retry may not change what the first request fixed (00-reliability §7.4); the creating sweep compensates the order
                 throw BloomErrors.Create(StatusCode.InvalidArgument, BloomErrors.IdempotencyKeyReused, "This Idempotency-Key was already used for a different request.");
-            if (order.Status == OrderStatuses.Cancelled) // swept while the key was released (owner item 1)
-                throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
             if (order.Status == OrderStatuses.Creating) await PlaceAsync(order, request, caller, state.Existed, ct);
 
             var response = await PayAsync(state.OrderId, ct);
@@ -236,10 +234,19 @@ public sealed class CheckoutService(
         await tx.DisposeAsync();
     }
 
-    /// <summary>Steps 7 and 8: <c>CreatePayment</c>, then <c>payment_id</c> and the response, in a transaction the guard commits with the stored answer.</summary>
+    /// <summary>
+    /// Steps 7 and 8: <c>CreatePayment</c>, then <c>payment_id</c> and the response, in a transaction the guard commits with the stored answer. The order's status decides (§6.2 resume, D21):
+    /// <c>cancelled</c> (swept while the key was released, owner item 1) and <c>pending_payment</c> past its deadline (R9, the database clock) are <c>CHECKOUT_CLOSED</c>;
+    /// <c>paid</c>, <c>awaiting_stock</c> or later answer normally with no <c>payment_url</c>, which payment has no session left to give.
+    /// </summary>
     private async Task<StartCheckoutResponse> PayAsync(Guid orderId, CancellationToken ct)
     {
         var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == orderId, ct);
+        if (order.Status == OrderStatuses.Cancelled
+            || (order.Status == OrderStatuses.PendingPayment && await db.Database.SqlQuery<bool>($"SELECT COALESCE(deadline_at <= now(), false) AS \"Value\" FROM orders WHERE id = {orderId}").SingleAsync(ct)))
+            throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
+        if (order.Status != OrderStatuses.PendingPayment) return Response(order, "");
+
         var lines = await db.OrderLines.AsNoTracking().Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToListAsync(ct);
         var display = lines.Select(l => new DisplayLine { Name = $"{l.Name} × {l.Quantity}", AmountCents = l.PaidCents }).ToList();
         if (order.ShippingCents > 0) display.Add(new DisplayLine { Name = "Express shipping", AmountCents = order.ShippingCents }); // they sum to the total (spec §7)
@@ -258,12 +265,14 @@ public sealed class CheckoutService(
         _ = await db.Database.BeginTransactionAsync(ct); // the guard saves and commits it with the stored response
         var paymentId = Guid.Parse(payment.PaymentId);
         await db.Orders.Where(o => o.Id == orderId && o.PaymentId == null).ExecuteUpdateAsync(s => s.SetProperty(o => o.PaymentId, paymentId), ct);
-        return new StartCheckoutResponse
-        {
-            OrderId = order.Id.ToString("D"), Number = order.Number, SubtotalCents = order.SubtotalCents, DiscountCents = order.DiscountCents, TaxCents = order.TaxCents,
-            ShippingCents = order.ShippingCents, TotalCents = order.TotalCents, PaymentUrl = payment.CheckoutUrl, DeadlineAt = Timestamp.FromDateTimeOffset(order.DeadlineAt!.Value),
-        };
+        return Response(order, payment.CheckoutUrl);
     }
+
+    private static StartCheckoutResponse Response(OrderRow order, string paymentUrl) => new()
+    {
+        OrderId = order.Id.ToString("D"), Number = order.Number, SubtotalCents = order.SubtotalCents, DiscountCents = order.DiscountCents, TaxCents = order.TaxCents,
+        ShippingCents = order.ShippingCents, TotalCents = order.TotalCents, PaymentUrl = paymentUrl, DeadlineAt = order.DeadlineAt is { } deadline ? Timestamp.FromDateTimeOffset(deadline) : null,
+    };
 
     /// <summary>Opens a transaction and cancels the order in it, leaving it open for the guard (the caller rethrows the rejection).</summary>
     private async Task CancelAsync(OrderRow order, bool compensate, CancellationToken ct)

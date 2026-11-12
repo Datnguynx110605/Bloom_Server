@@ -407,6 +407,101 @@ public class CheckoutTests(Containers containers)
         Assert.Empty(await db.OrderLines.Where(l => l.OrderId == order.Id).ToListAsync(Ct));
     }
 
+    /// <summary>An order whose <c>CreatePayment</c> failed once: <c>pending_payment</c>, key released, ready for a retry with the same key.</summary>
+    private static async Task<(Guid Account, Guid Key, OrderRow Order)> StuckAtPaymentAsync(TestOrder t)
+    {
+        var (account, _) = await CartOfOneAsync(t);
+        var key = Guid.NewGuid();
+        t.Upstreams.Fail("CreatePayment", StatusCode.Unavailable);
+        await UnavailableAsync(Seed.CheckoutAsync(t, account, key));
+        var order = await OrderOfAsync(t, account);
+        Assert.Equal(OrderStatuses.PendingPayment, order.Status);
+        return (account, key, order);
+    }
+
+    private static async Task SqlAsync(TestOrder t, FormattableString sql)
+    {
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlAsync(sql, Ct);
+    }
+
+    [Fact]
+    public async Task D21_creating_resume_continues_at_the_hold()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, _) = await CartOfOneAsync(t);
+        var key = Guid.NewGuid();
+        t.Upstreams.Fail("ReserveStock", StatusCode.Unavailable);
+        await UnavailableAsync(Seed.CheckoutAsync(t, account, key));
+        var order = await OrderOfAsync(t, account);
+        Assert.Equal(OrderStatuses.Creating, order.Status);
+        await SqlAsync(t, $"UPDATE orders SET deadline_at = NULL WHERE id = {order.Id}"); // a creating order without a deadline must not crash the resume
+
+        var response = await Seed.CheckoutAsync(t, account, key);
+
+        Assert.Equal((order.Id.ToString("D"), $"https://pay.test/{order.Id}"), (response.OrderId, response.PaymentUrl));
+        Assert.NotNull(response.DeadlineAt);
+        Assert.Equal(2, t.Upstreams.Count("ReserveStock"));
+        Assert.Equal(1, t.Upstreams.Count("CreatePayment"));
+        Assert.Equal(OrderStatuses.PendingPayment, (await OrderOfAsync(t, account)).Status);
+    }
+
+    [Fact]
+    public async Task D21_pending_payment_before_the_deadline_continues_at_payment()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, key, order) = await StuckAtPaymentAsync(t);
+
+        var response = await Seed.CheckoutAsync(t, account, key);
+
+        Assert.Equal((order.Id.ToString("D"), $"https://pay.test/{order.Id}"), (response.OrderId, response.PaymentUrl));
+        Assert.Equal(2, t.Upstreams.Count("CreatePayment"));
+        Assert.Equal(1, t.Upstreams.Count("ReserveStock"));
+    }
+
+    [Fact]
+    public async Task D21_pending_payment_at_the_deadline_is_CHECKOUT_CLOSED()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, key, order) = await StuckAtPaymentAsync(t);
+        await SqlAsync(t, $"UPDATE orders SET deadline_at = now() WHERE id = {order.Id}"); // R9: deadline_at <= now() has passed
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.FailedPrecondition, "CHECKOUT_CLOSED");
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.FailedPrecondition, "CHECKOUT_CLOSED"); // stored on the key
+
+        Assert.Equal(1, t.Upstreams.Count("CreatePayment")); // no payment session for an order the sweep is about to expire
+        Assert.Equal(OrderStatuses.PendingPayment, (await OrderOfAsync(t, account)).Status); // the expiry sweep owns the cancellation
+    }
+
+    [Theory]
+    [InlineData(OrderStatuses.Paid)]
+    [InlineData(OrderStatuses.AwaitingStock)]
+    public async Task D21_paid_or_awaiting_stock_resume_has_an_empty_payment_url(string status)
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, key, order) = await StuckAtPaymentAsync(t);
+        await SqlAsync(t, $"UPDATE orders SET status = {status}, deadline_at = NULL WHERE id = {order.Id}"); // payment confirmed meanwhile: payment clears the deadline
+
+        var response = await Seed.CheckoutAsync(t, account, key);
+
+        Assert.Equal((order.Id.ToString("D"), order.Number, order.TotalCents, ""), (response.OrderId, response.Number, response.TotalCents, response.PaymentUrl));
+        Assert.Null(response.DeadlineAt);
+        Assert.Equal(1, t.Upstreams.Count("CreatePayment"));
+        Assert.Equal(status, (await OrderOfAsync(t, account)).Status);
+    }
+
+    [Fact]
+    public async Task D21_cancelled_resume_is_CHECKOUT_CLOSED()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, key, order) = await StuckAtPaymentAsync(t);
+        await SqlAsync(t, $"UPDATE orders SET status = 'cancelled', cancel_reason = 'checkout_expired' WHERE id = {order.Id}");
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.FailedPrecondition, "CHECKOUT_CLOSED");
+
+        Assert.Equal(1, t.Upstreams.Count("CreatePayment"));
+    }
+
     [Fact]
     public async Task Empty_cart_is_CART_EMPTY()
     {
