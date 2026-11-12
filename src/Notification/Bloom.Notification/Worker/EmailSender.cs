@@ -110,7 +110,7 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
         {
             throw; // shutting down: the lease runs out and another pass retries
         }
-        catch (Exception) // anything else a provider throws is transient (R-C): one bad job never breaks the batch
+        catch (Exception) // anything else a provider throws is transient: one bad job never breaks the batch
         {
             await RecordFailureAsync(db, job, transient: true, "unexpected", null, ct);
             return;

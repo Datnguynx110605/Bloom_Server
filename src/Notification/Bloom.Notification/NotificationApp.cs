@@ -41,8 +41,13 @@ public static class NotificationApp
         builder.Services.AddSingleton<NotificationMetrics>();
         builder.Services.AddSingleton(new TemplateRenderer(options)); // parses every template now: a bad template fails the build of the app (plan N15)
         builder.Services.AddSingleton<AfterCommitInterceptor>();
-        builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(options.Redis)); // building the app needs no Redis: it connects when first resolved, which the first hosted service below does at start (N-4)
-        builder.Services.AddHostedService<RedisAtStart>(); // before AddBloom's consumers: an unreachable Redis fails the start before they take messages
+        builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+        {
+            var redis = ConfigurationOptions.Parse(options.Redis);
+            redis.AbortOnConnectFail = false; // start and serve while Redis is down: Redis loss means missed pushes only, never lost email (as Launch)
+            return ConnectionMultiplexer.Connect(redis);
+        }); // building the app needs no Redis: it connects when first resolved, which the hosted service below does at start (N-4)
+        builder.Services.AddHostedService<RedisAtStart>();
         builder.Services.AddDbContext<NotificationDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         if (options.Email.Provider == "resend")
         {

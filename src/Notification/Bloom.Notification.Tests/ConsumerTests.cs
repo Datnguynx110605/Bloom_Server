@@ -138,7 +138,7 @@ public class ConsumerTests(Containers containers)
         await Seed.ContactAsync(t, account, $"{account:N}@bloom.test", "Ada");
         const string number = "<script>x</script> & \"q\"";
 
-        await Consume.Async(t, OrderMessages.Paid, new OrderPaidV1(Order, number, account, null, DateTimeOffset.UtcNow, 1000, []));
+        await Consume.Async(t, OrderMessages.Paid, new OrderPaidV1(Order, number, account, null, t.Clock.GetUtcNow(), 1000, []));
 
         var row = Assert.Single(await Seed.RowsAsync(t, account));
         Assert.Equal($"We received your payment for order {number}.", row.Body); // escaping is the client's job; the stored text is raw

@@ -5,6 +5,7 @@ using Google.Rpc;
 using Grpc.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Bloom.Notification.Tests;
 
@@ -92,10 +93,22 @@ public class ShellTests(Containers containers)
     [Fact]
     public async Task N4_redis_connects_at_startup()
     {
-        // Build needs no Redis, but starting the worker connects at once: with nothing listening it fails now, not on the first push.
-        var unreachable = "127.0.0.1:1,connectTimeout=1000"; // port 1: nothing listens
-        await Assert.ThrowsAsync<StackExchange.Redis.RedisConnectionException>(() =>
-            TestNotification.StartAsync(containers, o => { o.Mode = "worker"; o.Config["Notification:Redis"] = unreachable; }));
+        var name = $"n4-{Guid.NewGuid():N}"; // the client name the app's own connection carries, visible to the server
+        await using var t = await TestNotification.StartAsync(containers, o => { o.Mode = "worker"; o.Config["Notification:Redis"] = $"{containers.RedisConnectionString},name={name}"; });
+
+        // Nothing has used Redis since the host started, yet the app is already connected.
+        await using var redis = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync($"{containers.RedisConnectionString},allowAdmin=true"); // CLIENT LIST
+        var clients = await redis.GetServer(redis.GetEndPoints()[0]).ClientListAsync();
+        Assert.Contains(clients, c => c.Name == name);
+    }
+
+    [Fact]
+    public async Task N4_host_starts_while_redis_is_down()
+    {
+        // Redis only fans out pushes; an unreachable one must not stop a worker from sending email.
+        await using var t = await TestNotification.StartAsync(containers, o => { o.Mode = "worker"; o.Config["Notification:Redis"] = "127.0.0.1:1,connectTimeout=1000"; }); // port 1: nothing listens
+
+        Assert.NotNull(t.Services.GetRequiredService<StackExchange.Redis.IConnectionMultiplexer>());
     }
 
     [Fact]
