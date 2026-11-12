@@ -14,7 +14,8 @@ public sealed class FakeShippo : HttpMessageHandler
     private readonly List<ShippoLabel> _transactions = [];
     private readonly List<string> _tokens = [], _refunds = [], _paths = [];
     private readonly List<JsonElement> _shipmentRequests = [];
-    private readonly Dictionary<string, string> _ratesById = [], _tracking = [];
+    private readonly Dictionary<string, string> _ratesById = [];
+    private readonly Dictionary<string, (string Status, DateTimeOffset? Date)> _tracking = [];
     private int _failNext;
 
     public IReadOnlyList<ShippoLabel> Transactions { get { lock (_gate) return [.. _transactions]; } }
@@ -55,9 +56,9 @@ public sealed class FakeShippo : HttpMessageHandler
         lock (_gate) _failNext = n;
     }
 
-    public void SetTracking(string number, string status)
+    public void SetTracking(string number, string status, DateTimeOffset? statusDate = null)
     {
-        lock (_gate) _tracking[number] = status;
+        lock (_gate) _tracking[number] = (status, statusDate);
     }
 
     /// <summary>A transaction Shippo already holds (a foreign or duplicate label). Add in creation order: the list answers newest first.</summary>
@@ -115,7 +116,11 @@ public sealed class FakeShippo : HttpMessageHandler
         }
         if (request.Method == HttpMethod.Get && path.StartsWith("tracks/", StringComparison.Ordinal))
         {
-            lock (_gate) return Ok(new { tracking_status = new { status = _tracking.GetValueOrDefault(path.Split('/')[^1], "PRE_TRANSIT") } });
+            lock (_gate)
+            {
+                var (status, date) = _tracking.GetValueOrDefault(path.Split('/')[^1], ("PRE_TRANSIT", null));
+                return Ok(new { tracking_status = new { status, status_date = date?.ToString("O") } });
+            }
         }
         return Json(HttpStatusCode.NotFound, new { detail = "not found" });
     }

@@ -59,9 +59,13 @@ public sealed class ShippoClient(HttpClient http, FulfillmentOptions options) : 
     public Task VoidLabelAsync(string transactionId, CancellationToken ct) =>
         CallAsync(HttpMethod.Post, "refunds/", new { transaction = transactionId, async = false }, _ => 0, ct);
 
-    public Task<string> GetTrackingStatusAsync(string trackingNumber, CancellationToken ct) =>
-        CallAsync(HttpMethod.Get, $"tracks/{Uri.EscapeDataString(options.Shippo.Carrier)}/{Uri.EscapeDataString(trackingNumber)}", null,
-            t => t.GetProperty("tracking_status").GetProperty("status").GetString()!, ct);
+    public Task<ShippoTracking> GetTrackingStatusAsync(string trackingNumber, CancellationToken ct) =>
+        CallAsync(HttpMethod.Get, $"tracks/{Uri.EscapeDataString(options.Shippo.Carrier)}/{Uri.EscapeDataString(trackingNumber)}", null, t =>
+        {
+            var status = t.GetProperty("tracking_status");
+            var date = status.TryGetProperty("status_date", out var d) && d.ValueKind == JsonValueKind.String && d.TryGetDateTimeOffset(out var parsed) ? parsed : (DateTimeOffset?)null;
+            return new ShippoTracking(status.GetProperty("status").GetString()!, date);
+        }, ct);
 
     // Shippo needs a country; Bloom ships inside the US only (addresses carry no country).
     private static object Address(ShippoAddress a) =>
