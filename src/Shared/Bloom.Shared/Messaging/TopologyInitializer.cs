@@ -9,6 +9,15 @@ internal sealed class TopologyInitializer(RabbitMqConnection connection, Consume
 {
     private static readonly Dictionary<string, object?> Quorum = new() { ["x-queue-type"] = "quorum" };
 
+    /// <summary>Quorum queues drop a message at the delivery limit unless a DLX is set (LLD-ADR-015).</summary>
+    internal static IDictionary<string, object?> ConsumerQueueArguments(string consumerQueue) =>
+        new Dictionary<string, object?>
+        {
+            ["x-queue-type"] = "quorum",
+            ["x-dead-letter-exchange"] = "",
+            ["x-dead-letter-routing-key"] = MessageNames.DeadLetterQueue(consumerQueue),
+        };
+
     internal static IDictionary<string, object?> RetryQueueArguments(string consumerQueue, int ttlMs) =>
         new Dictionary<string, object?>
         {
@@ -32,7 +41,7 @@ internal sealed class TopologyInitializer(RabbitMqConnection connection, Consume
 
         foreach (var consumer in catalog.Consumers)
         {
-            await DeclareQueueAsync(channel, consumer.Queue, Quorum, ct);
+            await DeclareQueueAsync(channel, consumer.Queue, ConsumerQueueArguments(consumer.Queue), ct);
             foreach (var binding in consumer.Bindings)
                 await channel.QueueBindAsync(consumer.Queue, binding.Exchange(options.ServiceName), binding.MessageType, cancellationToken: ct);
             foreach (var (delay, ms) in MessageNames.RetryDelays)
