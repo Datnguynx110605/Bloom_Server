@@ -36,7 +36,7 @@ public class WorkerTests(Containers containers)
     }
 
     private static Envelope NewEnvelope(string messageType, string producer, object payload) =>
-        new(Guid.CreateVersion7(), messageType, MessageKinds.Event, producer, DateTime.UtcNow, Guid.NewGuid(), JsonSerializer.SerializeToElement(payload, JsonSerializerOptions.Web));
+        new(Guid.CreateVersion7(), messageType, MessageKinds.Event, producer, DateTime.UtcNow, Guid.NewGuid(), JsonSerializer.SerializeToElement(payload, BloomJson.Options));
 
     private static Task PublishAsync(IChannel channel, string exchange, Envelope e) =>
         channel.BasicPublishAsync(exchange, e.MessageType, false,

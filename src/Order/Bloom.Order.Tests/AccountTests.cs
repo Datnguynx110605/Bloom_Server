@@ -50,11 +50,11 @@ public class AccountTests(Containers containers)
         foreach (var before in new[] { first, second })
         {
             var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == before.Id, Ct);
-            Assert.Equivalent(new ShipToV1("[deleted]", ["[deleted]", "[deleted]"], "Reno", "NV", "89501", "[deleted]"), order.ShipTo);
+            Assert.Equivalent(new ShipToV1("[deleted]", ["[deleted]", "[deleted]"], "Reno", "NV", "89501", "[deleted]"), order.ShipTo, strict: true);
             Assert.Equal((before.AccountId, before.Number, before.Status, before.TotalCents, before.TaxCents, before.DeliveredAt, before.Version),
                 (order.AccountId, order.Number, order.Status, order.TotalCents, order.TaxCents, order.DeliveredAt, order.Version));
         }
-        Assert.Equivalent(kept.ShipTo, (await db.Orders.AsNoTracking().SingleAsync(o => o.Id == kept.Id, Ct)).ShipTo);
+        Assert.Equivalent(kept.ShipTo, (await db.Orders.AsNoTracking().SingleAsync(o => o.Id == kept.Id, Ct)).ShipTo, strict: true);
         Assert.False(await db.Carts.AnyAsync(c => c.AccountId == account, Ct));
         Assert.False(await db.CartLines.AnyAsync(l => l.AccountId == account, Ct));
         Assert.True(await db.Carts.AnyAsync(c => c.AccountId == other, Ct));
