@@ -61,7 +61,7 @@ public sealed class NotificationOptions
         for (var i = 0; i < AllowedOrigins.Length; i++)
         {
             var origin = AllowedOrigins[i];
-            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.GetLeftPart(UriPartial.Authority) != origin)
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || !IsHttp(uri) || uri.GetLeftPart(UriPartial.Authority) != origin)
                 throw Bad($"Notification:AllowedOrigins:{i}", "must be an origin: scheme://host[:port]");
         }
 
@@ -105,6 +105,8 @@ public sealed class NotificationOptions
     private static void Url(string key, string value)
     {
         Require(key, value);
-        if (!Uri.TryCreate(value, UriKind.Absolute, out _)) throw Bad(key, "must be an absolute URL");
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || !IsHttp(uri)) throw Bad(key, "must be an absolute http or https URL");
     }
+
+    private static bool IsHttp(Uri uri) => uri.Scheme is "http" or "https";
 }

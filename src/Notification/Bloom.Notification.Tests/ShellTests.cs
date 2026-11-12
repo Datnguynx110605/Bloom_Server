@@ -77,6 +77,27 @@ public class ShellTests(Containers containers)
         Assert.DoesNotContain("ZZZ", e.Message);
     }
 
+    [Theory]
+    [InlineData("Notification:StorefrontBaseUrl", "javascript:alert(1)")]
+    [InlineData("Notification:StorefrontBaseUrl", "ftp://shop.test")]
+    [InlineData("Notification:Email:Resend:BaseUrl", "file:///etc/passwd")]
+    [InlineData("Notification:AllowedOrigins:0", "ftp://shop.test")]
+    public void N3_non_http_url_rejected(string key, string value)
+    {
+        var e = Assert.Throws<InvalidOperationException>(() => Build("api", With(key, value)));
+
+        Assert.Contains(key, e.Message);
+    }
+
+    [Fact]
+    public async Task N4_redis_connects_at_startup()
+    {
+        // Build needs no Redis, but starting the worker connects at once: with nothing listening it fails now, not on the first push.
+        var unreachable = "127.0.0.1:1,connectTimeout=1000"; // port 1: nothing listens
+        await Assert.ThrowsAsync<StackExchange.Redis.RedisConnectionException>(() =>
+            TestNotification.StartAsync(containers, o => { o.Mode = "worker"; o.Config["Notification:Redis"] = unreachable; }));
+    }
+
     [Fact]
     public async Task Smtp_needs_no_resend_keys()
     {

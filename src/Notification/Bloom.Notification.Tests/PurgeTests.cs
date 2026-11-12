@@ -51,6 +51,27 @@ public class PurgeTests(Containers containers)
     }
 
     [Fact]
+    public async Task N6_notifications_purge_failure_still_purges_email_jobs()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        var now = t.Clock.GetUtcNow();
+        await Seed.NotificationAsync(t, Guid.NewGuid(), now.AddDays(-91));
+        var old = await Seed.JobAsync(t, status: EmailStatuses.Sent, createdAt: now.AddDays(-31));
+        await t.SqlAsync($"""
+            CREATE FUNCTION refuse_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'purge refused'; END $$
+            """);
+        await t.SqlAsync($"CREATE TRIGGER refuse BEFORE DELETE ON notifications FOR EACH ROW EXECUTE FUNCTION refuse_delete()");
+
+        await Purge(t).PurgeOnceAsync(Ct);
+
+        await using var db = t.NewDb();
+        Assert.False(await db.EmailJobs.AnyAsync(j => j.Id == old, Ct));
+        Assert.Equal(1, await db.Notifications.CountAsync(Ct));
+        Assert.Single(t.Logs.Entries, e => e.StartsWith("[Error] Daily purge of notifications failed", StringComparison.Ordinal));
+        Assert.DoesNotContain(t.Logs.Entries, e => e.Contains("Daily purge of email jobs failed"));
+    }
+
+    [Fact]
     public void Next_run_is_the_next_0300_utc()
     {
         var day = new DateTimeOffset(2030, 5, 6, 0, 0, 0, TimeSpan.Zero);

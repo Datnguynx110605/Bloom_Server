@@ -41,7 +41,8 @@ public static class NotificationApp
         builder.Services.AddSingleton<NotificationMetrics>();
         builder.Services.AddSingleton(new TemplateRenderer(options)); // parses every template now: a bad template fails the build of the app (plan N15)
         builder.Services.AddSingleton<AfterCommitInterceptor>();
-        builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(options.Redis)); // connects on first use, so building the app needs no Redis
+        builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(options.Redis)); // building the app needs no Redis: it connects when first resolved, which the first hosted service below does at start (N-4)
+        builder.Services.AddHostedService<RedisAtStart>(); // before AddBloom's consumers: an unreachable Redis fails the start before they take messages
         builder.Services.AddDbContext<NotificationDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         if (options.Email.Provider == "resend")
         {
@@ -95,5 +96,13 @@ public static class NotificationApp
             app.MapGrpcService<CustomerService>(); // transcoded to /api/notifications (spec §6)
         }
         return app;
+    }
+
+    /// <summary>Resolves the Redis connection when the host starts, off the start-up thread, so it is up before the first message or hub call (N-4).</summary>
+    private sealed class RedisAtStart(IServiceProvider services) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => Task.Run(() => services.GetRequiredService<IConnectionMultiplexer>(), cancellationToken);
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

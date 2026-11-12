@@ -43,12 +43,27 @@ public sealed class DailyPurge(IServiceScopeFactory scopes, TimeProvider clock, 
         var notificationCutoff = now.AddDays(-90);
         var jobCutoff = now.AddDays(-30);
 
-        while (await db.Database.ExecuteSqlAsync($"""
-            DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE created_at < {notificationCutoff} LIMIT {Batch})
-            """, ct) >= Batch) { }
-        while (await db.Database.ExecuteSqlAsync($"""
-            DELETE FROM email_jobs WHERE id IN (
-                SELECT id FROM email_jobs WHERE status IN ({EmailStatuses.Sent}, {EmailStatuses.Failed}, {EmailStatuses.Cancelled}) AND created_at < {jobCutoff} LIMIT {Batch})
-            """, ct) >= Batch) { }
+        // Independent: one table's failure must not skip the other's purge (N-6).
+        try
+        {
+            while (await db.Database.ExecuteSqlAsync($"""
+                DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE created_at < {notificationCutoff} LIMIT {Batch})
+                """, ct) >= Batch) { }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            logger.LogError(ex, "Daily purge of notifications failed; trying again at the next run");
+        }
+        try
+        {
+            while (await db.Database.ExecuteSqlAsync($"""
+                DELETE FROM email_jobs WHERE id IN (
+                    SELECT id FROM email_jobs WHERE status IN ({EmailStatuses.Sent}, {EmailStatuses.Failed}, {EmailStatuses.Cancelled}) AND created_at < {jobCutoff} LIMIT {Batch})
+                """, ct) >= Batch) { }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            logger.LogError(ex, "Daily purge of email jobs failed; trying again at the next run");
+        }
     }
 }
