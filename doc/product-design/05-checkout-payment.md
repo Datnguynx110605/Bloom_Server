@@ -37,6 +37,7 @@ Checkout turns a cart into a paid order: it locks the price, reserves stock, hol
 | CHK-R07 | Shipping options: **Standard** (free) or **Express** (flat fee set by Admin). |
 | CHK-R08 | Sales tax is one flat rate, set in configuration, applied to physical product lines only, on the price **after** the line's discount share. Shipping fees and warranty plans are not taxed. |
 | CHK-R09 | At most one coupon per order. Its discount is split across eligible lines (PRM-R06). |
+| CHK-R20 | An order's total must be at least $0.50, the card processor's minimum. Checkout refuses to start otherwise. |
 
 ### Payment
 
