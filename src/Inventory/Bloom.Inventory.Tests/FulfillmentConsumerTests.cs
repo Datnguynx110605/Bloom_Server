@@ -251,6 +251,37 @@ public class FulfillmentConsumerTests(Containers containers)
     }
 
     [Fact]
+    public async Task Second_lost_in_transit_for_serialized_ref_is_noop()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var (sku, orderId) = await SoldSerializedAsync(t);
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
+        await LostAsync(t, orderId);
+        var ledgerBefore = (await Seed.LedgerAsync(t, sku)).Count;
+
+        await LostAsync(t, orderId); // another message, the same units: completes, changes nothing
+
+        Assert.Equal((1, 0, 0, 0, 0, 2), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal([SerialStatuses.Lost, SerialStatuses.Lost], [(await Seed.SerialAsync(t, "ABC123")).Status, (await Seed.SerialAsync(t, "ABC124")).Status]);
+        Assert.Equal(ledgerBefore, (await Seed.LedgerAsync(t, sku)).Count);
+    }
+
+    [Fact]
+    public async Task Lost_in_transit_serialized_never_counted_still_fails()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var (sku, orderId) = await SoldSerializedAsync(t);
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
+        await using (var db = t.NewDb())
+            await db.Database.ExecuteSqlAsync($"UPDATE serial_units SET status = {SerialStatuses.InStock} WHERE ref_id = {orderId}", Ct); // drift: shipped allocation, no shipped serial
+
+        await Assert.ThrowsAsync<PermanentFailureException>(() => LostAsync(t, orderId));
+
+        Assert.Equal(0, (await Seed.ItemAsync(t, sku))!.Lost);
+        Assert.DoesNotContain(await Seed.LedgerAsync(t, sku), e => e.EntryType == EntryTypes.LostInTransit);
+    }
+
+    [Fact]
     public async Task IN8_fulfillment_ledgers_of_a_reship_carry_ref_type_reship()
     {
         await using var t = await TestInventory.StartAsync(containers);
