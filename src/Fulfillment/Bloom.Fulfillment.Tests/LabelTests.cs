@@ -297,20 +297,27 @@ public class LabelTests(Containers containers)
         await TestFulfillment.StartAsync(containers, o => o.ConfigureServices = s => s.ConfigureDbContext<FulfillmentDbContext>(db => db.AddInterceptors(fail)));
 
     [Fact]
-    public async Task F2_db_failure_during_rollback_moves_row_back_in_line()
+    public async Task F2_bookkeeping_failure_is_logged_with_both_failures_and_the_next_pass_records_the_attempt()
     {
         var fail = new FailBookkeeping();
         await using var t = await StartWithAsync(containers, fail);
         var (_, shipmentId) = await PackedAsync(t);
         t.Shippo.FailNext(1);
-        fail.Failures = 1; // the first bookkeeping attempt fails
+        fail.Failures = 1; // the one bookkeeping attempt of this pass fails
 
         await Seed.RunLabelWorkerAsync(t);
 
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
-        Assert.Equal((ShipmentStatuses.LabelPending, 1), (shipment.Status, shipment.LabelAttempts));
-        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1)); // back in line, not first
+        Assert.Equal((ShipmentStatuses.LabelPending, 0), (shipment.Status, shipment.LabelAttempts)); // not recorded: still due
         Assert.Equal(1, fail.Hits); // the injection did fire
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("injected database failure") && e.Contains("500")); // the bookkeeping failure and the Shippo failure behind it
+
+        t.Shippo.FailNext(1);
+        await Seed.RunLabelWorkerAsync(t); // the next pass: the attempt is recorded and the row is back in line
+
+        shipment = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal((ShipmentStatuses.LabelPending, 1), (shipment.Status, shipment.LabelAttempts));
+        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1));
     }
 
     [Fact]
@@ -331,7 +338,7 @@ public class LabelTests(Containers containers)
         Assert.Equal(ShipmentStatuses.LabelReady, (await Seed.ShipmentAsync(t, goodId)).Status);
         var poisoned = await Seed.ShipmentAsync(t, poisonedId);
         Assert.Equal((ShipmentStatuses.LabelPending, 0), (poisoned.Status, poisoned.LabelAttempts));
-        Assert.Equal(2, fail.Hits); // both bookkeeping attempts of the poisoned row failed
+        Assert.Equal(1, fail.Hits); // the poisoned row's one bookkeeping attempt failed
         Assert.Equal(3, t.Shippo.Calls("transactions/")); // the poisoned row's failed lookup once, the good row's lookup and buy
     }
 

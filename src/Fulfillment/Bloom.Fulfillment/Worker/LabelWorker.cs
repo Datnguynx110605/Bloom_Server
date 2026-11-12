@@ -123,30 +123,23 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
     private async Task FailAsync(Shipment shipment, Exception e, CancellationToken ct)
     {
         var n = shipment.LabelAttempts + 1;
-        DateTimeOffset next;
-        for (var attempt = 1; ; attempt++) // a database failure here would leave the row first in line: one more try, then give up for this pass (F-2)
+        var next = clock.GetUtcNow() + Backoff[Math.Min(n, Backoff.Length) - 1]; // from now, after the Shippo call (F-3)
+        try
         {
-            next = clock.GetUtcNow() + Backoff[Math.Min(n, Backoff.Length) - 1]; // from now, after the Shippo call (F-3)
-            try
-            {
-                await using var scope = scopes.CreateAsyncScope();
-                var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
-                await using var tx = await db.Database.BeginTransactionAsync(ct);
-                await db.Database.ExecuteSqlAsync($"""
-                    UPDATE shipments SET label_attempts = {n}, next_attempt_at = {next}, version = version + 1
-                    WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelPending}
-                    """, ct);
-                await tx.CommitAsync(ct);
-                break;
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
-            {
-                if (attempt == 2)
-                {
-                    logger.LogError(ex, "Recording the failed label attempt of shipment {ShipmentId} failed; it is tried again on the next pass", shipment.Id);
-                    return;
-                }
-            }
+            await using var scope = scopes.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE shipments SET label_attempts = {n}, next_attempt_at = {next}, version = version + 1
+                WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelPending}
+                """, ct);
+            await tx.CommitAsync(ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // The row stays due and this pass has tried it once (F-2): the next pass tries again.
+            logger.LogError(new AggregateException(e, ex), "Recording the failed label attempt of shipment {ShipmentId} failed; it is tried again on the next pass", shipment.Id);
+            return;
         }
         if (n < AlertAttempt) logger.LogWarning(e, "Label for shipment {ShipmentId} failed (attempt {Attempt}); retrying at {NextAttemptAt}", shipment.Id, n, next);
         else if (n == AlertAttempt)
