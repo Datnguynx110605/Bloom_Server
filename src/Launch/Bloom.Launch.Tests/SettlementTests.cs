@@ -244,6 +244,32 @@ public class SettlementTests(Containers containers)
     }
 
     [Fact]
+    public async Task D7_stuck_hold_logs_error_once_when_first_stuck()
+    {
+        await using var t = await StartAsync();
+        using var metrics = new MetricCapture(t.Services);
+        var (launch, _, first) = await Holds.HeldAsync(t);
+        var (_, _, second) = await Holds.HeldAsync(t, on: launch);
+        await t.SqlAsync($"UPDATE holds SET created_at = now() - interval '31 minutes' WHERE order_id = {first}");
+
+        for (var minute = 0; minute < 5; minute++)
+        {
+            await t.RunMonitorAsync();
+            t.Clock.Advance(TimeSpan.FromMinutes(1));
+        }
+
+        Assert.Equal(1, t.ErrorLogs); // the gauge carries it from here on
+        Assert.Equal(1, metrics.Latest("stuck_holds", ("launch", launch.Id.ToString())));
+
+        await t.SqlAsync($"UPDATE holds SET created_at = now() - interval '31 minutes' WHERE order_id = {second}");
+        await t.RunMonitorAsync();
+        await t.RunMonitorAsync();
+
+        Assert.Equal(2, t.ErrorLogs); // a hold that becomes stuck later is a new first
+        Assert.Equal(2, metrics.Latest("stuck_holds", ("launch", launch.Id.ToString())));
+    }
+
+    [Fact]
     public async Task Bad_payload_dead_letters_at_once()
     {
         await using var t = await StartAsync();

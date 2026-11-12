@@ -153,6 +153,21 @@ public class WorkerTests(Containers containers)
     }
 
     [Fact]
+    public async Task D7_redis_down_logs_error_once_per_minute_per_launch()
+    {
+        await using var t = await TestLaunch.StartAsync(containers, o => o.Config["Launch:Redis"] = "127.0.0.1:1,connectTimeout=500");
+        await Seed.LaunchAsync(t);
+
+        for (var second = 0; second < 120; second++)
+        {
+            await t.RunAdmissionAsync();
+            t.Clock.Advance(TimeSpan.FromSeconds(1));
+        }
+
+        Assert.Equal(2, t.ErrorLogs); // at second 0 and at second 60
+    }
+
+    [Fact]
     public async Task Dlq_admin_is_hosted()
     {
         var (api, worker) = await StartAsync(); // the worker declares the queues

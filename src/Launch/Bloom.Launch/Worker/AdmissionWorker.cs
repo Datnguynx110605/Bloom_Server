@@ -12,8 +12,10 @@ public sealed record AdmissionResult(string Result, IReadOnlyList<Guid> Admitted
 
 /// <summary>The admission tick of 01-launch §6.4, every second for each launch that is <c>preorder_open</c> and not closed (R14), and the room cleanup retry (R16).</summary>
 public sealed class AdmissionWorker(
-    IServiceScopeFactory scopes, IConnectionMultiplexer redis, RoomCleanup cleanup, StateCache cache, LaunchMetrics metrics, ILogger<AdmissionWorker> logger) : BackgroundService
+    IServiceScopeFactory scopes, IConnectionMultiplexer redis, RoomCleanup cleanup, StateCache cache, LaunchMetrics metrics, TimeProvider time, ILogger<AdmissionWorker> logger) : BackgroundService
 {
+    private readonly Dictionary<Guid, DateTimeOffset> _redisErrorLoggedAt = [];
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
@@ -59,9 +61,18 @@ public sealed class AdmissionWorker(
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
+                if (e is RedisConnectionException or RedisTimeoutException && !RedisErrorDue(id)) continue; // D7: Redis down is one Error per minute per launch, not one per tick
                 logger.LogError(e, "The {What} of launch {LaunchId} failed.", what, id);
             }
         }
+    }
+
+    private bool RedisErrorDue(Guid launchId)
+    {
+        var now = time.GetUtcNow();
+        if (_redisErrorLoggedAt.TryGetValue(launchId, out var at) && now - at < TimeSpan.FromMinutes(1)) return false;
+        _redisErrorLoggedAt[launchId] = now;
+        return true;
     }
 
     /// <summary>§6.4 in its step order. A Redis failure throws; the transaction rolls back (nothing was written to Postgres before the script).</summary>
