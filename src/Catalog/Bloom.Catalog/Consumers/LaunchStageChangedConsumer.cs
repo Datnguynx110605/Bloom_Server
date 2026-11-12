@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Catalog.Consumers;
 
-/// <summary>08-catalog §6.4, plan R23: stamps the launch on its products and SKUs, newest stage wins, <c>released</c> activates.</summary>
+/// <summary>08-catalog §6.4, plan R23: stamps the launch on its products and SKUs, newest stage wins, <c>released</c> activates, an archived product is never changed (D36).</summary>
 public sealed class LaunchStageChangedConsumer(CatalogDbContext db, CacheInvalidation cache, TimeProvider clock) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("launch", LaunchMessages.StageChanged)];
@@ -22,7 +22,9 @@ public sealed class LaunchStageChangedConsumer(CatalogDbContext db, CacheInvalid
         var now = clock.GetUtcNow();
 
         // Product rows first, in id order, then SKU rows: the service-wide lock order (a concurrent admin write never deadlocks with this).
-        var known = await db.Database.SqlQuery<Guid>($"SELECT id AS \"Value\" FROM products WHERE id = ANY({wanted}) ORDER BY id FOR UPDATE").ToArrayAsync(ct);
+        // D36: archived is final, so an archived product drops out here and neither it nor its SKUs are touched (the message is still handled).
+        var known = await db.Database.SqlQuery<Guid>(
+            $"SELECT id AS \"Value\" FROM products WHERE id = ANY({wanted}) AND status <> {ProductStatuses.Archived} ORDER BY id FOR UPDATE").ToArrayAsync(ct);
         await db.Database.ExecuteSqlAsync(
             $"""
             UPDATE products SET launch_id = {e.LaunchId}, launch_stage = {e.Stage}, updated_at = {now},

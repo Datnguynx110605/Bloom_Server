@@ -106,6 +106,48 @@ public class ConsumerTests(Containers containers)
     }
 
     [Fact]
+    public async Task D36_launch_event_never_changes_archived_product()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var category = await Seed.CategoryAsync(t);
+        var archived = await Seed.PhoneAsync(t, category.Id, status: ProductStatuses.Archived);
+        var live = await Seed.PhoneAsync(t, category.Id, "Live phone", ProductStatuses.Draft);
+        var before = await ProductRowAsync(t, archived.Product.Id);
+        t.Clock.Advance(TimeSpan.FromMinutes(1)); // a write would now stamp a later updated_at
+        var launchId = Guid.NewGuid();
+
+        // one event over an archived and a draft product; no exception: the inbox records it as handled (no retry, no DLQ)
+        await StageAsync(t, Launch(launchId, "released", [archived.Product.Id, live.Product.Id], [.. archived.Skus, .. live.Skus]));
+
+        var after = await ProductRowAsync(t, archived.Product.Id);
+        Assert.Equal(ProductStatuses.Archived, after.Status);
+        Assert.Null(after.LaunchId);
+        Assert.Null(after.LaunchStage);
+        Assert.Equal(before.UpdatedAt, after.UpdatedAt);
+        Assert.Equal(before.PublishedAt, after.PublishedAt);
+        await using var db = t.NewDb();
+        Assert.All(await db.Skus.AsNoTracking().Where(s => s.ProductId == archived.Product.Id).ToListAsync(Ct), s => Assert.Null(s.LaunchId)); // the whole product, SKUs included
+        Assert.Equal(launchId, (await ProductRowAsync(t, live.Product.Id)).LaunchId); // the others in the same event are applied
+        Assert.Equal(ProductStatuses.Active, (await ProductRowAsync(t, live.Product.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Launch_event_does_not_stamp_a_sku_under_a_product_it_does_not_belong_to()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var category = await Seed.CategoryAsync(t);
+        var listed = await Seed.PhoneAsync(t, category.Id, "Listed");
+        var other = await Seed.PhoneAsync(t, category.Id, "Other");
+
+        // the event claims a SKU of `other` belongs to `listed`: the stamp needs the SKU's own product to be a listed one
+        var wrong = new Sku { Id = other.Skus[0].Id, ProductId = listed.Product.Id, Code = other.Skus[0].Code };
+        await StageAsync(t, Launch(Guid.NewGuid(), "announced", [listed.Product.Id], [.. listed.Skus, wrong]));
+
+        await using var db = t.NewDb();
+        Assert.All(await db.Skus.AsNoTracking().Where(s => s.ProductId == other.Product.Id).ToListAsync(Ct), s => Assert.Null(s.LaunchId));
+    }
+
+    [Fact]
     public async Task Launch_event_deletes_product_cache_after_commit()
     {
         await using var t = await TestCatalog.StartAsync(containers);
