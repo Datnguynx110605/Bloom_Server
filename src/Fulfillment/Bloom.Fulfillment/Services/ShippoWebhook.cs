@@ -111,6 +111,13 @@ public static class ShippoWebhook
         var labelTaskId = await db.Shipments.AsNoTracking().Where(x => x.Id == id && x.Direction == Directions.Outbound && x.Status == ShipmentStatuses.LabelReady).Select(x => x.PackTaskId).SingleOrDefaultAsync(ct);
         if (labelTaskId is { } lockedTask) await db.Database.ExecuteSqlAsync($"SELECT 1 FROM pack_tasks WHERE id = {lockedTask} FOR UPDATE", ct);
         var s = (await db.Shipments.FromSql($"SELECT * FROM shipments WHERE id = {id} FOR UPDATE").AsNoTracking().ToListAsync(ct)).Single(); // first lock of the order
+        if (s is { Status: ShipmentStatuses.Lost, Direction: Directions.Outbound, DeliveredAt: null } && tracking == "DELIVERED") // D34: recorded and alerted; nothing else moves
+        {
+            await db.Database.ExecuteSqlAsync($"UPDATE shipments SET last_tracking_at = {now}, delivered_at = {now}, version = version + 1 WHERE id = {s.Id}", ct);
+            logger.LogError("Shipment {ShipmentId} of order {OrderId} was confirmed lost but the carrier reports it delivered; Support must review it", s.Id, s.OrderId);
+            await tx.CommitAsync(ct);
+            return false;
+        }
         if (Terminal.Contains(s.Status))
         {
             logger.LogWarning("Shippo reported {Tracking} for shipment {ShipmentId}, already {Status}; ignored", tracking, s.Id, s.Status);

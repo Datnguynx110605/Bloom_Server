@@ -138,6 +138,27 @@ public class TrackingTests(Containers containers)
     }
 
     [Fact]
+    public async Task D34_delivered_on_lost_sets_delivered_at_keeps_lost_logs_error()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, shipmentId, tracking) = await HandedOverAsync(t);
+        await using (var db = t.NewDb()) await db.Shipments.Where(s => s.Id == shipmentId).ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, ShipmentStatuses.Lost), Ct);
+        int Outbox() { using var db = t.NewDb(); return db.Set<Bloom.Shared.Persistence.OutboxMessage>().Count(); }
+        var before = Outbox();
+        t.Clock.Advance(TimeSpan.FromDays(9));
+
+        await EventAsync(t, tracking, "DELIVERED");
+
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal(ShipmentStatuses.Lost, shipment.Status);
+        Assert.Equal(t.Clock.GetUtcNow(), shipment.DeliveredAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(shipmentId.ToString()) && e.Contains("lost"));
+        Assert.Equal(before, Outbox()); // no stock or money message
+        await using var db2 = t.NewDb();
+        Assert.Null((await db2.OrderAccounts.AsNoTracking().SingleAsync(a => a.OrderId == order.OrderId, Ct)).DeliveredAt);
+    }
+
+    [Fact]
     public async Task F07_forged_webhook_applies_the_refetched_status()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
