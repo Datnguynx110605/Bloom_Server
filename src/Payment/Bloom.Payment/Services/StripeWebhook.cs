@@ -102,7 +102,7 @@ public static class StripeWebhook
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true); // the pooled buffer held the webhook body
         }
     }
 

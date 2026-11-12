@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Security.Cryptography;
 using Bloom.Shared.Errors;
 using Bloom.Shared.Observability;
@@ -20,7 +21,7 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
 
     /// <summary>The gRPC statuses that are deterministic business rejections: stored and replayed (spec §6.7). Everything else releases the key.</summary>
     public static readonly IReadOnlySet<StatusCode> Stored =
-        new HashSet<StatusCode> { StatusCode.FailedPrecondition, StatusCode.InvalidArgument, StatusCode.NotFound, StatusCode.AlreadyExists, StatusCode.PermissionDenied };
+        new[] { StatusCode.FailedPrecondition, StatusCode.InvalidArgument, StatusCode.NotFound, StatusCode.AlreadyExists, StatusCode.PermissionDenied }.ToFrozenSet();
 
     private sealed record Call(Guid UserId, string Key, string Operation, byte[] Hash)
     {

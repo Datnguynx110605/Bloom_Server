@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace Bloom.Shared.Messaging;
 
-public static class BloomJson
+internal static class BloomJson
 {
     public static JsonSerializerOptions Options { get; } = new(JsonSerializerDefaults.Web)
     {

@@ -7,6 +7,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <InternalsVisibleTo Include="Bloom.Shared.Tests" />
+    <InternalsVisibleTo Include="Bloom.Order.Tests" />
     <Protobuf Include="DeadLetters/Protos/dead_letter_admin.proto" GrpcServices="Both" />
   </ItemGroup>
 
