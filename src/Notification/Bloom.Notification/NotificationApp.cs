@@ -8,6 +8,7 @@ using Bloom.Notification.Templates;
 using Bloom.Notification.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.Reflection;
 using Google.Rpc;
 using Microsoft.AspNetCore.Http.Connections;

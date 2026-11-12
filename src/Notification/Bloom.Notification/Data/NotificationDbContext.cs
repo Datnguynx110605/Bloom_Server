@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace Bloom.Notification.Data;
 
-public sealed partial class NotificationDbContext(DbContextOptions<NotificationDbContext> options) : DbContext(options)
+public sealed partial class NotificationDbContext(DbContextOptions<NotificationDbContext> options) : DbContext(options), IAfterCommitContext
 {
     public DbSet<ContactRow> Contacts => Set<ContactRow>();
     public DbSet<OrderRefRow> OrderRefs => Set<OrderRefRow>();
@@ -13,7 +13,7 @@ public sealed partial class NotificationDbContext(DbContextOptions<NotificationD
     public DbSet<EmailJobRow> EmailJobs => Set<EmailJobRow>();
 
     /// <summary>Work that must run only after the transaction commits (pushes, disconnects, metrics); dropped on a rollback (plan N7).</summary>
-    public List<Func<Task>> AfterCommit { get; } = [];
+    public AfterCommitActions AfterCommit { get; } = new();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {

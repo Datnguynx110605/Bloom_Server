@@ -21,6 +21,6 @@ public sealed class Ledger(InventoryDbContext db, TimeProvider clock, InventoryM
             DOnHand = d.OnHand, DReserved = d.Reserved, DCommitted = d.Committed, DReturned = d.Returned, DDamaged = d.Damaged, DLost = d.Lost,
             RefType = refType, RefId = refId, Actor = Actor, CreatedAt = clock.GetUtcNow(),
         });
-        db.AfterCommit(() => metrics.LedgerEntry(entryType));
+        db.AfterCommit.Add(() => { metrics.LedgerEntry(entryType); return Task.CompletedTask; });
     }
 }

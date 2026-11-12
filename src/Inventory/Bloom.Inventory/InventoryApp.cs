@@ -8,6 +8,7 @@ using Bloom.Inventory.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.Reflection;
 using Google.Rpc;
 using Microsoft.EntityFrameworkCore;
@@ -36,7 +37,8 @@ public static class InventoryApp
         builder.Services.AddSingleton(options);
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)
         builder.Services.AddSingleton<InventoryMetrics>();
-        builder.Services.AddDbContext<InventoryDbContext>(o => o.UseNpgsql(options.Database).AddInterceptors(new AfterCommitInterceptor()));
+        builder.Services.AddSingleton<AfterCommitInterceptor>();
+        builder.Services.AddDbContext<InventoryDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         var bloom = builder.Services.AddBloom<InventoryDbContext>(o =>
         {
             o.ServiceName = "inventory";
