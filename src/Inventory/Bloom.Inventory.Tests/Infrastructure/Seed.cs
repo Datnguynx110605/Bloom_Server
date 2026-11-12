@@ -67,7 +67,7 @@ public static class Seed
 
     /// <summary><c>order.paid</c> now; a non-null <paramref name="launchId"/> makes it a pre-order.</summary>
     public static Task PaidAsync(TestInventory t, Guid orderId, Guid? launchId, params (Guid Sku, int Quantity)[] lines) =>
-        PaidAsync(t, Paid(orderId, launchId, DateTimeOffset.UtcNow, lines));
+        PaidAsync(t, Paid(orderId, launchId, t.Clock.GetUtcNow(), lines));
 
     public static Task ReleaseAsync(TestInventory t, Guid orderId, Guid? reshipId = null) =>
         Consume.Async<ReleaseReservationConsumer>(t, InventoryMessages.ReleaseReservation, new ReleaseReservationV1(orderId, reshipId));

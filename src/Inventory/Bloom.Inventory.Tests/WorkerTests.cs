@@ -190,6 +190,7 @@ public class WorkerTests(Containers containers)
         await using var __ = worker;
         using var metrics = new MetricCapture(worker.Services);
         var monitor = worker.Services.GetServices<IHostedService>().OfType<StockMonitor>().Single();
+        await monitor.StopAsync(Ct); // its own tick, fired by Clock.Advance, would overwrite the gauges after the RunOnceAsync below (IN-2)
         api.Clock.SetUtcNow(worker.Clock.GetUtcNow()); // one business clock for both hosts
         var sku = Seed.Sku(api);
         await Seed.ReceiveAsync(api, sku, 5);

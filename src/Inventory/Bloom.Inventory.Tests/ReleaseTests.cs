@@ -40,7 +40,7 @@ public class ReleaseTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 1);
-        var orderId = await Seed.BackorderAsync(t, sku, 3, DateTimeOffset.UtcNow.AddHours(-1));
+        var orderId = await Seed.BackorderAsync(t, sku, 3, t.Clock.GetUtcNow().AddHours(-1));
 
         await Seed.ReleaseAsync(t, orderId);
 
@@ -61,7 +61,7 @@ public class ReleaseTests(Containers containers)
         await Seed.ReserveAsync(t, orderId, (sku, 1));
         await Seed.PaidAsync(t, orderId, null, (sku, 1));
         await t.Packing.AssignSerialAsync(new() { RefId = orderId.ToString(), SkuId = sku.ToString(), Serial = "ABC123" }, cancellationToken: Ct);
-        var waiting = await Seed.BackorderAsync(t, sku, 1, DateTimeOffset.UtcNow.AddHours(-1));
+        var waiting = await Seed.BackorderAsync(t, sku, 1, t.Clock.GetUtcNow().AddHours(-1));
 
         await Seed.ReleaseAsync(t, orderId);
 
@@ -108,7 +108,7 @@ public class ReleaseTests(Containers containers)
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 5);
         var orderId = Guid.CreateVersion7();
-        var now = DateTimeOffset.UtcNow;
+        var now = t.Clock.GetUtcNow();
         var other = Seed.Sku(t);
         await using (var db = t.NewDb())
         {

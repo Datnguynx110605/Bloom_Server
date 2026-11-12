@@ -47,8 +47,8 @@ public class WarehouseReadTests(Containers containers)
         await Seed.ReceiveAsync(t, b, 5);
         await Seed.ReceiveAsync(t, c, 2);
         await Seed.ReserveAsync(t, Guid.CreateVersion7(), (a, 3)); // a is sold out
-        await Seed.BackorderAsync(t, a, 4, DateTimeOffset.UtcNow);
-        await Seed.BackorderAsync(t, a, 2, DateTimeOffset.UtcNow);
+        await Seed.BackorderAsync(t, a, 4, t.Clock.GetUtcNow());
+        await Seed.BackorderAsync(t, a, 2, t.Clock.GetUtcNow());
 
         async Task<string[]> ListAsync(string query)
         {
@@ -99,7 +99,7 @@ public class WarehouseReadTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var received = Seed.Sku(t);
         var never = Seed.Sku(t);
-        await Seed.BackorderAsync(t, never, 1, DateTimeOffset.UtcNow); // a pre-order exists, a stock_items row does not
+        await Seed.BackorderAsync(t, never, 1, t.Clock.GetUtcNow()); // a pre-order exists, a stock_items row does not
         await Seed.ReceiveAsync(t, received, 1);
 
         using var response = await GetAsync(t, $"/stock?skuIds={received}&skuIds={never}");
@@ -233,5 +233,20 @@ public class WarehouseReadTests(Containers containers)
         using var response = await GetAsync(t, path);
 
         await response.ExpectValidationAsync(path.Contains("page=") ? "page" : "page_size");
+    }
+
+    [Fact]
+    public async Task IN8_get_serial_shows_the_imei()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t, serialized: true);
+        var imei = Seed.Imei(7);
+        using var receipt = await t.SendAsync(HttpMethod.Post, Base + "/receipts",
+            new { lines = new[] { new { skuId = sku, quantity = 2, serials = new[] { "PH1", "PH2" }, imeis = new[] { imei, Seed.Imei(8) } } } }, TestCaller.Staff("warehouse"), Guid.NewGuid());
+        await receipt.OkJsonAsync();
+
+        using var response = await GetAsync(t, "/serials/ph1");
+
+        Assert.Equal(imei, (await response.OkJsonAsync()).GetProperty("imei").GetString());
     }
 }

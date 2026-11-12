@@ -378,4 +378,20 @@ public class AdjustmentTests(Containers containers)
         Assert.Equal((0, 0, 20, 1, 3, 5), Seed.Counters((await Seed.ItemAsync(t, plain))!));
         Assert.Equal(EntryTypes.All.Order(), types.Order());
     }
+
+    [Fact]
+    public async Task IN8_refused_serialized_decrease_leaves_the_serial_in_stock()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t, serialized: true);
+        await Seed.ReceiveAsync(t, sku, 1, ["S1"]);
+        await Seed.ReserveAsync(t, Guid.CreateVersion7(), (sku, 1)); // the only unit is promised, though no serial is assigned yet
+
+        using var response = await AdjustAsync(t, sku, -1, ReasonCodes.LostInWarehouse, serial: "S1");
+
+        await response.ExpectErrorAsync(400, "ADJUSTMENT_EXCEEDS_AVAILABLE");
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "S1")).Status);
+        Assert.Equal((1, 1, 0, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Equal(0, await AdjustmentRowsAsync(t));
+    }
 }

@@ -20,7 +20,7 @@ public class OrderPaidTests(Containers containers)
         var orderId = Guid.CreateVersion7();
         await Seed.ReserveAsync(t, orderId, (sku, 2));
 
-        await Seed.PaidAsync(t, Seed.Paid(orderId, null, DateTimeOffset.UtcNow, (sku, 2)));
+        await Seed.PaidAsync(t, Seed.Paid(orderId, null, t.Clock.GetUtcNow(), (sku, 2)));
 
         var item = (await Seed.ItemAsync(t, sku))!;
         Assert.Equal((3, 0, 2), (item.OnHand, item.Reserved, item.Committed));
@@ -38,7 +38,7 @@ public class OrderPaidTests(Containers containers)
         await Seed.ReceiveAsync(t, sku, 5);
         var regular = Guid.CreateVersion7();
         await Seed.ReserveAsync(t, regular, (sku, 2));
-        var paid = Seed.Paid(regular, null, DateTimeOffset.UtcNow, (sku, 2));
+        var paid = Seed.Paid(regular, null, t.Clock.GetUtcNow(), (sku, 2));
         await Seed.PaidAsync(t, paid);
         await Seed.PaidAsync(t, paid);
 
@@ -47,7 +47,7 @@ public class OrderPaidTests(Containers containers)
         Assert.Equal(3, (await Seed.LedgerAsync(t, sku)).Count); // received, reserved, committed once
 
         var launchSku = Seed.Sku(t);
-        var preorder = Seed.Paid(Guid.CreateVersion7(), Guid.CreateVersion7(), DateTimeOffset.UtcNow, (launchSku, 1));
+        var preorder = Seed.Paid(Guid.CreateVersion7(), Guid.CreateVersion7(), t.Clock.GetUtcNow(), (launchSku, 1));
         await Seed.PaidAsync(t, preorder);
         await Seed.PaidAsync(t, preorder);
         Assert.Single(await Seed.AllocationsAsync(t, preorder.OrderId));
@@ -60,7 +60,7 @@ public class OrderPaidTests(Containers containers)
         var sku = Seed.Sku(t);
         await Seed.ReceiveAsync(t, sku, 3);
         var orderId = Guid.CreateVersion7();
-        var now = DateTimeOffset.UtcNow;
+        var now = t.Clock.GetUtcNow();
         await using (var db = t.NewDb())
         {
             db.StockAllocations.Add(new StockAllocation
@@ -105,7 +105,7 @@ public class OrderPaidTests(Containers containers)
         await Seed.ReceiveAsync(t, sku, 5);
         var orderId = Guid.CreateVersion7();
 
-        await Seed.PaidAsync(t, Seed.Paid(orderId, Guid.CreateVersion7(), DateTimeOffset.UtcNow, (sku, 2)));
+        await Seed.PaidAsync(t, Seed.Paid(orderId, Guid.CreateVersion7(), t.Clock.GetUtcNow(), (sku, 2)));
 
         var item = (await Seed.ItemAsync(t, sku))!;
         Assert.Equal((3, 0, 2), (item.OnHand, item.Reserved, item.Committed));
@@ -136,7 +136,7 @@ public class OrderPaidTests(Containers containers)
         await Seed.ReceiveAsync(t, a, 3);
         var orderId = Guid.CreateVersion7();
 
-        await Seed.PaidAsync(t, Seed.Paid(orderId, Guid.CreateVersion7(), DateTimeOffset.UtcNow, (a, 1), (b, 1)));
+        await Seed.PaidAsync(t, Seed.Paid(orderId, Guid.CreateVersion7(), t.Clock.GetUtcNow(), (a, 1), (b, 1)));
 
         Assert.Equal([AllocationStatuses.Committed, AllocationStatuses.Backordered],
             (await Seed.AllocationsAsync(t, orderId)).OrderBy(x => x.SkuId == a ? 0 : 1).Select(x => x.Status));
@@ -152,7 +152,7 @@ public class OrderPaidTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var sku = Seed.Sku(t);
-        var now = DateTimeOffset.UtcNow;
+        var now = t.Clock.GetUtcNow();
         var older = await Seed.BackorderAsync(t, sku, 3, now.AddHours(-1));
         await Seed.ReceiveAsync(t, sku, 2);
         var orderId = Guid.CreateVersion7();
@@ -173,9 +173,9 @@ public class OrderPaidTests(Containers containers)
         var launch = Guid.CreateVersion7();
 
         await Assert.ThrowsAsync<PermanentFailureException>(() => Consume.Async<OrderPaidConsumer>(t, OrderMessages.Paid,
-            new { orderNumber = "BL-1", accountId = Guid.NewGuid(), paidAt = DateTimeOffset.UtcNow, totalCents = 1, lines = new[] { new { skuId = sku, quantity = 1 } } }));
-        await Assert.ThrowsAsync<PermanentFailureException>(() => Seed.PaidAsync(t, Seed.Paid(Guid.CreateVersion7(), launch, DateTimeOffset.UtcNow, (sku, 0))));
-        await Assert.ThrowsAsync<PermanentFailureException>(() => Seed.PaidAsync(t, Seed.Paid(Guid.CreateVersion7(), launch, DateTimeOffset.UtcNow)));
+            new { orderNumber = "BL-1", accountId = Guid.NewGuid(), paidAt = t.Clock.GetUtcNow(), totalCents = 1, lines = new[] { new { skuId = sku, quantity = 1 } } }));
+        await Assert.ThrowsAsync<PermanentFailureException>(() => Seed.PaidAsync(t, Seed.Paid(Guid.CreateVersion7(), launch, t.Clock.GetUtcNow(), (sku, 0))));
+        await Assert.ThrowsAsync<PermanentFailureException>(() => Seed.PaidAsync(t, Seed.Paid(Guid.CreateVersion7(), launch, t.Clock.GetUtcNow())));
 
         await using var db = t.NewDb();
         Assert.Empty(await db.StockAllocations.ToListAsync(Ct));
@@ -195,7 +195,7 @@ public class OrderPaidTests(Containers containers)
                 var orderId = Guid.CreateVersion7();
                 await Task.WhenAll(
                     Task.Run(() => Seed.ReceiveAsync(t, sku, 3), Ct),
-                    Task.Run(() => Seed.PaidAsync(t, Seed.Paid(orderId, Guid.CreateVersion7(), DateTimeOffset.UtcNow, (sku, 2))), Ct));
+                    Task.Run(() => Seed.PaidAsync(t, Seed.Paid(orderId, Guid.CreateVersion7(), t.Clock.GetUtcNow(), (sku, 2))), Ct));
                 return orderId;
             }).ToList();
             var orders = await Task.WhenAll(races);

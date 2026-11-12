@@ -201,4 +201,30 @@ public class PackingTests(Containers containers)
         var audit = Assert.Single(await SerialAuditAsync(t));
         Assert.Equal((Guid.Empty, ""), (audit.ActorId, audit.ActorRole));
     }
+
+    [Fact]
+    public async Task IN8_packing_edges()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var (sku, orderId) = await CommittedAsync(t); // ABC123..ABC125 in stock, 2 committed to orderId
+        var second = Guid.CreateVersion7();
+        await Seed.ReserveAsync(t, second, (sku, 1));
+        await Seed.PaidAsync(t, second, null, (sku, 1)); // a committed allocation of 1
+        var other = Seed.Sku(t, serialized: true);
+        await Seed.ReceiveAsync(t, other, 1, ["XYZ1"]);
+        await t.Packing.AssignSerialAsync(Assign(orderId, sku, "ABC123"), cancellationToken: Ct);
+
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(second, sku, "ABC123"), cancellationToken: Ct), "SERIAL_NOT_AVAILABLE"); // assigned to another order
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(second, sku, "NOSUCH1"), cancellationToken: Ct), "SERIAL_NOT_AVAILABLE"); // unknown
+        await Rpc.FailsAsync(t.Packing.ReplaceSerialAsync(new() { RefId = orderId.ToString(), OldSerial = "ABC123", NewSerial = "XYZ1" }, cancellationToken: Ct), "SERIAL_NOT_AVAILABLE"); // another SKU's unit
+        Assert.Equal((SerialStatuses.Assigned, (Guid?)orderId), ((await Seed.SerialAsync(t, "ABC123")).Status, (await Seed.SerialAsync(t, "ABC123")).RefId));
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "XYZ1")).Status);
+
+        await t.Packing.UnassignSerialAsync(new() { RefId = second.ToString(), Serial = "ABC124" }, cancellationToken: Ct); // already in stock: ok, whoever asks
+
+        await t.Packing.AssignSerialAsync(Assign(second, sku, "ABC125"), cancellationToken: Ct);
+        await Seed.ShipAsync(t, second, second, (sku, 1));
+        await Rpc.FailsAsync(t.Packing.AssignSerialAsync(Assign(second, sku, "ABC124"), cancellationToken: Ct), "NOT_COMMITTED"); // shipped
+        Assert.Equal(SerialStatuses.InStock, (await Seed.SerialAsync(t, "ABC124")).Status);
+    }
 }

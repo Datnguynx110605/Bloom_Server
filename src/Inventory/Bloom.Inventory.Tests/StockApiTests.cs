@@ -27,7 +27,7 @@ public class StockApiTests(Containers containers)
     {
         var sku = Seed.Sku(t);
         await using var db = t.NewDb();
-        db.StockItems.Add(new StockItem { SkuId = sku, ProductId = Guid.CreateVersion7(), UpdatedAt = DateTimeOffset.UtcNow });
+        db.StockItems.Add(new StockItem { SkuId = sku, ProductId = Guid.CreateVersion7(), UpdatedAt = t.Clock.GetUtcNow() });
         await db.SaveChangesAsync(Ct);
         return sku;
     }
@@ -271,7 +271,7 @@ public class StockApiTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         var sku = await EmptyStockedSkuAsync(t);
-        var backorder = await Seed.BackorderAsync(t, sku, 3, DateTimeOffset.UtcNow.AddMinutes(-5));
+        var backorder = await Seed.BackorderAsync(t, sku, 3, t.Clock.GetUtcNow().AddMinutes(-5));
 
         var receipt = Seed.ReceiveAsync(t, sku, 10);
         var reserves = Enumerable.Range(0, 100).Select(async _ =>

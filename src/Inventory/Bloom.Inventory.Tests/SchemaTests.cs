@@ -8,16 +8,16 @@ public class SchemaTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private static StockItem NewStockItem(int onHand = 5) => new() { SkuId = Guid.CreateVersion7(), ProductId = Guid.CreateVersion7(), OnHand = onHand, UpdatedAt = DateTimeOffset.UtcNow };
+    private static StockItem NewStockItem(TestInventory t, int onHand = 5) => new() { SkuId = Guid.CreateVersion7(), ProductId = Guid.CreateVersion7(), OnHand = onHand, UpdatedAt = t.Clock.GetUtcNow() };
 
-    private static SerialUnit NewSerial(Guid skuId, string serial, string? imei) => new()
+    private static SerialUnit NewSerial(TestInventory t, Guid skuId, string serial, string? imei) => new()
     {
         Serial = serial,
         Imei = imei,
         SkuId = skuId,
         Status = SerialStatuses.InStock,
         ReceiptId = Guid.CreateVersion7(),
-        UpdatedAt = DateTimeOffset.UtcNow,
+        UpdatedAt = t.Clock.GetUtcNow(),
     };
 
     private static async Task<T> InsertAsync<T>(InventoryDbContext db, T entity) where T : notnull
@@ -42,7 +42,7 @@ public class SchemaTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         await using var db = t.NewDb();
-        var item = await InsertAsync(db, NewStockItem());
+        var item = await InsertAsync(db, NewStockItem(t));
 
         var e = await Assert.ThrowsAsync<PostgresException>(() =>
             db.Database.ExecuteSqlAsync($"UPDATE stock_items SET reserved = on_hand + 1 WHERE sku_id = {item.SkuId}", Ct));
@@ -56,7 +56,7 @@ public class SchemaTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         await using var db = t.NewDb();
-        var item = await InsertAsync(db, NewStockItem());
+        var item = await InsertAsync(db, NewStockItem(t));
 
         await using var conn = new NpgsqlConnection(t.ConnectionString);
         await conn.OpenAsync(Ct);
@@ -72,12 +72,12 @@ public class SchemaTests(Containers containers)
     {
         await using var t = await TestInventory.StartAsync(containers);
         await using var db = t.NewDb();
-        var item = await InsertAsync(db, NewStockItem());
-        db.SerialUnits.AddRange(NewSerial(item.SkuId, "A1", null), NewSerial(item.SkuId, "A2", null), NewSerial(item.SkuId, "A3", "490154203237518"));
+        var item = await InsertAsync(db, NewStockItem(t));
+        db.SerialUnits.AddRange(NewSerial(t, item.SkuId, "A1", null), NewSerial(t, item.SkuId, "A2", null), NewSerial(t, item.SkuId, "A3", "490154203237518"));
         await db.SaveChangesAsync(Ct);
 
         await using var dup = t.NewDb();
-        dup.SerialUnits.Add(NewSerial(item.SkuId, "A4", "490154203237518"));
+        dup.SerialUnits.Add(NewSerial(t, item.SkuId, "A4", "490154203237518"));
         var e = await Assert.ThrowsAsync<DbUpdateException>(() => dup.SaveChangesAsync(Ct));
         Assert.True(Db.IsUniqueViolation(e, "ux_serial_units_imei"));
     }

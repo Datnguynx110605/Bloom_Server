@@ -123,7 +123,7 @@ public class ReceiptTests(Containers containers)
     public async Task Parallel_receipts_for_the_lines_of_one_preorder_announce_it_once()
     {
         await using var t = await TestInventory.StartAsync(containers);
-        var paidAt = DateTimeOffset.UtcNow;
+        var paidAt = t.Clock.GetUtcNow();
         var orders = new List<Guid>();
         for (var round = 0; round < 20; round++)
         {

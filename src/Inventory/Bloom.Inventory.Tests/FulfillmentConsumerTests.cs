@@ -144,7 +144,7 @@ public class FulfillmentConsumerTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var (sku, orderId) = await SoldSerializedAsync(t);
         await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
-        var waiting = await Seed.BackorderAsync(t, sku, 2, DateTimeOffset.UtcNow.AddHours(-1)); // on hand 1: waits for one more unit
+        var waiting = await Seed.BackorderAsync(t, sku, 2, t.Clock.GetUtcNow().AddHours(-1)); // on hand 1: waits for one more unit
 
         await RtsAsync(t, orderId, new ReturnedToSenderUnitV1(sku, "ABC123", 1, "sealed"));
 
@@ -248,5 +248,42 @@ public class FulfillmentConsumerTests(Containers containers)
 
         Assert.Equal((2, 0, 0, 0, 0, 3), Seed.Counters((await Seed.ItemAsync(t, sku))!));
         Assert.Single(await Seed.LedgerAsync(t, sku), e => e.EntryType == EntryTypes.LostInTransit);
+    }
+
+    [Fact]
+    public async Task IN8_fulfillment_ledgers_of_a_reship_carry_ref_type_reship()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 10);
+        var orderId = Guid.CreateVersion7();
+        var (lost, returned) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        foreach (var reship in new[] { lost, returned })
+            await t.Stock.CommitForReshipAsync(new() { ReshipId = reship.ToString(), OrderId = orderId.ToString(), Lines = { Seed.Line(sku, 2) } }, cancellationToken: Ct);
+        await Seed.ShipAsync(t, orderId, lost, (sku, 2));
+        await Seed.ShipAsync(t, orderId, returned, (sku, 2));
+
+        await LostAsync(t, lost);
+        await RtsAsync(t, returned, new ReturnedToSenderUnitV1(sku, null, 1, "sealed"), new ReturnedToSenderUnitV1(sku, null, 1, "failed"));
+
+        var fulfillment = (await Seed.LedgerAsync(t, sku)).Where(e => e.EntryType is EntryTypes.Shipped or EntryTypes.LostInTransit or EntryTypes.RtsRestocked or EntryTypes.RtsDamaged).ToList();
+        Assert.Equal(5, fulfillment.Count);
+        Assert.All(fulfillment, e => Assert.Equal(RefTypes.Reship, e.RefType));
+        Assert.Equal([EntryTypes.LostInTransit, EntryTypes.RtsDamaged, EntryTypes.RtsRestocked, EntryTypes.Shipped, EntryTypes.Shipped], fulfillment.Select(e => e.EntryType).Order());
+    }
+
+    [Fact]
+    public async Task IN8_customer_return_of_a_serial_of_another_sku_is_permanent()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var (sku, orderId) = await SoldSerializedAsync(t);
+        var other = Seed.Sku(t, serialized: true);
+        await Seed.ReceiveAsync(t, other, 1, ["XYZ1"]);
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 2));
+
+        await Assert.ThrowsAsync<PermanentFailureException>(() => ReturnAsync(t, orderId, new ReturnedUnitV1(other, "ABC123", 1)));
+
+        Assert.Equal(SerialStatuses.Shipped, (await Seed.SerialAsync(t, "ABC123")).Status);
+        Assert.Equal(0, (await Seed.ItemAsync(t, other))!.Returned);
     }
 }
