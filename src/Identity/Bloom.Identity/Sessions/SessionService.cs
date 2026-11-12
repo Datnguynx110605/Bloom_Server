@@ -50,7 +50,7 @@ public sealed class SessionService(
             return null;
         }
         await LockAccountAsync(accountId.Value);
-        // Materialised before the lock wait ends: the loser of a race re-reads the committed row, sees "rotated" and takes the reuse path.
+        // The loser of a race waited on the account row above, so this read sees the winner's committed "rotated" and takes the reuse path.
         var token = (await db.RefreshTokens.FromSqlInterpolated($"SELECT * FROM refresh_tokens WHERE token_hash = {hash} FOR UPDATE").ToListAsync()).SingleOrDefault();
         if (token is null || token.ExpiresAt <= now)
         {
@@ -97,8 +97,10 @@ public sealed class SessionService(
     /// <summary>Revokes every refresh token of the account in the caller's transaction; the caller saves.</summary>
     public async Task RevokeAllAsync(Account account, string trigger)
     {
+        // Waits for a rotation in flight, so its new token is visible to the UPDATE (R41). The version is read under the lock: the caller's
+        // copy may predate a concurrent revoke-all, and SaveChanges adds one to it (ID-2).
+        account.Version = await db.Database.SqlQuery<long>($"SELECT version AS \"Value\" FROM accounts WHERE id = {account.Id} FOR UPDATE").SingleAsync();
         var now = time.GetUtcNow();
-        await LockAccountAsync(account.Id); // waits for a rotation in flight, so its new token is visible to the UPDATE (R41)
         await db.RefreshTokens.Where(t => t.AccountId == account.Id && t.Status != RefreshStatuses.Revoked)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, RefreshStatuses.Revoked));
         account.TokensValidAfter = now;

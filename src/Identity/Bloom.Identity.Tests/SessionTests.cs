@@ -352,4 +352,49 @@ public class SessionTests(Containers containers)
 
     private static Task<HttpResponseMessage> SignOutAsync(TestIdentity t, Account account, object sid) =>
         t.SendAsync(HttpMethod.Post, "/api/me/sign-out", new { sid }, TestCaller.Customer(account.Id, t.Clock.GetUtcNow()));
+
+    [Fact]
+    public async Task ID2_concurrent_revoke_alls_increment_version_twice()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var account = await Seed.CustomerAsync(t);
+        var caller = TestCaller.Customer(account.Id, t.Clock.GetUtcNow());
+        var before = (await t.AccountAsync(account.Id)).Version;
+
+        // Both requests read the account, then queue on its row; the second must build on the first's version, not on what it read.
+        await using var held = await RowLock.HoldAsync(t, $"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE");
+        var revokes = new[] { SignOutEverywhereAsync(t, caller), SignOutEverywhereAsync(t, caller) };
+        await RowLock.WaitForWaitersAsync(t, 2, "both revoke-alls waiting on the account row");
+        await held.ReleaseAsync();
+
+        foreach (var response in await Task.WhenAll(revokes)) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(before + 2, (await t.AccountAsync(account.Id)).Version);
+    }
+
+    [Fact]
+    public async Task TryRotate_vs_SignOut_overlap_leaves_no_active_token()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var account = await Seed.CustomerAsync(t);
+        var session = await Seed.SessionAsync(t, account);
+        var familyId = (await RowAsync(t, session.RefreshToken)).FamilyId;
+
+        // Both take the account row first (R41). Whichever runs first, the sign-out ends with the whole family revoked: either it
+        // revoked the token before the refresh saw it, or it revoked the new token the refresh inserted.
+        await using var held = await RowLock.HoldAsync(t, $"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE");
+        var refresh = RefreshAsync(t, session.RefreshToken);
+        var signOut = SignOutAsync(t, account, familyId);
+        await RowLock.WaitForWaitersAsync(t, 2, "the refresh and the sign-out waiting on the account row");
+        await held.ReleaseAsync();
+
+        Assert.Equal(HttpStatusCode.OK, (await signOut).StatusCode);
+        Assert.Contains((await refresh).StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Unauthorized });
+        Assert.All(await RowsAsync(t, account.Id), r => Assert.NotEqual(RefreshStatuses.Active, r.Status));
+        Assert.Equal(0, metrics.Sum("refresh_total", ("result", "reuse"))); // a revoked token is not reuse (D8)
+        Assert.Empty(await Outbox.EnvelopesAsync(t, "identity.tokens-revoked.v1"));
+    }
+
+    private static Task<HttpResponseMessage> SignOutEverywhereAsync(TestIdentity t, TestCaller caller) =>
+        t.SendAsync(HttpMethod.Post, "/api/me/sign-out-everywhere", caller: caller);
 }

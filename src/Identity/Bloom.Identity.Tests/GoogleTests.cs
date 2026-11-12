@@ -277,4 +277,59 @@ public class GoogleTests(Containers containers)
         var (staff, _) = await Seed.StaffAsync(t);
         await (await UnlinkAsync(t, TestCaller.Staff(staff.Id, "support", t.Clock.GetUtcNow()))).ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
     }
+
+    private static string WithAlg(string token, string alg, byte[]? hmacKey)
+    {
+        var parts = token.Split('.');
+        var header = JsonSerializer.Deserialize<Dictionary<string, object>>(Base64UrlEncoder.DecodeBytes(parts[0]))!;
+        header["alg"] = alg;
+        var signingInput = $"{Base64UrlEncoder.Encode(JsonSerializer.SerializeToUtf8Bytes(header))}.{parts[1]}";
+        var signature = hmacKey is null ? "" : Base64UrlEncoder.Encode(HMACSHA256.HashData(hmacKey, System.Text.Encoding.ASCII.GetBytes(signingInput)));
+        return $"{signingInput}.{signature}";
+    }
+
+    [Fact]
+    public async Task Google_alg_none_rejected()
+    {
+        await using var google = await FakeGoogle.StartAsync();
+        await using var t = await StartAsync(google);
+        var email = NewEmail();
+
+        var response = await SignInAsync(t, WithAlg(google.Mint(NewSub(), email), "none", null));
+
+        await response.ExpectErrorAsync(401, "INVALID_CREDENTIALS");
+        await using var db = t.NewDb();
+        Assert.False(await db.Accounts.AnyAsync(a => a.EmailNormalized == email, Ct));
+    }
+
+    [Fact]
+    public async Task Google_hs256_rejected()
+    {
+        await using var google = await FakeGoogle.StartAsync();
+        await using var t = await StartAsync(google);
+        var email = NewEmail();
+
+        // Signed with a symmetric key: the key-confusion attack signs with the public key's bytes; any secret is refused the same way.
+        var response = await SignInAsync(t, WithAlg(google.Mint(NewSub(), email), "HS256", RandomNumberGenerator.GetBytes(64)));
+
+        await response.ExpectErrorAsync(401, "INVALID_CREDENTIALS");
+        await using var db = t.NewDb();
+        Assert.False(await db.Accounts.AnyAsync(a => a.EmailNormalized == email, Ct));
+    }
+
+    [Fact]
+    public async Task Deactivated_customer_google_sign_in_is_counted_invalid()
+    {
+        await using var google = await FakeGoogle.StartAsync();
+        await using var t = await StartAsync(google);
+        using var metrics = new MetricCapture(t.Services);
+        var sub = NewSub();
+        var account = await Seed.CustomerAsync(t, googleSub: sub);
+        await using (var db = t.NewDb())
+            await db.Accounts.Where(a => a.Id == account.Id).ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, AccountStatuses.Deactivated), Ct);
+
+        await (await SignInAsync(t, google.Mint(sub, account.EmailNormalized))).ExpectErrorAsync(401, "INVALID_CREDENTIALS");
+
+        Assert.Equal(1, metrics.Sum("signins_total", ("type", "customer"), ("method", "google"), ("result", "invalid")));
+    }
 }

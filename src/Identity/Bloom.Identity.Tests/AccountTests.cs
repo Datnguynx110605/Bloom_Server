@@ -340,4 +340,39 @@ public class AccountTests(Containers containers)
         await failed.ExpectErrorAsync(400, "CODE_INVALID");
         Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.TokensRevoked));
     }
+
+    [Fact]
+    public async Task Change_email_code_sent_is_counted()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var account = await Seed.CustomerAsync(t);
+
+        Assert.Equal(HttpStatusCode.OK, (await ChangeEmailAsync(t, TestCaller.Customer(t, account), NewEmail())).StatusCode);
+
+        Assert.Equal(1, metrics.Sum("codes_sent_total", ("purpose", "change_email")));
+    }
+
+    [Fact]
+    public async Task Wrong_code_is_counted_per_purpose()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var account = await Seed.CustomerAsync(t);
+        var caller = TestCaller.Customer(t, account);
+        var (signUp, next) = (NewEmail(), NewEmail());
+        static string Wrong(string code) => ((int.Parse(code) + 1) % 1_000_000).ToString("D6");
+
+        await t.SendAsync(HttpMethod.Post, "/api/auth/sign-up/start", new { email = signUp });
+        await (await t.SendAsync(HttpMethod.Post, "/api/auth/sign-up/verify", new { email = signUp, code = Wrong(await Outbox.LatestCodeAsync(t, signUp, "signup")) }))
+            .ExpectErrorAsync(400, "CODE_INVALID");
+        await RequestResetAsync(t, account.EmailNormalized);
+        await (await ResetAsync(t, account.EmailNormalized, Wrong(await Outbox.LatestCodeAsync(t, account.EmailNormalized, "reset_password")), NewPassword))
+            .ExpectErrorAsync(400, "CODE_INVALID");
+        await ChangeEmailAsync(t, caller, next);
+        await (await ConfirmEmailAsync(t, caller, Wrong(await Outbox.LatestCodeAsync(t, next, "change_email")))).ExpectErrorAsync(400, "CODE_INVALID");
+
+        foreach (var purpose in new[] { "signup", "reset_password", "change_email" })
+            Assert.Equal(1, metrics.Sum("code_failures_total", ("purpose", purpose)));
+    }
 }

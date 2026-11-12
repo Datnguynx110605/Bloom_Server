@@ -143,4 +143,23 @@ public class AuditQueryTests(Containers containers)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("identity.audit.dlq", await response.Content.ReadAsStringAsync(Ct));
     }
+
+    [Fact]
+    public async Task Audit_tie_split_across_page_boundary()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var caller = await AdminAsync(t);
+        var rows = new[] { Row(T0), Row(T0.AddSeconds(1)), Row(T0.AddSeconds(1)), Row(T0.AddSeconds(1)), Row(T0.AddSeconds(2)) }; // three tie; pages of 2 cut through them
+        await SeedAsync(t, rows);
+        var expected = rows.OrderByDescending(r => r.OccurredAt).ThenByDescending(r => r.Id.ToString(), StringComparer.Ordinal).Select(r => r.Id.ToString()).ToArray();
+
+        var first = await QueryAsync(t, caller, "?pageSize=2");
+        var second = await QueryAsync(t, caller, $"?pageSize=2&pageToken={Uri.EscapeDataString(first.GetProperty("nextPageToken").GetString()!)}");
+        var third = await QueryAsync(t, caller, $"?pageSize=2&pageToken={Uri.EscapeDataString(second.GetProperty("nextPageToken").GetString()!)}");
+
+        Assert.Equal(rows[1].OccurredAt, rows.Single(r => r.Id.ToString() == Ids(first)[1]).OccurredAt); // the first page ends inside the tie
+        Assert.Equal(rows[1].OccurredAt, rows.Single(r => r.Id.ToString() == Ids(second)[0]).OccurredAt); // and the second starts inside it
+        Assert.Equal(expected, Ids(first).Concat(Ids(second)).Concat(Ids(third)));
+        Assert.False(third.TryGetProperty("nextPageToken", out var more) && !string.IsNullOrEmpty(more.GetString()));
+    }
 }

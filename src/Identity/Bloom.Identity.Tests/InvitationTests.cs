@@ -236,4 +236,19 @@ public class InvitationTests(Containers containers)
         await (await t.SendAsync(HttpMethod.Get, "/api/admin/staff/members", caller: TestCaller.Staff(noMfa.Id, StaffRoles.Support, t.Clock.GetUtcNow())))
             .ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
     }
+
+    [Fact]
+    public async Task Invite_expires_exactly_at_72h()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var (text, secret) = TestTotp.NewSecret();
+        var (_, justBefore) = await InvitedAsync(t);
+        var (_, atExpiry) = await InvitedAsync(t);
+
+        t.Clock.Advance(TimeSpan.FromHours(72) - TimeSpan.FromMilliseconds(1));
+        Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(t, justBefore, text, TestTotp.CodeAt(t, secret))).StatusCode);
+        t.Clock.Advance(TimeSpan.FromMilliseconds(1));
+
+        await (await AcceptAsync(t, atExpiry, text, TestTotp.CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
+    }
 }

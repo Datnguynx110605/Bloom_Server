@@ -238,4 +238,33 @@ public class SignInTests(Containers containers)
 
         Assert.Equal(HttpStatusCode.OK, (await SignInAsync(t, " ann.lee@EXAMPLE.com ", Seed.Password)).StatusCode);
     }
+
+    [Fact]
+    public async Task Failed_password_sign_in_is_counted_per_account_type()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var customer = await Seed.CustomerAsync(t);
+        var (staff, _) = await Seed.StaffAsync(t);
+
+        await SignInAsync(t, customer.EmailNormalized, WrongPassword);
+        await SignInAsync(t, "nobody@example.com", WrongPassword);
+        await SignInAsync(t, staff.EmailNormalized, WrongPassword);
+
+        foreach (var type in new[] { "customer", "unknown", "staff" })
+            Assert.Equal(1, metrics.Sum("signins_total", ("type", type), ("method", "password"), ("result", "invalid")));
+    }
+
+    [Fact]
+    public async Task Wrong_staff_mfa_code_is_counted_invalid()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (staff, secret) = await Seed.StaffAsync(t);
+
+        var response = await MfaAsync(t, await ChallengeAsync(t, staff), TestTotp.CodeAt(t, secret, 10));
+
+        await response.ExpectErrorAsync(401, "MFA_INVALID");
+        Assert.Equal(1, metrics.Sum("signins_total", ("type", "staff"), ("method", "mfa"), ("result", "invalid")));
+    }
 }
