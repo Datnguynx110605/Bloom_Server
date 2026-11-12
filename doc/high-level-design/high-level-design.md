@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-05) |
+| **Status** | Approved (2026-11-12) |
 | **Last updated** | 2026-10-31 |
 | **Product design** | [doc/product-design](../product-design/00-overview.md) |
 | **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 018) |
@@ -399,6 +399,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | [HLD-ADR-016](adr/HLD-ADR-016-audit-log.md) | Audit log in identity, fed by events |
 | [HLD-ADR-017](adr/HLD-ADR-017-postgres-full-text-search.md) | Catalog search on PostgreSQL full-text |
 | [HLD-ADR-018](adr/HLD-ADR-018-external-providers.md) | Stripe, Shippo, Resend behind interfaces |
+| [HLD-ADR-019](adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage |
 
 ## 11. Risks
 
