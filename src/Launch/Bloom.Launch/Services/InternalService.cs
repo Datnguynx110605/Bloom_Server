@@ -43,7 +43,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 await using var tx = await db.Database.BeginTransactionAsync(ct);
 
                 // Step 2.
-                if (await ExistingAsync(orderId, lines, ct) is { } existing)
+                if (await ExistingAsync(orderId, caller.UserId, launchId, lines, ct) is { } existing)
                 {
                     metrics.Hold(launchId, "ok");
                     return existing;
@@ -74,7 +74,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 if (consumed == 0)
                 {
                     // R12: the pass is used. By this order's own concurrent first call (it has committed by now): that hold. Otherwise by another order.
-                    if (await ExistingAsync(orderId, lines, ct) is { } first)
+                    if (await ExistingAsync(orderId, caller.UserId, launchId, lines, ct) is { } first)
                     {
                         metrics.Hold(launchId, "ok");
                         return first;
@@ -143,14 +143,14 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
         }
     }
 
-    /// <summary>Step 2: the order's hold, when its lines match as a set of (sku, quantity); <c>HOLD_CONFLICT</c> when they differ.</summary>
-    private async Task<HoldAllocationResponse?> ExistingAsync(Guid orderId, List<Line> lines, CancellationToken ct)
+    /// <summary>Step 2 (D6): the order's hold, when it is the same account and launch and its lines match as a set of (sku, quantity); <c>HOLD_CONFLICT</c> when anything differs.</summary>
+    private async Task<HoldAllocationResponse?> ExistingAsync(Guid orderId, Guid accountId, Guid launchId, List<Line> lines, CancellationToken ct)
     {
         var hold = await db.Holds.AsNoTracking().SingleOrDefaultAsync(h => h.OrderId == orderId, ct);
         if (hold is null) return null;
         var stored = await db.HoldLines.AsNoTracking().Where(l => l.HoldId == hold.Id).OrderBy(l => l.SkuId).ToListAsync(ct);
-        if (stored.Count != lines.Count || !stored.All(s => lines.Contains(new(s.SkuId, s.Quantity))))
-            throw LaunchErrors.Error(LaunchErrors.HoldConflict, "This order already holds other lines.");
+        if (hold.AccountId != accountId || hold.LaunchId != launchId || stored.Count != lines.Count || !stored.All(s => lines.Contains(new(s.SkuId, s.Quantity))))
+            throw LaunchErrors.Error(LaunchErrors.HoldConflict, "This order already holds something else.");
         return Response(hold.Id, [.. stored.Select(s => new Line(s.SkuId, s.Quantity))]);
     }
 

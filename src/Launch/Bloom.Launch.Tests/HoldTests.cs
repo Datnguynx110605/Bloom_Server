@@ -334,6 +334,36 @@ public class HoldTests(Containers containers)
     }
 
     [Fact]
+    public async Task D6_retry_with_different_account_is_HOLD_CONFLICT()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t);
+        var (account, other, order) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        await Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, launch.Id, account), (launch.Skus[0], 1)));
+
+        await Fails(Holds.CallAsync(t, other, Holds.Request(order, Holds.Token(t, launch.Id, other), (launch.Skus[0], 1))), LaunchErrors.HoldConflict);
+
+        Assert.Equal(1, await HoldsAsync(t, launch.Id));
+        Assert.Equal(account, (await Holds.HoldAsync(t, order)).AccountId);
+    }
+
+    [Fact]
+    public async Task D6_retry_with_different_launch_is_HOLD_CONFLICT()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t);
+        var elsewhere = await Seed.LaunchAsync(t);
+        var (account, order) = (Guid.NewGuid(), Guid.NewGuid());
+        await Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, launch.Id, account), (launch.Skus[0], 1)));
+
+        // Same account and lines, a pass of another launch.
+        await Fails(Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, elsewhere.Id, account), (launch.Skus[0], 1))), LaunchErrors.HoldConflict);
+
+        Assert.Equal(1, await HoldsAsync(t, launch.Id));
+        Assert.Equal(0, await HoldsAsync(t, elsewhere.Id));
+    }
+
+    [Fact]
     public async Task D5_hold_blocked_mid_transaction_delays_close_and_close_sees_hold()
     {
         await using var t = await StartAsync();
