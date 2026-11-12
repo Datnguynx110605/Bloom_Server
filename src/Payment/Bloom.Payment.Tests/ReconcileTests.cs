@@ -159,25 +159,29 @@ public class ReconcileTests(Containers containers)
     {
         await using var t = await TestPayment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
-        var paid = new List<Guid>();
-        for (var round = 0; round < 10; round++)
+        var (orderId, response, sessionId) = await Seed.CreateAsync(t);
+        var paymentId = Guid.Parse(response.PaymentId);
+        var piId = t.Stripe.Pay(sessionId);
+        t.Clock.Advance(StuckPayment);
+
+        // P-3: a side connection holds the payment row; both appliers queue behind it, then are released together
+        await using (var side = t.NewDb())
+        await using (var hold = await side.Database.BeginTransactionAsync(Ct))
         {
-            var (orderId, response, sessionId) = await Seed.CreateAsync(t);
-            var paymentId = Guid.Parse(response.PaymentId);
-            var piId = t.Stripe.Pay(sessionId);
-            t.Clock.Advance(StuckPayment);
-
+            await side.Database.ExecuteSqlAsync($"SELECT id FROM payments WHERE id = {paymentId} FOR UPDATE", Ct);
             var reconcile = Reconcile(t);
-            using var posted = await PostCompleted(t, paymentId, orderId, sessionId, piId);
-            await reconcile;
+            var posted = PostCompleted(t, paymentId, orderId, sessionId, piId);
+            await Poll.UntilAsync(async () => await t.LockWaitersAsync() >= 2, 20, "the reconciler and the webhook both wait for the row lock");
+            await hold.RollbackAsync(Ct);
 
-            posted.EnsureSuccessStatusCode();
-            paid.Add(paymentId);
+            await reconcile;
+            using var webhook = await posted;
+            webhook.EnsureSuccessStatusCode();
         }
 
-        var sent = await Succeeded(t);
-        Assert.Equal(paid.Order(), sent.Select(s => s.PaymentId).Order()); // exactly one event per payment
-        Assert.InRange(metrics.Sum("reconcile_fixes_total"), 0, 10);
+        var sent = Assert.Single(await Succeeded(t)); // exactly one event, whichever applier won
+        Assert.Equal(paymentId, sent.PaymentId);
+        Assert.InRange(metrics.Sum("reconcile_fixes_total"), 0, 1);
         Assert.Equal(0, t.ErrorLogs);
     }
 

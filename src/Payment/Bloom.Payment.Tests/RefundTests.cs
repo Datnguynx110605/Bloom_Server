@@ -279,10 +279,11 @@ public class RefundTests(Containers containers)
         var command = Command(orderId, 400);
         await Send(t, command);
         Task<HttpResponseMessage>? webhook = null;
-        t.Stripe.Before = path =>
+        t.Stripe.Before = async path =>
         {
-            if (path == Refunds) webhook = Post(t, "re_test_1", "succeeded", command.RefundId); // the executor holds the row lock
-            return Task.CompletedTask;
+            if (path != Refunds) return;
+            webhook = Post(t, "re_test_1", "succeeded", command.RefundId); // the executor holds the row lock
+            await Poll.UntilAsync(async () => await t.LockWaitersAsync() > 0, 10, "the webhook waits for the executor's row lock"); // P-3: the interleaving is forced
         };
 
         await t.RunExecutorAsync();
