@@ -1,6 +1,8 @@
+using Bloom.Fulfillment.Consumers;
 using Bloom.Fulfillment.Contracts;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Worker;
+using Bloom.Identity.Contracts;
 using Bloom.Order.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -348,6 +350,38 @@ public class ReturnTests(Containers containers)
         Assert.Equal(ShipmentStatuses.Voided, (await ReturnShipmentAsync(t, returnId)).Status);
         Assert.Equal([t.Shippo.Transactions.Last().TransactionId], t.Shippo.Refunds);
         await SweepAsync(t);
+        Assert.Single(await Outbox.PayloadsAsync<ReturnClosedV1>(t, FulfillmentMessages.ReturnClosed));
+    }
+
+    [Fact]
+    public async Task D31_account_deleted_expires_requested_returns()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, _, customer) = await DeliveredAsync(t);
+        var (otherOrder, _, other) = await DeliveredAsync(t);
+        var labelled = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 1));
+        await Seed.RunLabelWorkerAsync(t); // only this one has its label
+        var waiting = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 1));
+        var othersWaiting = await Seed.ReturnAsync(t, otherOrder.OrderId, other, (1, 1));
+        var bought = t.Shippo.Transactions.Count;
+
+        await Consume.Async<AccountDeletedConsumer>(t, IdentityMessages.AccountDeleted, new AccountDeletedV1(order.AccountId));
+
+        Assert.Equal((ReturnStatuses.LabelIssued, ReturnStatuses.Expired, ReturnStatuses.Requested),
+            ((await Seed.ReturnRequestAsync(t, labelled)).Status, (await Seed.ReturnRequestAsync(t, waiting)).Status, (await Seed.ReturnRequestAsync(t, othersWaiting)).Status));
+        var closed = Assert.Single(await Outbox.PayloadsAsync<ReturnClosedV1>(t, FulfillmentMessages.ReturnClosed));
+        Assert.Equal((order.OrderId, waiting, "expired"), (closed.OrderId, closed.ReturnId, closed.Reason));
+
+        // The label worker picks shipments, so the expired request's shipment must be out of its reach: only the other account's label is bought.
+        Assert.Equal(ShipmentStatuses.Voided, (await ReturnShipmentAsync(t, waiting)).Status);
+        await Seed.RunLabelWorkerAsync(t);
+        Assert.Equal(bought + 1, t.Shippo.Transactions.Count);
+        Assert.Equal(ShipmentStatuses.Voided, (await ReturnShipmentAsync(t, waiting)).Status);
+        Assert.Equal(ReturnStatuses.Expired, (await Seed.ReturnRequestAsync(t, waiting)).Status);
+        Assert.Equal(ReturnStatuses.LabelIssued, (await Seed.ReturnRequestAsync(t, othersWaiting)).Status);
+        Assert.Empty(t.Shippo.Refunds);
+
+        await Consume.Async<AccountDeletedConsumer>(t, IdentityMessages.AccountDeleted, new AccountDeletedV1(order.AccountId)); // a redelivery is a no-op
         Assert.Single(await Outbox.PayloadsAsync<ReturnClosedV1>(t, FulfillmentMessages.ReturnClosed));
     }
 
