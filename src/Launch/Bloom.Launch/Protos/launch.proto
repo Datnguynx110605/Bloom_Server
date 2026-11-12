@@ -19,7 +19,7 @@ service LaunchCustomer {
     option (google.api.http) = { post: "/api/launches/{launch_id}/waiting-room" };
   }
 
-  // §6.3. Customers only; never reads Postgres on the request path (LR-04).
+  // §6.3. Customers only; never reads Postgres on the request path, except a 5 s cache miss (LR-04).
   rpc GetWaitingRoomStatus(WaitingRoomRequest) returns (WaitingRoomStatus) {
     option (google.api.http) = { get: "/api/launches/{launch_id}/waiting-room" };
   }

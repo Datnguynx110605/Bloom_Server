@@ -25,8 +25,7 @@ public static class AdmissionScript
     /// <returns>The admitted accounts in pop order. At most <paramref name="passIds"/>.Count of them: fewer when the queue runs out.</returns>
     public static async Task<IReadOnlyList<Guid>> RunAsync(IDatabase redis, Guid launchId, IReadOnlyList<Guid> passIds, long expiresAtUnixMs)
     {
-        var prefix = RedisKeys.Pass(launchId, Guid.Empty)[..^36]; // "wr:{L}:pass:"; a "D" Guid is 36 chars
-        RedisValue[] argv = [prefix, expiresAtUnixMs, PassTtlSeconds, .. passIds.Select(p => (RedisValue)p.ToString("D"))];
+        RedisValue[] argv = [RedisKeys.PassPrefix(launchId), expiresAtUnixMs, PassTtlSeconds, .. passIds.Select(p => (RedisValue)p.ToString("D"))];
         var reply = (RedisResult[])(await redis.ScriptEvaluateAsync(Lua, [RedisKeys.Queue(launchId), RedisKeys.Passes(launchId), RedisKeys.Tick(launchId)], argv))!;
         return [.. reply.Select(r => Guid.Parse((string)r!))];
     }

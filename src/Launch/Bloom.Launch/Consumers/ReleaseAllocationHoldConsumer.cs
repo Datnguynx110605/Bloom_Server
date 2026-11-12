@@ -1,5 +1,6 @@
 using Bloom.Launch.Contracts;
 using Bloom.Launch.Data;
+using Bloom.Launch.Domain;
 using Bloom.Launch.Observability;
 using Bloom.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
@@ -29,10 +30,8 @@ public sealed class ReleaseAllocationHoldConsumer(LaunchDbContext db, OutboxWrit
                 $"UPDATE holds SET status = {HoldStatuses.Released}, version = version + 1, updated_at = now() WHERE id = {hold.Id} AND status = {hold.Status}", ct);
             if (rows != 1) throw new InvalidOperationException($"Hold {hold.Id} changed under its row lock.");
             var wasHeld = hold.Status == HoldStatuses.Held;
-            await HoldCounters.MoveAsync(db, metrics, new(hold.Id, hold.LaunchId, hold.AccountId), heldSign: wasHeld ? -1 : 0, soldSign: wasHeld ? 0 : -1, ct);
+            await HoldCounters.MoveAsync(db, metrics, hold, heldSign: wasHeld ? -1 : 0, soldSign: wasHeld ? 0 : -1, ct);
         }
         outbox.PublishEvent(LaunchMessages.HoldReleased, new HoldReleasedV1(orderId));
     }
-
-    private sealed record Locked(Guid Id, Guid LaunchId, Guid AccountId, string Status);
 }

@@ -50,6 +50,28 @@ public class AdminEditTests(Containers containers)
     }
 
     [Fact]
+    public async Task L4_admin_view_read_in_one_snapshot()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, products: new SeedProduct(2, 100));
+        var account = Guid.NewGuid();
+        // A hold commits after the view has read the launch and its products, before it reads the SKUs.
+        t.Commands.AfterReader = async command =>
+        {
+            if (!command.CommandText.Contains("FROM launch_products", StringComparison.Ordinal)) return;
+            t.Commands.AfterReader = null;
+            await Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (launch.Skus[0], 1)));
+        };
+
+        var view = await t.Admin.SetAllocationAsync(new() { LaunchId = launch.Id.ToString(), SkuId = launch.Skus[0].ToString(), Allocation = 110, Version = 0 }, Api.Staff(), cancellationToken: Ct).ResponseAsync;
+
+        Assert.Null(t.Commands.AfterReader); // the hold did run between the reads, and it committed
+        Assert.Equal((1, 0), await Holds.SkuAsync(t, launch.Skus[0]));
+        var sku = view.Skus.Single();
+        Assert.Equal((1L, 110, 0, 0), (view.Version, sku.Allocation, sku.Held, sku.Sold)); // all of it from before the hold
+    }
+
+    [Fact]
     public async Task Each_edit_bumps_version_audits_and_returns_the_admin_view()
     {
         await using var t = await StartAsync();

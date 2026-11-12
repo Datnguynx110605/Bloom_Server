@@ -5,7 +5,10 @@ public static class RedisKeys
 {
     public static string Queue(Guid launch) => $"wr:{{{launch:D}}}:q";
 
-    public static string Pass(Guid launch, Guid account) => $"wr:{{{launch:D}}}:pass:{account:D}";
+    /// <summary>The prefix of every <see cref="Pass"/> key of the launch; the admission script appends the account.</summary>
+    public static string PassPrefix(Guid launch) => $"wr:{{{launch:D}}}:pass:";
+
+    public static string Pass(Guid launch, Guid account) => $"{PassPrefix(launch)}{account:D}";
 
     public static string Passes(Guid launch) => $"wr:{{{launch:D}}}:passes";
 

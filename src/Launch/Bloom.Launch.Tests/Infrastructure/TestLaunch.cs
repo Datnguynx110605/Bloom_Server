@@ -107,7 +107,7 @@ public sealed class TestLaunch : IAsyncDisposable
         await app.StartAsync();
         if (!options.Config.ContainsKey("Launch:Redis"))
         {
-            // The app connects on first use and fails commands at once while disconnected, so a connect that the Docker port forwarder refuses once would fail the first calls of a test.
+            // The app connects at startup and fails commands at once while disconnected, so a connect that the Docker port forwarder refuses once would fail the first calls of a test.
             var redis = app.Services.GetRequiredService<IConnectionMultiplexer>();
             await Poll.UntilAsync(() => Task.FromResult(redis.IsConnected), 10, "the app's Redis connection");
         }
@@ -190,6 +190,15 @@ public sealed class CommandCounter : DbCommandInterceptor
     private int _count;
 
     public int Count => _count;
+
+    /// <summary>Runs after a query has executed, before its rows are read, until the test clears it; the test is the seam that lets another transaction commit between two reads of one request.</summary>
+    public Func<DbCommand, Task>? AfterReader { get; set; }
+
+    public override async ValueTask<DbDataReader> ReaderExecutedAsync(DbCommand command, CommandExecutedEventData eventData, DbDataReader result, CancellationToken ct = default)
+    {
+        if (AfterReader is { } hook) await hook(command);
+        return result;
+    }
 
     public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken ct = default)
     {
