@@ -7,8 +7,10 @@ public static class AdmissionScript
 {
     public const int PassTtlSeconds = 600;
 
-    // KEYS = [q, passes]; ARGV = [pass key prefix, exp, ttl, pid…]. Returns the popped accounts, lowest score first.
+    // KEYS = [q, passes, tick]; ARGV = [pass key prefix, exp, ttl, pid…]. Returns the popped accounts, lowest score first.
+    // The tick key paces admission per launch, not per replica (LR-06, LLD-ADR-012): a live key means another tick already admitted this second, so pop nothing.
     private const string Lua = """
+        if not redis.call('SET', KEYS[3], '1', 'NX', 'PX', 1000) then return {} end
         local popped = redis.call('ZPOPMIN', KEYS[1], #ARGV - 3)
         local accounts = {}
         for i = 1, #popped, 2 do
@@ -25,7 +27,7 @@ public static class AdmissionScript
     {
         var prefix = RedisKeys.Pass(launchId, Guid.Empty)[..^36]; // "wr:{L}:pass:"; a "D" Guid is 36 chars
         RedisValue[] argv = [prefix, expiresAtUnixMs, PassTtlSeconds, .. passIds.Select(p => (RedisValue)p.ToString("D"))];
-        var reply = (RedisResult[])(await redis.ScriptEvaluateAsync(Lua, [RedisKeys.Queue(launchId), RedisKeys.Passes(launchId)], argv))!;
+        var reply = (RedisResult[])(await redis.ScriptEvaluateAsync(Lua, [RedisKeys.Queue(launchId), RedisKeys.Passes(launchId), RedisKeys.Tick(launchId)], argv))!;
         return [.. reply.Select(r => Guid.Parse((string)r!))];
     }
 }

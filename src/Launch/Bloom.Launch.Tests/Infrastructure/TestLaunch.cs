@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Bloom.Launch.Contracts;
 using Bloom.Launch.Data;
+using Bloom.Launch.WaitingRoom;
 using Bloom.Launch.Worker;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
@@ -156,7 +157,14 @@ public sealed class TestLaunch : IAsyncDisposable
         await db.Database.ExecuteSqlAsync(sql, TestContext.Current.CancellationToken);
     }
 
-    public Task<AdmissionResult> TickAsync(Guid launch) =>
+    /// <summary>One admission tick as if the 1 s pacing key (LLD-ADR-012) had expired since the last one. Tests that tick back to back use this; <see cref="TickPacedAsync"/> leaves the key alone.</summary>
+    public async Task<AdmissionResult> TickAsync(Guid launch)
+    {
+        await Redis.KeyDeleteAsync(RedisKeys.Tick(launch));
+        return await TickPacedAsync(launch);
+    }
+
+    public Task<AdmissionResult> TickPacedAsync(Guid launch) =>
         Services.GetRequiredService<AdmissionWorker>().TickLaunchAsync(launch, TestContext.Current.CancellationToken);
 
     public Task RunAdmissionAsync() => Services.GetRequiredService<AdmissionWorker>().RunOnceAsync(TestContext.Current.CancellationToken);

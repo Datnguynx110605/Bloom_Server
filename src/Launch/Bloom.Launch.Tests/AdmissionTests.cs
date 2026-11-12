@@ -171,6 +171,48 @@ public class AdmissionTests(Containers containers)
     }
 
     [Fact]
+    public async Task L07_two_workers_500ms_apart_admit_at_most_rate_per_second()
+    {
+        await using var t = await StartAsync();
+        const int rate = 5;
+        var launch = await Seed.LaunchAsync(t, rate: rate, products: new SeedProduct(2, 1000));
+        await QueueAsync(t, launch.Id, 500);
+
+        // Redis expires the tick key on its own clock; the test models the 1000 ms on the fake timeline (explicit tick instants, one tick per 500 ms for 10 s, two workers taking turns).
+        var admitted = 0;
+        var keyExpiresAt = TimeSpan.Zero;
+        for (var at = TimeSpan.Zero; at < TimeSpan.FromSeconds(10); at += TimeSpan.FromMilliseconds(500))
+        {
+            if (at >= keyExpiresAt) await t.Redis.KeyDeleteAsync(RedisKeys.Tick(launch.Id));
+            var existed = await t.Redis.KeyExistsAsync(RedisKeys.Tick(launch.Id));
+            admitted += (await t.TickPacedAsync(launch.Id)).Admitted.Count;
+            if (!existed) keyExpiresAt = at + TimeSpan.FromSeconds(1);
+            t.Clock.Advance(TimeSpan.FromMilliseconds(500));
+        }
+
+        Assert.InRange(admitted, 1, 10 * rate);
+    }
+
+    [Fact]
+    public async Task L07_two_workers_same_instant_one_pops()
+    {
+        // Review Focus 4: the advisory lock only stops overlapping ticks; the second worker ticks right after the first one committed.
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, rate: 5, products: new SeedProduct(2, 1000));
+        await QueueAsync(t, launch.Id, 20);
+        await t.Redis.KeyDeleteAsync(RedisKeys.Tick(launch.Id));
+
+        var first = await t.TickPacedAsync(launch.Id);
+        var second = await t.TickPacedAsync(launch.Id);
+
+        Assert.Equal(5, first.Admitted.Count);
+        Assert.Empty(second.Admitted);
+        Assert.Equal("none", second.Result);
+        Assert.Equal(15, await t.Redis.SortedSetLengthAsync(RedisKeys.Queue(launch.Id)));
+        Assert.Equal(5, await t.Redis.SortedSetLengthAsync(RedisKeys.Passes(launch.Id)));
+    }
+
+    [Fact]
     public async Task L08_50_available_and_50_outstanding_admits_0()
     {
         await using var t = await StartAsync();

@@ -10,4 +10,6 @@ public static class RedisKeys
     public static string Passes(Guid launch) => $"wr:{{{launch:D}}}:passes";
 
     public static string State(Guid launch) => $"wr:{{{launch:D}}}:state";
+
+    public static string Tick(Guid launch) => $"wr:{{{launch:D}}}:tick";
 }
