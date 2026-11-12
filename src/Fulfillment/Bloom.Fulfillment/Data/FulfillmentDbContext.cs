@@ -125,6 +125,7 @@ public sealed partial class FulfillmentDbContext(DbContextOptions<FulfillmentDbC
             e.ToTable("fulfillment_sagas", t => t.HasCheckConstraint("ck_fulfillment_sagas_type", $"type IN ({In(SagaTypes.All)})"));
             e.HasKey(x => new { x.RefId, x.Type });
             e.HasIndex(x => x.RefundId).IsUnique().HasDatabaseName("ux_fulfillment_sagas_refund_id");
+            e.Property(x => x.RefundLines).HasColumnType("jsonb");
         });
 
         mb.Entity<WarrantyCoverage>(e =>

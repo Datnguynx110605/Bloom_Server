@@ -17,7 +17,7 @@ namespace Bloom.Fulfillment.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -101,6 +101,14 @@ namespace Bloom.Fulfillment.Data.Migrations
                     b.Property<Guid>("RefundId")
                         .HasColumnType("uuid")
                         .HasColumnName("refund_id");
+
+                    b.Property<string>("RefundLines")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("refund_lines");
+
+                    b.Property<bool?>("RefundedShipping")
+                        .HasColumnType("boolean")
+                        .HasColumnName("refunded_shipping");
 
                     b.Property<DateTimeOffset>("StartedAt")
                         .HasColumnType("timestamp with time zone")

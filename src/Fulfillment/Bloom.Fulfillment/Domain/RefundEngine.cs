@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Bloom.Fulfillment.Contracts;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Errors;
@@ -60,13 +61,13 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
                 throw new InvalidOperationException($"Order {orderId} line {lineNo} cannot take {units} more refunded unit(s) and {cents} cents.");
     }
 
-    /// <summary>Step 4 (RET-R13): when every product unit is refunded and the shipping is not, flag it and return <c>shipping_cents</c>; else 0.</summary>
-    public async Task<long> ShippingIfCompleteAsync(OrderAccount a, CancellationToken ct) =>
+    /// <summary>Step 4 (RET-R13): when every product unit is refunded and the shipping is not, flag it and return <c>shipping_cents</c> with <c>Set = true</c>; else 0 and false.</summary>
+    public async Task<(long Cents, bool Set)> ShippingIfCompleteAsync(OrderAccount a, CancellationToken ct) =>
         await db.Database.ExecuteSqlAsync($"""
             UPDATE order_accounts SET shipping_refunded = true
             WHERE order_id = {a.OrderId} AND NOT shipping_refunded
               AND NOT EXISTS (SELECT 1 FROM order_line_accounts WHERE order_id = {a.OrderId} AND kind = {LineKinds.Product} AND refunded_units < quantity)
-            """, ct) == 1 ? a.ShippingCents : 0;
+            """, ct) == 1 ? (a.ShippingCents, true) : (0, false);
 
     /// <summary>
     /// The money tail both <c>DecideReturn</c> and a plan-only <c>RequestReturn</c> end with: the guarded line updates, the shipping, the cancelled coverages (WAR-R05, WAR-R06), the refund command
@@ -75,11 +76,11 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
     public async Task<(Guid? RefundId, long Total)> SettleReturnAsync(OrderAccount account, Guid returnId, IReadOnlyDictionary<int, (int Units, long Cents)> perLine, IReadOnlyList<Guid> cancelledCoverages, CancellationToken ct)
     {
         await ApplyAsync(account.OrderId, perLine, ct);
-        var shipping = await ShippingIfCompleteAsync(account, ct);
+        var (shipping, shippingSet) = await ShippingIfCompleteAsync(account, ct);
         foreach (var id in cancelledCoverages) await CancelCoverageAsync(id, ct);
 
         var total = perLine.Values.Sum(v => v.Cents) + shipping;
-        var refundId = Send(account.OrderId, returnId, SagaTypes.ReturnRefund, "return", total, Lines(perLine));
+        var refundId = Send(account.OrderId, returnId, SagaTypes.ReturnRefund, "return", total, Lines(perLine), shippingSet);
         outbox.PublishEvent(FulfillmentMessages.ReturnDecided, new ReturnDecidedV1(
             account.OrderId, returnId, perLine.OrderBy(p => p.Key).Select(p => new AcceptedLineV1(p.Key, p.Value.Units)).ToList(), total));
         outbox.PublishEvent(FulfillmentMessages.ReturnClosed, new ReturnClosedV1(account.OrderId, returnId, "decided"));
@@ -90,13 +91,13 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
     /// The refund of a delivery failure (ORD-R17, spec §7): every line with a remainder becomes fully refunded and the shipping is added when not yet refunded, so the amount is
     /// <c>total − Σ refunded − (shipping if refunded)</c>. Lines in the command are the <c>paid − refunded</c> of the lines with cents left. <paramref name="a"/> comes from <see cref="LockOrderAsync"/>.
     /// </summary>
-    public async Task<(long Amount, IReadOnlyList<RefundLineV1> Lines)> RefundRemainingAsync(OrderAccount a, CancellationToken ct)
+    public async Task<(long Amount, IReadOnlyList<RefundLineV1> Lines, bool ShippingSet)> RefundRemainingAsync(OrderAccount a, CancellationToken ct)
     {
         var perLine = (await db.OrderLineAccounts.AsNoTracking().Where(l => l.OrderId == a.OrderId && (l.RefundedUnits < l.Quantity || l.RefundedCents < l.PaidCents)).ToListAsync(ct))
             .ToDictionary(l => l.LineNo, l => (Units: l.Quantity - l.RefundedUnits, Cents: l.PaidCents - l.RefundedCents));
         await ApplyAsync(a.OrderId, perLine, ct);
-        var shipping = await ShippingIfCompleteAsync(a, ct);
-        return (perLine.Values.Sum(v => v.Cents) + shipping, Lines(perLine.Where(p => p.Value.Cents > 0).ToDictionary()));
+        var (shipping, shippingSet) = await ShippingIfCompleteAsync(a, ct);
+        return (perLine.Values.Sum(v => v.Cents) + shipping, Lines(perLine.Where(p => p.Value.Cents > 0).ToDictionary()), shippingSet);
     }
 
     /// <summary>
@@ -106,8 +107,8 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
     /// <param name="rtsOutcomes">The returned-to-sender units as JSON; null for a lost shipment.</param>
     public async Task ResolveFailureAsync(Guid orderId, Guid shipmentId, string kind, Guid decidedBy, string? rtsOutcomes, CancellationToken ct)
     {
-        var (amount, lines) = await RefundRemainingAsync(await LockOrderAsync(orderId, ct), ct);
-        Send(orderId, shipmentId, SagaTypes.DeliveryFailure, "delivery_failure", amount, lines);
+        var (amount, lines, shippingSet) = await RefundRemainingAsync(await LockOrderAsync(orderId, ct), ct);
+        Send(orderId, shipmentId, SagaTypes.DeliveryFailure, "delivery_failure", amount, lines, shippingSet);
         await db.Database.ExecuteSqlAsync($"""
             UPDATE warranty_coverages SET status = {CoverageStatuses.Cancelled}
             WHERE order_id = {orderId} AND status IN ({CoverageStatuses.Active}, {CoverageStatuses.PendingDelivery})
@@ -133,14 +134,15 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
 
     /// <summary>
     /// The refund command and its saga row (R19), staged in the caller's transaction. Amount 0 sends nothing and returns null (owner item 4).
-    /// <c>refund_amount_cents_total{reason}</c> counts the command.
+    /// <c>refund_amount_cents_total{reason}</c> counts the command. The saga keeps the per-line amounts and whether this refund set <c>shipping_refunded</c>, to give them back if it fails (D35).
     /// </summary>
-    public Guid? Send(Guid orderId, Guid sagaRef, string sagaType, string reason, long amount, IReadOnlyList<RefundLineV1> lines)
+    public Guid? Send(Guid orderId, Guid sagaRef, string sagaType, string reason, long amount, IReadOnlyList<RefundLineV1> lines, bool shippingSet)
     {
         if (amount == 0) return null;
         var refundId = Guid.CreateVersion7();
         outbox.SendCommand("payment", PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, refundId, amount, reason, lines));
-        db.FulfillmentSagas.Add(new FulfillmentSaga { RefId = sagaRef, Type = sagaType, PendingSteps = ["refund"], RefundId = refundId, StartedAt = clock.GetUtcNow() });
+        db.FulfillmentSagas.Add(new FulfillmentSaga { RefId = sagaRef, Type = sagaType, PendingSteps = ["refund"], RefundId = refundId,
+            RefundLines = JsonSerializer.Serialize(lines), RefundedShipping = shippingSet, StartedAt = clock.GetUtcNow() });
         metrics.Refund(reason, amount);
         return refundId;
     }

@@ -268,6 +268,10 @@ public class FulfillmentSaga
     public required string Type { get; set; }
     public string[] PendingSteps { get; set; } = [];
     public Guid RefundId { get; set; }
+    /// <summary>That refund's per-line amounts (<c>[{LineNo, AmountCents}]</c>), given back when the refund fails (D35). Null for a saga created before D35; the failure consumer empties it once applied.</summary>
+    public string? RefundLines { get; set; }
+    /// <summary>True when that refund set <c>order_accounts.shipping_refunded</c> (D35). Null for a saga created before D35.</summary>
+    public bool? RefundedShipping { get; set; }
     public DateTimeOffset StartedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
 }

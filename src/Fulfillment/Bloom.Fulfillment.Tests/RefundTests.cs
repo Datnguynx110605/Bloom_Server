@@ -7,6 +7,7 @@ using Bloom.Identity.Contracts;
 using Bloom.Order.Contracts;
 using Bloom.Payment.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Bloom.Fulfillment.Tests;
 
@@ -434,6 +435,101 @@ public class RefundTests(Containers containers)
         var done = Assert.Single(await SagasAsync(t, order.OrderId));
         Assert.Empty(done.PendingSteps);
         Assert.Equal(t.Clock.GetUtcNow(), done.CompletedAt!.Value, TimeSpan.FromMilliseconds(1));
+    }
+
+    /// <summary>What a delivery-failure refund would take now, with its transaction rolled back: the refundable amount left on the order.</summary>
+    private static async Task<long> RefundableAsync(TestFulfillment t, Guid orderId)
+    {
+        await using var scope = t.Services.CreateAsyncScope();
+        await using var tx = await scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>().Database.BeginTransactionAsync(Ct);
+        var engine = scope.ServiceProvider.GetRequiredService<RefundEngine>();
+        return (await engine.RefundRemainingAsync(await engine.LockOrderAsync(orderId, Ct), Ct)).Amount;
+    }
+
+    private static Task FailAsync(TestFulfillment t, Guid orderId, Guid refundId, Guid? messageId = null) =>
+        Consume.Async<RefundFailedConsumer>(t, PaymentMessages.RefundFailed, new RefundFailedV1(orderId, refundId, "card_declined"), messageId);
+
+    [Fact]
+    public async Task D35_refund_failed_restores_refundable_amount()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t, b => b.Express(1500));
+        var first = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[1]);
+        var second = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], "FOREIGN" + serials[0]);
+        await DecidedAsync(t, first, Full(1));
+        var refundId = Guid.Parse((await DecidedAsync(t, second, Full(1))).GetProperty("refundId").GetString()!); // the last unit brings the Express fee
+        Assert.True(await ShippingRefundedAsync(t, order.OrderId));
+        Assert.Equal(order.TotalCents - 1001 - 1001 - 1500, await RefundableAsync(t, order.OrderId));
+
+        await FailAsync(t, order.OrderId, refundId);
+
+        Assert.Equal(1001, (await LineAsync(t, order.OrderId, 1)).RefundedCents); // the first refund stays
+        Assert.False(await ShippingRefundedAsync(t, order.OrderId));
+        Assert.Equal(order.TotalCents - 1001, await RefundableAsync(t, order.OrderId)); // the failed 1001 and the fee can be refunded again, up to what was paid
+        Assert.Equal(["refund"], (await SagasAsync(t, order.OrderId)).Single(s => s.RefundId == refundId).PendingSteps); // stays open for Support
+    }
+
+    [Fact]
+    public async Task D35_duplicate_refund_failed_subtracts_once()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t, Device(2002));
+        var first = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[0]);
+        var second = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[1]);
+        var refundId = Guid.Parse((await DecidedAsync(t, first, Full(1))).GetProperty("refundId").GetString()!);
+        await DecidedAsync(t, second, Full(1));
+        Assert.Equal(2002, (await LineAsync(t, order.OrderId, 1)).RefundedCents);
+
+        await FailAsync(t, order.OrderId, refundId);
+        await FailAsync(t, order.OrderId, refundId); // a redelivery with a new message id
+
+        Assert.Equal(1001, (await LineAsync(t, order.OrderId, 1)).RefundedCents); // the second refund's 1001 is untouched
+    }
+
+    [Fact]
+    public async Task D35_coverage_the_failed_refund_cancelled_stays_cancelled_and_is_logged()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t);
+        var returnId = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[0]);
+        var refundId = Guid.Parse((await DecidedAsync(t, returnId, Full(1))).GetProperty("refundId").GetString()!);
+        var coverage = await CoverageAsync(t, serials[0]);
+        Assert.Equal(CoverageStatuses.Cancelled, coverage.Status);
+
+        await FailAsync(t, order.OrderId, refundId);
+
+        Assert.Equal(CoverageStatuses.Cancelled, (await CoverageAsync(t, serials[0])).Status);
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(coverage.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task D35_saga_from_before_the_migration_subtracts_nothing_and_logs_an_error()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t, Device(2002));
+        var returnId = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[0]);
+        var refundId = Guid.Parse((await DecidedAsync(t, returnId, Full(1))).GetProperty("refundId").GetString()!);
+        await using (var db = t.NewDb()) await db.Database.ExecuteSqlAsync($"UPDATE fulfillment_sagas SET refund_lines = NULL, refunded_shipping = NULL WHERE refund_id = {refundId}", Ct);
+
+        await FailAsync(t, order.OrderId, refundId);
+
+        Assert.Equal(1001, (await LineAsync(t, order.OrderId, 1)).RefundedCents);
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(returnId.ToString()) && e.Contains("before"));
+    }
+
+    [Fact]
+    public async Task D35_refunded_cents_never_goes_below_zero()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t, Device(2002));
+        var returnId = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[0]);
+        var refundId = Guid.Parse((await DecidedAsync(t, returnId, Full(1))).GetProperty("refundId").GetString()!);
+        await using (var db = t.NewDb()) await db.Database.ExecuteSqlAsync($"UPDATE order_line_accounts SET refunded_cents = 400 WHERE order_id = {order.OrderId} AND line_no = 1", Ct);
+
+        await FailAsync(t, order.OrderId, refundId);
+
+        Assert.Equal(0, (await LineAsync(t, order.OrderId, 1)).RefundedCents);
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("below 0"));
     }
 
     [Fact]
