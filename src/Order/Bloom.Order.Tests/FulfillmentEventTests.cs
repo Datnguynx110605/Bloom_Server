@@ -7,10 +7,13 @@ using Bloom.Order.Api;
 using Bloom.Order.Consumers;
 using Bloom.Order.Contracts;
 using Bloom.Order.Data;
+using Bloom.Order.Observability;
+using Bloom.Order.Worker;
 using Bloom.Payment.Contracts;
 using Bloom.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using OrderLine = Bloom.Order.Data.OrderLine;
 using static Bloom.Order.Tests.Seed;
 
@@ -322,6 +325,31 @@ public class FulfillmentEventTests(Containers containers)
         Assert.All(new[] { orderId.ToString(), refundId.ToString(), "card_closed" }, part => Assert.Contains(part, log));
         await Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));
         Assert.Null((await SagaAsync(t, orderId, SagaTypes.Cancellation)).CompletedAt); // refund_failed still waits
+    }
+
+    [Fact]
+    public async Task D20_refund_failed_then_completed_closes_saga()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var monitor = new OrderMonitor(t.Services.GetRequiredService<IServiceScopeFactory>(), t.Services.GetRequiredService<OrderMetrics>(), t.Clock, NullLogger<OrderMonitor>.Instance);
+        var orderId = await CancelledAsync(t);
+        await Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));
+        await Consume.Async<RefundFailedConsumer>(t, PaymentMessages.RefundFailed, new RefundFailedV1(orderId, Guid.NewGuid(), "card_closed"));
+        await using (var db = t.NewDb())
+            await db.Set<OrderSaga>().ExecuteUpdateAsync(s => s.SetProperty(x => x.StartedAt, t.Clock.GetUtcNow().AddMinutes(-31)), Ct);
+        await monitor.RunOnceAsync(Ct);
+        Assert.Equal([SagaSteps.RefundFailed], (await SagaAsync(t, orderId, SagaTypes.Cancellation)).PendingSteps);
+        Assert.Equal(1, metrics.Latest("sagas_stuck", ("type", "cancellation")));
+
+        await RefundCompletedAsync(t, orderId, (1, 700)); // Support asked again and it went through
+
+        var saga = await SagaAsync(t, orderId, SagaTypes.Cancellation);
+        Assert.Empty(saga.PendingSteps);
+        Assert.Equal(t.Clock.GetUtcNow(), saga.CompletedAt);
+        await monitor.RunOnceAsync(Ct);
+        Assert.Equal(0, metrics.Latest("sagas_stuck", ("type", "cancellation")));
+        Assert.Equal(0, metrics.Latest("sagas_running", ("type", "cancellation")));
     }
 
     [Fact]

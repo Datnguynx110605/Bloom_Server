@@ -39,13 +39,16 @@ public sealed class Sagas(OrderDbContext db, OutboxWriter outbox, TimeProvider c
         return true;
     }
 
-    /// <summary>A completion event: removes <paramref name="step"/> from every open saga of the order that waits for it; an empty list completes the saga.</summary>
-    public async Task CompleteStepAsync(Guid orderId, string step, CancellationToken ct) =>
+    /// <summary>A completion event for one step; see <see cref="CompleteStepsAsync"/>.</summary>
+    public Task CompleteStepAsync(Guid orderId, string step, CancellationToken ct) => CompleteStepsAsync(orderId, [step], ct);
+
+    /// <summary>A completion event: removes <paramref name="steps"/> from every open saga of the order that waits for any of them; an empty list completes the saga.</summary>
+    public async Task CompleteStepsAsync(Guid orderId, string[] steps, CancellationToken ct) =>
         await db.Database.ExecuteSqlAsync($"""
             UPDATE order_sagas
-            SET pending_steps = array_remove(pending_steps, {step}),
-                completed_at = CASE WHEN cardinality(array_remove(pending_steps, {step})) = 0 THEN {clock.GetUtcNow()} ELSE completed_at END
-            WHERE order_id = {orderId} AND completed_at IS NULL AND {step} = ANY(pending_steps)
+            SET pending_steps = ARRAY(SELECT p FROM unnest(pending_steps) AS p WHERE p <> ALL({steps})),
+                completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM unnest(pending_steps) AS p WHERE p <> ALL({steps})) THEN {clock.GetUtcNow()} ELSE completed_at END
+            WHERE order_id = {orderId} AND completed_at IS NULL AND pending_steps && {steps}
             """, ct);
 
     /// <summary><c>payment.refund-failed.v1</c> (spec §4): <c>refund</c> becomes <c>refund_failed</c> in the open saga that waits for it, so the saga stays open for an operator.</summary>

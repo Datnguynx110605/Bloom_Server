@@ -28,7 +28,7 @@ public sealed class HoldReleasedConsumer(Sagas sagas) : IMessageHandler
 
 /// <summary>
 /// <c>payment.refund-completed.v1</c> (03-order §5.3, spec §7): a refund with <c>Lines</c> (fulfillment's) adds each amount to that line's <c>refunded_cents</c>;
-/// <c>ck_order_lines_refund_le_paid</c> keeps it within what was paid (OR-05) and an overflow throws, so nothing of the message is written. Then the <c>refund</c> step of every
+/// <c>ck_order_lines_refund_le_paid</c> keeps it within what was paid (OR-05) and an overflow throws, so nothing of the message is written. Then the <c>refund</c> or <c>refund_failed</c> step of every
 /// open saga of the order completes; a refund with no such saga only updates the lines.
 /// </summary>
 public sealed class RefundCompletedConsumer(OrderDbContext db, Sagas sagas) : IMessageHandler
@@ -47,7 +47,7 @@ public sealed class RefundCompletedConsumer(OrderDbContext db, Sagas sagas) : IM
                     .ExecuteUpdateAsync(s => s.SetProperty(l => l.RefundedCents, l => l.RefundedCents + amount), ct);
                 if (updated == 0) throw new PermanentFailureException($"payment.refund-completed.v1 names line {line.LineNo}, which the order does not have.");
             }
-        await sagas.CompleteStepAsync(refund.OrderId, SagaSteps.Refund, ct);
+        await sagas.CompleteStepsAsync(refund.OrderId, [SagaSteps.Refund, SagaSteps.RefundFailed], ct); // a late success also closes a saga whose refund had failed (D20)
     }
 }
 
