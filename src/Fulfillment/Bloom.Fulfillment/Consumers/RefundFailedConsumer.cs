@@ -10,10 +10,13 @@ namespace Bloom.Fulfillment.Consumers;
 /// <summary>
 /// <c>payment.refund-failed.v1</c> (05-fulfillment §6.7, D35): the saga stays open with its step pending, so the "stuck > 30 min" alert sees it (plan R22) and Support follows up from the error log.
 /// The refundable amount comes back under the <c>order_accounts</c> lock: that refund's per-line units and amounts leave <c>refunded_units</c> and <c>refunded_cents</c> and <c>shipping_refunded</c> resets if it set it (R7).
+/// A <c>provider_unavailable</c> failure is not a definite outcome (the 5th transient failure): Stripe may still have refunded it, so nothing comes back and the amount stays counted.
 /// An unknown <c>refund_id</c> is an order's own refund: nothing to do.
 /// </summary>
 public sealed class RefundFailedConsumer(FulfillmentDbContext db, RefundEngine refunds, ILogger<RefundFailedConsumer> logger) : IMessageHandler
 {
+    private const string ProviderUnavailable = "provider_unavailable"; // 04-payment §5: the reason after the 5th transient failure
+
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("payment", PaymentMessages.RefundFailed)];
 
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
@@ -37,6 +40,12 @@ public sealed class RefundFailedConsumer(FulfillmentDbContext db, RefundEngine r
             UPDATE fulfillment_sagas SET refund_lines = '[]'::jsonb, refunded_shipping = false
             WHERE refund_id = {failed.RefundId} AND completed_at IS NULL AND refund_lines IS NOT NULL AND (jsonb_array_length(refund_lines) > 0 OR refunded_shipping)
             """, ct) != 1) return;
+
+        if (failed.FailureReason == ProviderUnavailable)
+        {
+            logger.LogError("Refund {RefundId} of {SagaType} {RefId} (order {OrderId}) failed with the outcome at the provider unknown: its amount stays counted, nothing is given back; Support must check Stripe", failed.RefundId, saga.Type, saga.RefId, failed.OrderId);
+            return;
+        }
 
         var held = await db.OrderLineAccounts.AsNoTracking().Where(l => l.OrderId == failed.OrderId).ToDictionaryAsync(l => l.LineNo, ct);
         foreach (var line in JsonSerializer.Deserialize<List<RefundedLine>>(saga.RefundLines)!.OrderBy(l => l.LineNo)) // ascending line_no (R18)

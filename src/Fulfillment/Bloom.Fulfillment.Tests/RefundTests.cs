@@ -509,6 +509,25 @@ public class RefundTests(Containers containers)
     }
 
     [Fact]
+    public async Task D35_refund_failed_with_unknown_provider_outcome_keeps_the_amount_counted()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t, Device(2002));
+        var first = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[0]);
+        var refundId = Guid.Parse((await DecidedAsync(t, first, Full(1))).GetProperty("refundId").GetString()!);
+
+        await Consume.Async<RefundFailedConsumer>(t, PaymentMessages.RefundFailed, new RefundFailedV1(order.OrderId, refundId, "provider_unavailable"));
+        await Consume.Async<RefundFailedConsumer>(t, PaymentMessages.RefundFailed, new RefundFailedV1(order.OrderId, refundId, "provider_unavailable")); // a redelivery
+
+        var line = await LineAsync(t, order.OrderId, 1);
+        Assert.Equal((1, 1001L), (line.RefundedUnits, line.RefundedCents)); // Stripe may still have refunded it
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("stays counted") && e.Contains(refundId.ToString()) && e.Contains(order.OrderId.ToString()));
+        Assert.Equal(["refund"], (await SagasAsync(t, order.OrderId)).Single(s => s.RefundId == refundId).PendingSteps); // stays open for Support
+        using var both = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 1, quantity = 2 } } }, customer, Guid.NewGuid()); // both units, the counted one included
+        await both.ExpectErrorAsync(400, "RETURN_QUANTITY_EXCEEDED");
+    }
+
+    [Fact]
     public async Task D35_coverage_the_failed_refund_cancelled_stays_cancelled_and_is_logged()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
