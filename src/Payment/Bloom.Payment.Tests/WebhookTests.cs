@@ -1,7 +1,9 @@
 using System.Text;
 using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
+using Bloom.Payment.Worker;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Bloom.Payment.Tests;
 
@@ -254,6 +256,30 @@ public class WebhookTests(Containers containers)
         Assert.Equal("won", after.Status);
         Assert.True(after.UpdatedAt > after.OpenedAt);
         Assert.Equal(5, await EventCountAsync(t)); // completed, created, closed, the unknown one, the one without an intent
+    }
+
+    [Fact]
+    public async Task D25_late_created_after_closed_keeps_final_status()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var p = await OpenAsync(t);
+        using var paid = await Complete(t, p);
+        var early = DateTimeOffset.FromUnixTimeSeconds(t.Clock.GetUtcNow().ToUnixTimeSeconds()); // Stripe's created has whole seconds
+        var late = early.AddMinutes(10);
+        t.Clock.Advance(TimeSpan.FromMinutes(11));
+
+        using var closed = await StripeEvents.PostAsync(t, StripeEvents.Json("charge.dispute.closed", StripeEvents.Dispute("dp_1", p.Pi, "won", 1000, "fraudulent"), late));
+        using var stale = await StripeEvents.PostAsync(t, StripeEvents.Json("charge.dispute.created", StripeEvents.Dispute("dp_1", p.Pi, "needs_response", 1000, "fraudulent"), early));
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, stale.StatusCode);
+        await using (var db = t.NewDb())
+        {
+            var row = await db.Disputes.AsNoTracking().SingleAsync(Ct);
+            Assert.Equal(("won", late), (row.Status, row.UpdatedAt));
+        }
+        await ActivatorUtilities.CreateInstance<Reconciler>(t.Services).RunOnceAsync(Ct);
+        Assert.Equal(0, metrics.Latest("disputes_open"));
     }
 
     [Fact]

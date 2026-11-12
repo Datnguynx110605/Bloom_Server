@@ -77,7 +77,7 @@ public static class StripeWebhook
                 }
 
                 var obj = root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object && data.TryGetProperty("object", out var o) && o.ValueKind == JsonValueKind.Object ? o : default;
-                if (obj.ValueKind == JsonValueKind.Object) await ApplyAsync(type, obj, created, db, transitions, outbox, clock, logger, ct);
+                if (obj.ValueKind == JsonValueKind.Object) await ApplyAsync(type, obj, created, db, transitions, outbox, logger, ct);
                 await db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
 
@@ -103,7 +103,7 @@ public static class StripeWebhook
 
     /// <summary>Spec §7 "Finding the record for an event": a miss leaves the event stored only.</summary>
     private static async Task ApplyAsync(
-        string type, JsonElement obj, long created, PaymentDbContext db, Transitions transitions, OutboxWriter outbox, TimeProvider clock, ILogger logger, CancellationToken ct)
+        string type, JsonElement obj, long created, PaymentDbContext db, Transitions transitions, OutboxWriter outbox, ILogger logger, CancellationToken ct)
     {
         switch (type)
         {
@@ -130,7 +130,7 @@ public static class StripeWebhook
                 break;
 
             case "charge.dispute.created" or "charge.dispute.updated" or "charge.dispute.closed":
-                await UpsertDisputeAsync(obj, created, db, clock.GetUtcNow(), logger, ct);
+                await UpsertDisputeAsync(obj, created, db, logger, ct);
                 break;
         }
     }
@@ -143,7 +143,7 @@ public static class StripeWebhook
         if (id is { } found) await transitions.ApplyRefundAsync(found, status, stripeId, Str(refund, "failure_reason"), ct);
     }
 
-    private static async Task UpsertDisputeAsync(JsonElement dispute, long eventCreated, PaymentDbContext db, DateTimeOffset now, ILogger logger, CancellationToken ct)
+    private static async Task UpsertDisputeAsync(JsonElement dispute, long eventCreated, PaymentDbContext db, ILogger logger, CancellationToken ct)
     {
         if (Str(dispute, "payment_intent") is not { } intent) return; // a null would match every payment without an intent
         var paymentId = await db.Payments.AsNoTracking().Where(p => p.StripePaymentIntentId == intent).Select(p => (Guid?)p.Id).SingleOrDefaultAsync(ct);
@@ -154,11 +154,13 @@ public static class StripeWebhook
         var reason = Str(dispute, "reason") ?? throw new InvalidOperationException($"Dispute {id} has no reason.");
         var amount = Int(dispute, "amount") ?? throw new InvalidOperationException($"Dispute {id} has no amount.");
         var openedAt = DateTimeOffset.FromUnixTimeSeconds(Int(dispute, "created") ?? eventCreated);
+        var updatedAt = DateTimeOffset.FromUnixTimeSeconds(eventCreated); // D25: the newest event wins
 
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO disputes (id, payment_id, stripe_dispute_id, status, amount_cents, reason, opened_at, updated_at)
-            VALUES ({Guid.CreateVersion7()}, {paymentId}, {id}, {status}, {amount}, {reason}, {openedAt}, {now})
+            VALUES ({Guid.CreateVersion7()}, {paymentId}, {id}, {status}, {amount}, {reason}, {openedAt}, {updatedAt})
             ON CONFLICT (stripe_dispute_id) DO UPDATE SET status = EXCLUDED.status, amount_cents = EXCLUDED.amount_cents, reason = EXCLUDED.reason, updated_at = EXCLUDED.updated_at
+            WHERE disputes.updated_at <= EXCLUDED.updated_at
             """, ct);
         logger.LogError("Stripe dispute {DisputeId} on payment {PaymentId} is {Status}", id, paymentId, status);
     }
