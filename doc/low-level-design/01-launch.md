@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [04-launch](../product-design/04-launch.md) (LCH-R01 … R28), BI-01, BI-03 |
 | **HLD** | [high-level-design.md §5, §8.1](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-012 |
 | **Decision records** | [LLD-ADR-012](adr/LLD-ADR-012-admission-paced-per-launch.md) |
