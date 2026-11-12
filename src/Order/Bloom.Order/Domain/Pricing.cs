@@ -29,11 +29,14 @@ public static class Pricing
             if (sum < (coupon.MinSpendCents ?? 0)) // step 3
                 throw OrderErrors.Error(OrderErrors.CouponMinSpend, "The eligible items do not reach the coupon's minimum spend.");
 
-            var d = Math.Min(sum, coupon.Type == CouponTypes.Percent ? sum * coupon.Value / 100 : coupon.Value); // step 4
-            foreach (var l in eligible) discount[l.LineNo] = d * gross[l.LineNo] / sum; // step 5: floors
-            var leftover = d - discount.Values.Sum();
-            foreach (var l in eligible.OrderByDescending(l => d * gross[l.LineNo] % sum).ThenBy(l => l.LineNo).Take((int)leftover))
-                discount[l.LineNo]++;
+            if (sum > 0) // all eligible lines free: every discount stays 0
+            {
+                var d = Math.Min(sum, coupon.Type == CouponTypes.Percent ? sum * coupon.Value / 100 : coupon.Value); // step 4
+                foreach (var l in eligible) discount[l.LineNo] = d * gross[l.LineNo] / sum; // step 5: floors
+                var leftover = d - discount.Values.Sum();
+                foreach (var l in eligible.OrderByDescending(l => d * gross[l.LineNo] % sum).ThenBy(l => l.LineNo).Take((int)leftover))
+                    discount[l.LineNo]++;
+            }
         }
 
         var amounts = lines.Select(l =>

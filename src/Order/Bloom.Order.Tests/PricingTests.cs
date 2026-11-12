@@ -32,6 +32,14 @@ public class PricingTests
     }
 
     [Fact]
+    public void O1_zero_eligible_sum_gives_zero_discount()
+    {
+        var t = Compute([Product(1, 0), Product(2, 0, 3)], Coupon(CouponTypes.Fixed, 500)); // all eligible lines are free: sum = 0
+        Assert.Equal([0L, 0], t.Lines.Select(l => l.DiscountCents));
+        Assert.Equal((0, 0), (t.DiscountCents, t.TotalCents));
+    }
+
+    [Fact]
     public void Largest_remainder_ties_go_to_the_lower_line()
     {
         var t = Compute([Product(1, 1000), Product(2, 1000), Product(3, 1000)], Coupon(CouponTypes.Fixed, 100));

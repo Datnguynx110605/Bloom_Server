@@ -10,7 +10,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Bloom.Order.Tests;
@@ -127,7 +126,7 @@ public sealed class TestOrder : IAsyncDisposable
     public OrderDbContext NewDb() => NewDb(ConnectionString);
 
     /// <summary>The sweeps on the host's scopes, clock and metrics; tests drive them through <c>Run…Async</c> (plan R16), the api host does not run them.</summary>
-    public Sweeps Sweeps() => new(Services.GetRequiredService<IServiceScopeFactory>(), Clock, Services.GetRequiredService<OrderMetrics>(), NullLogger<Sweeps>.Instance);
+    public Sweeps Sweeps() => new(Services.GetRequiredService<IServiceScopeFactory>(), Clock, Services.GetRequiredService<OrderMetrics>(), Services.GetRequiredService<ILogger<Sweeps>>());
 
     private static OrderDbContext NewDb(string connectionString) =>
         new(new DbContextOptionsBuilder<OrderDbContext>().UseNpgsql(connectionString).Options);

@@ -143,6 +143,37 @@ public class SweepTests(Containers containers)
     }
 
     [Fact]
+    public async Task O2_poison_order_skipped_rest_of_batch_commits()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var first = await CreatingOrderAsync(t);
+        var poison = await CreatingOrderAsync(t);
+        var last = await CreatingOrderAsync(t);
+        t.Clock.Advance(CreatingWindow + TimeSpan.FromSeconds(1));
+        await using (var db = t.NewDb()) // the poison order's step fails at its saga insert, after it moved the order and queued order.cancelled
+        {
+            await db.Database.ExecuteSqlAsync($"UPDATE orders SET number = 'BLM-POISON' WHERE id = {poison.Id}", Ct);
+            await db.Database.ExecuteSqlRawAsync(
+                "CREATE FUNCTION poison() RETURNS trigger AS $$ BEGIN IF (SELECT number FROM orders WHERE id = NEW.order_id) = 'BLM-POISON' THEN RAISE EXCEPTION 'poison'; END IF; RETURN NEW; END $$ LANGUAGE plpgsql;"
+                + "CREATE TRIGGER poison BEFORE INSERT ON order_sagas FOR EACH ROW EXECUTE FUNCTION poison();", Ct);
+        }
+        var sweeps = t.Sweeps();
+
+        Assert.Equal(2, await sweeps.RunCreatingAsync(Ct));
+
+        Assert.Equal((OrderStatuses.Cancelled, OrderStatuses.Creating, OrderStatuses.Cancelled),
+            ((await OrderAsync(t, first.Id)).Status, (await OrderAsync(t, poison.Id)).Status, (await OrderAsync(t, last.Id)).Status));
+        Assert.Equal([first.Id, last.Id], (await Outbox.PayloadsAsync<OrderCancelledV1>(t, OrderMessages.Cancelled)).Select(p => p.OrderId).Order()); // nothing of the poison order survives
+        Assert.Equal(2, (await Outbox.PayloadsAsync<ReleaseReservationV1>(t, InventoryMessages.ReleaseReservation)).Count);
+        await using (var db = t.NewDb()) Assert.Equal(1, await db.OrderStatusHistory.CountAsync(h => h.OrderId == poison.Id, Ct)); // only its creating row: the move rolled back
+        Assert.Single(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(poison.Id.ToString()) && e.Contains("Creating"));
+
+        await using (var db = t.NewDb()) await db.Database.ExecuteSqlRawAsync("DROP TRIGGER poison ON order_sagas; DROP FUNCTION poison();", Ct);
+        Assert.Equal(1, await sweeps.RunCreatingAsync(Ct)); // the next tick retries it
+        Assert.Equal(OrderStatuses.Cancelled, (await OrderAsync(t, poison.Id)).Status);
+    }
+
+    [Fact]
     public async Task Sweep_skips_an_order_locked_by_tx2()
     {
         await using var t = await TestOrder.StartAsync(containers);

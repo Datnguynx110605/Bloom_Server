@@ -19,8 +19,8 @@ public sealed class IdempotencyGuard(DbContext db, BloomMetrics metrics)
     private const string Savepoint = "idempotency";
 
     /// <summary>The gRPC statuses that are deterministic business rejections: stored and replayed (spec §6.7). Everything else releases the key.</summary>
-    private static readonly StatusCode[] Stored =
-        [StatusCode.FailedPrecondition, StatusCode.InvalidArgument, StatusCode.NotFound, StatusCode.AlreadyExists, StatusCode.PermissionDenied];
+    public static readonly IReadOnlySet<StatusCode> Stored =
+        new HashSet<StatusCode> { StatusCode.FailedPrecondition, StatusCode.InvalidArgument, StatusCode.NotFound, StatusCode.AlreadyExists, StatusCode.PermissionDenied };
 
     private sealed record Call(Guid UserId, string Key, string Operation, byte[] Hash)
     {

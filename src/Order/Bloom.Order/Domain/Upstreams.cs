@@ -5,6 +5,7 @@ using Bloom.Launch.Contracts;
 using Bloom.Order.Context;
 using Bloom.Order.Errors;
 using Bloom.Payment.Contracts;
+using Bloom.Shared.Idempotency;
 using Grpc.Core;
 
 namespace Bloom.Order.Domain;
@@ -118,8 +119,7 @@ public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, Inv
         e.GetRpcStatus()?.Details.Where(d => d.Is(Google.Rpc.ErrorInfo.Descriptor)).Select(d => d.Unpack<Google.Rpc.ErrorInfo>()).FirstOrDefault(i => i.Domain == "bloom")?.Reason;
 
     /// <summary>The statuses the idempotency guard stores and replays as the answer (spec §6.7).</summary>
-    public static bool IsRejection(RpcException e) =>
-        e.StatusCode is StatusCode.FailedPrecondition or StatusCode.InvalidArgument or StatusCode.NotFound or StatusCode.AlreadyExists or StatusCode.PermissionDenied;
+    public static bool IsRejection(RpcException e) => IdempotencyGuard.Stored.Contains(e.StatusCode);
 
     private static bool IsBloom(RpcException e) => BloomReason(e) is not null;
 }
