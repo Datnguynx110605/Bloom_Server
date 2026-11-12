@@ -86,7 +86,7 @@ All Stripe calls go through one `PaymentProvider` interface (HLD-ADR-018).
 | `created_at`, `updated_at` | `timestamptz` | |
 
 **`provider_events`**: `event_id text PK` (Stripe event ID), `type`, `payload jsonb`, `received_at`. Kept 90 days, purged daily by payment (the shared purger's §13 rules don't cover it).
-**`disputes`**: `id`, `payment_id` (FK → `payments`, Restrict), `stripe_dispute_id` (unique), `status`, `amount_cents`, `reason`, `opened_at`, `updated_at` (the Stripe event's `created`, D25; §6.2).
+**`disputes`**: `id`, `payment_id` (FK → `payments`, Restrict), `stripe_dispute_id` (unique), `status`, `amount_cents`, `reason`, `opened_at`, `updated_at` (the Stripe event's `created`; §6.2).
 
 **`job_runs`**: `name text PK`, `last_run_date date`. The migration seeds the row `nightly_compare` (§6.5).
 
