@@ -470,6 +470,27 @@ public class RefundTests(Containers containers)
     }
 
     [Fact]
+    public async Task D35_failed_return_refund_can_be_requested_again_up_to_the_paid_amount()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t, Device(2002));
+        var first = await InspectedAsync(t, order.OrderId, customer, [(1, 1)], serials[0]);
+        var refundId = Guid.Parse((await DecidedAsync(t, first, Full(1))).GetProperty("refundId").GetString()!);
+        await FailAsync(t, order.OrderId, refundId);
+        var line = await LineAsync(t, order.OrderId, 1);
+        Assert.Equal((0, 0L), (line.RefundedUnits, line.RefundedCents));
+
+        var again = await InspectedAsync(t, order.OrderId, customer, [(1, 2)], serials[0], serials[1]); // both units, the failed one included
+        var body = await DecidedAsync(t, again, Full(1), Full(2));
+        Assert.Equal(2002, Cents(body));
+        line = await LineAsync(t, order.OrderId, 1);
+        Assert.Equal((2, 2002L), (line.RefundedUnits, line.RefundedCents));
+
+        using var beyond = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 1, quantity = 1 } } }, customer, Guid.NewGuid());
+        await beyond.ExpectErrorAsync(400, "RETURN_QUANTITY_EXCEEDED");
+    }
+
+    [Fact]
     public async Task D35_duplicate_refund_failed_subtracts_once()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
@@ -483,7 +504,8 @@ public class RefundTests(Containers containers)
         await FailAsync(t, order.OrderId, refundId);
         await FailAsync(t, order.OrderId, refundId); // a redelivery with a new message id
 
-        Assert.Equal(1001, (await LineAsync(t, order.OrderId, 1)).RefundedCents); // the second refund's 1001 is untouched
+        var line = await LineAsync(t, order.OrderId, 1);
+        Assert.Equal((1, 1001L), (line.RefundedUnits, line.RefundedCents)); // the second refund's unit and 1001 are untouched
     }
 
     [Fact]
@@ -529,7 +551,13 @@ public class RefundTests(Containers containers)
         await FailAsync(t, order.OrderId, refundId);
 
         Assert.Equal(0, (await LineAsync(t, order.OrderId, 1)).RefundedCents);
-        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("below 0"));
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("below 0") && e.Contains("cents"));
+
+        await using (var db = t.NewDb()) await db.Database.ExecuteSqlAsync($"UPDATE order_line_accounts SET refunded_units = 0 WHERE order_id = {order.OrderId} AND line_no = 1", Ct);
+        await using (var db = t.NewDb()) await db.Database.ExecuteSqlAsync($"UPDATE fulfillment_sagas SET refund_lines = '[{{\"LineNo\":1,\"Units\":1,\"Cents\":0}}]'::jsonb WHERE refund_id = {refundId}", Ct);
+        await FailAsync(t, order.OrderId, refundId);
+        Assert.Equal(0, (await LineAsync(t, order.OrderId, 1)).RefundedUnits);
+        Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("below 0") && e.Contains("units"));
     }
 
     [Fact]
