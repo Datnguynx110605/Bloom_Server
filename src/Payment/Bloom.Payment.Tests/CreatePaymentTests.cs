@@ -1,8 +1,12 @@
 using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
 using Bloom.Payment.Errors;
+using Bloom.Payment.Observability;
+using Bloom.Payment.Services;
+using Bloom.Payment.Stripe;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Bloom.Payment.Tests;
 
@@ -197,6 +201,88 @@ public class CreatePaymentTests(Containers containers)
 
         Assert.Equal(3, t.Stripe.Count(Sessions)); // PR-01: no new session
         Assert.Equal([PaymentStatuses.Expired, PaymentStatuses.Canceled, PaymentStatuses.Open], [.. await Task.WhenAll(seeded.Select(async s => (await t.PaymentByOrderAsync(s.OrderId)).Status))]);
+    }
+
+    // P-8: the server's own cancellation token is cancelled from inside the provider call, so the request is cancelled with the call in flight.
+    [Fact]
+    public async Task P8_cancelled_request_still_releases_lock_and_runs_tx2()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var stored = new StripeSession("cs_p8", "https://checkout.stripe.test/cs_p8", "open", "unpaid", null, 1000, t.Clock.GetUtcNow().AddMinutes(47));
+
+        // Stripe answered, then the caller went away: Tx 2 still stores the session.
+        var storedOrder = Guid.NewGuid();
+        using var cancelAfterStripe = new CancellationTokenSource();
+        var response = await Service(t, new Cancelling(cancelAfterStripe, () => stored)).CreatePayment(Seed.Request(storedOrder, 1000), new TestCallContext(cancelAfterStripe.Token));
+        var row = await t.PaymentByOrderAsync(storedOrder);
+        Assert.Equal((PaymentStatuses.Open, "cs_p8", null), (row.Status, row.StripeSessionId, row.LockedUntil));
+        Assert.Equal(row.CheckoutUrl, response.CheckoutUrl);
+
+        // Stripe failed, then the caller went away: the claim is released, so the next call resumes at once.
+        var failedOrder = Guid.NewGuid();
+        using var cancelAfterFailure = new CancellationTokenSource();
+        var e = await Assert.ThrowsAsync<RpcException>(() =>
+            Service(t, new Cancelling(cancelAfterFailure, () => throw new ProviderException(true, ProviderException.Unavailable, "down"))).CreatePayment(Seed.Request(failedOrder, 1000), new TestCallContext(cancelAfterFailure.Token)));
+        Assert.Equal(PaymentErrors.ProviderUnavailable, Rpc.Info(e).Reason);
+        var released = await t.PaymentByOrderAsync(failedOrder);
+        Assert.Equal(PaymentStatuses.Creating, released.Status);
+        Assert.True(released.LockedUntil <= t.Clock.GetUtcNow());
+    }
+
+    // P-9: the `completed` webhook won the race and Tx 2 never ran (a crash between Stripe and Tx 2), so the row is `succeeded` and may have no session or URL.
+    [Fact]
+    public async Task P9_succeeded_without_tx2_returns_stored_checkout_url()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var withUrl = Guid.NewGuid();
+        var withoutUrl = Guid.NewGuid();
+        var first = await Create(t, Seed.Request(withUrl, 1000));
+        await Create(t, Seed.Request(withoutUrl, 1000));
+        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', stripe_payment_intent_id = 'pi_a', succeeded_at = now() WHERE order_id = {withUrl}");
+        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', stripe_payment_intent_id = 'pi_b', succeeded_at = now(), stripe_session_id = NULL, checkout_url = NULL WHERE order_id = {withoutUrl}");
+
+        var again = await Create(t, Seed.Request(withUrl, 1000));
+        var none = await Create(t, Seed.Request(withoutUrl, 1000));
+
+        Assert.Equal(first.CheckoutUrl, again.CheckoutUrl);
+        Assert.NotEmpty(again.CheckoutUrl);
+        Assert.Equal("", none.CheckoutUrl);
+        Assert.Equal(2, t.Stripe.Count(Sessions)); // no new session for either
+    }
+
+    private static InternalService Service(TestPayment t, IPaymentProvider provider) =>
+        new(t.NewDb(), provider, t.Clock, t.Services.GetRequiredService<PaymentMetrics>());
+
+    private sealed class Cancelling(CancellationTokenSource cts, Func<StripeSession> result) : IPaymentProvider
+    {
+        public Task<StripeSession> CreateSessionAsync(SessionRequest request, CancellationToken ct)
+        {
+            cts.Cancel();
+            return Task.FromResult(result());
+        }
+
+        public Task<StripeSession> GetSessionAsync(string sessionId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<StripeSession> ExpireSessionAsync(string sessionId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<StripeRefund> CreateRefundAsync(Guid refundId, Guid orderId, string paymentIntentId, long amountCents, CancellationToken ct) => throw new NotSupportedException();
+        public Task<StripeRefund> GetRefundAsync(string stripeRefundId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<IReadOnlyList<StripeRefund>> ListRefundsAsync(DateTimeOffset from, DateTimeOffset to, CancellationToken ct) => throw new NotSupportedException();
+        public Task<IReadOnlyList<StripePaymentIntent>> ListPaymentIntentsAsync(DateTimeOffset from, DateTimeOffset to, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private sealed class TestCallContext(CancellationToken ct) : ServerCallContext
+    {
+        protected override string MethodCore => "CreatePayment";
+        protected override string HostCore => "localhost";
+        protected override string PeerCore => "test";
+        protected override DateTime DeadlineCore => DateTime.MaxValue;
+        protected override Metadata RequestHeadersCore { get; } = [];
+        protected override CancellationToken CancellationTokenCore => ct;
+        protected override Metadata ResponseTrailersCore { get; } = [];
+        protected override Status StatusCore { get; set; }
+        protected override WriteOptions? WriteOptionsCore { get; set; }
+        protected override AuthContext AuthContextCore => new(null, []);
+        protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions? options) => throw new NotSupportedException();
+        protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders) => Task.CompletedTask;
     }
 
     [Fact]

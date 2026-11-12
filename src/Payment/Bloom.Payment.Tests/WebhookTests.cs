@@ -325,6 +325,24 @@ public class WebhookTests(Containers containers)
         Assert.Equal(1, metrics.Sum("webhooks_total", ("result", "processed")));
     }
 
+    // P-10: the body is read through a pooled buffer; behaviour at the limit is unchanged.
+    [Fact]
+    public async Task P10_webhook_body_uses_pooled_buffer()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        const int Limit = 256 * 1024;
+        var bare = StripeEvents.Json("customer.created", new { pad = "" }, t.Clock.GetUtcNow(), "evt_limit");
+        var exact = StripeEvents.Json("customer.created", new { pad = new string('x', Limit - bare.Length) }, t.Clock.GetUtcNow(), "evt_limit");
+        Assert.Equal(Limit, System.Text.Encoding.UTF8.GetByteCount(exact));
+
+        using var accepted = await StripeEvents.PostAsync(t, exact);
+        using var refused = await StripeEvents.PostAsync(t, exact.Replace("\"pad\":\"", "\"pad\":\"x", StringComparison.Ordinal));
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, accepted.StatusCode);
+        Assert.Equal(1, await EventCountAsync(t));
+        Assert.Equal(System.Net.HttpStatusCode.RequestEntityTooLarge, refused.StatusCode);
+    }
+
     [Fact]
     public async Task Oversized_or_malformed_bodies()
     {

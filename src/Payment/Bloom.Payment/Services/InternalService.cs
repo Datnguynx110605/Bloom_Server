@@ -93,20 +93,22 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
         catch (ProviderException)
         {
             // Owner item 2: release our own claim so the next call resumes at once. A crash never gets here and waits out the 60 s.
+            // P-8: not the request's token. A caller that has gone away must not leave the claim to the 60 s path.
             var now = clock.GetUtcNow();
             await db.Database.ExecuteSqlAsync($"""
                 UPDATE payments SET locked_until = {now}, version = version + 1, updated_at = {now}
                 WHERE id = {row.Id} AND locked_until = {row.LockedUntil}
-                """, ct);
+                """, CancellationToken.None);
             throw Fail("provider_unavailable", PaymentErrors.ProviderUnavailable, "The payment provider is unavailable.");
         }
 
         // Tx 2: `open` only from `creating`, so an early `completed` webhook keeps `succeeded` (spec §7).
+        // P-8: not the request's token. Stripe already holds the session, so a cancelled caller must not strand the row in `creating`.
         var saved = await db.Database.ExecuteSqlAsync($"""
             UPDATE payments SET stripe_session_id = {session.Id}, checkout_url = {session.Url}, session_expires_at = {session.ExpiresAt},
                 status = CASE status WHEN 'creating' THEN 'open' ELSE status END, locked_until = NULL, version = version + 1, updated_at = {clock.GetUtcNow()}
             WHERE id = {row.Id}
-            """, ct);
+            """, CancellationToken.None);
         if (saved != 1) throw new InvalidOperationException($"Payment {row.Id} vanished before its session was stored.");
         metrics.Created("created");
         return Response(row.Id, session.Url, session.ExpiresAt);
@@ -121,6 +123,7 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
     private static CreatePaymentResponse Response(Guid id, string? url, DateTimeOffset? expiresAt) => new()
     {
         PaymentId = id.ToString("D"),
+        // P-9: a `succeeded` row whose Tx 2 never ran has no URL (the customer has paid, so none is needed); the proto field cannot be null, hence "".
         CheckoutUrl = url ?? "",
         SessionExpiresAt = expiresAt is { } e ? Timestamp.FromDateTimeOffset(e) : null,
     };

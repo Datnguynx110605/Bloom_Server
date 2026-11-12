@@ -67,6 +67,17 @@ public class ShellTests(Containers containers)
         Assert.Contains("Order:Payment", e.Message);
     }
 
+    // P-6: on Unix "/v1" parses as the absolute URL file:///v1.
+    [Theory]
+    [InlineData("Order:Catalog", "/v1"), InlineData("Order:Inventory", "/v1"), InlineData("Order:Launch", "/v1"), InlineData("Order:Payment", "/v1"), InlineData("Order:Fulfillment", "/v1")]
+    [InlineData("Order:Payment", "ftp://payment.test")]
+    public void P6_relative_v1_base_url_rejected(string key, string value)
+    {
+        var e = Assert.Throws<InvalidOperationException>(() => Build("api", new() { [key] = value }));
+        Assert.Contains(key, e.Message);
+        Assert.DoesNotContain(value, e.Message);
+    }
+
     public static TheoryData<string, StatusCode> ReasonTable() => new()
     {
         { "CART_EMPTY", StatusCode.FailedPrecondition }, { "SKU_NOT_BUYABLE", StatusCode.FailedPrecondition },

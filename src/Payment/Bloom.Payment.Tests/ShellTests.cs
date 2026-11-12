@@ -56,6 +56,16 @@ public class ShellTests(Containers containers)
         Assert.Contains(key, e.Message);
     }
 
+    // P-6: on Unix "/v1" parses as the absolute URL file:///v1.
+    [Theory]
+    [InlineData("Payment:Stripe:BaseUrl", "/v1"), InlineData("Payment:StorefrontBaseUrl", "/v1"), InlineData("Payment:Stripe:BaseUrl", "ftp://stripe.test")]
+    public void P6_relative_v1_base_url_rejected(string key, string value)
+    {
+        var e = Assert.Throws<InvalidOperationException>(() => Build("api", new() { [key] = value }));
+        Assert.Contains(key, e.Message);
+        Assert.DoesNotContain(value, e.Message);
+    }
+
     public static TheoryData<string, StatusCode> ReasonTable() => new()
     {
         { "PAYMENT_EXISTS_DIFFERENT_AMOUNT", StatusCode.InvalidArgument }, { "PAYMENT_CREATE_IN_PROGRESS", StatusCode.Aborted },

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using Bloom.Payment.Stripe;
 using Microsoft.Extensions.Time.Testing;
 
@@ -196,6 +197,52 @@ public class StripeClientTests
         var intents = await _client.ListPaymentIntentsAsync(from, to, Ct);
         Assert.Equal(3, intents.Count);
         Assert.All(intents, p => Assert.Equal("succeeded", p.Status));
+    }
+
+    private sealed class Canned(Func<HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => Task.FromResult(respond());
+    }
+
+    private static StripeClient ClientAnswering(Func<HttpResponseMessage> respond)
+    {
+        var options = new PaymentOptions { StorefrontBaseUrl = "https://shop.test", Stripe = { ApiKey = "sk_test_x", WebhookSecret = Secret, BaseUrl = "https://stripe.test/" } };
+        var http = new HttpClient(new Canned(respond), disposeHandler: true);
+        StripeClient.Configure(http, options.Stripe);
+        return new StripeClient(http, options);
+    }
+
+    private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK) =>
+        new(status) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
+
+    private static async Task AssertUnreadableAsync(Task call)
+    {
+        var e = await Assert.ThrowsAsync<ProviderException>(() => call);
+        Assert.True(e.Transient);
+        Assert.Equal(ProviderException.Unavailable, e.Reason);
+    }
+
+    [Fact]
+    public async Task P7_empty_page_with_has_more_throws_ProviderException()
+    {
+        var client = ClientAnswering(() => Json("""{"data":[],"has_more":true}"""));
+
+        await AssertUnreadableAsync(client.ListRefundsAsync(_clock.GetUtcNow().AddHours(-1), _clock.GetUtcNow(), Ct));
+    }
+
+    [Fact]
+    public async Task P7_out_of_range_timestamp_throws()
+    {
+        var client = ClientAnswering(() => Json("""{"id":"cs_x","status":"open","expires_at":99999999999999}"""));
+
+        await AssertUnreadableAsync(client.GetSessionAsync("cs_x", Ct));
+    }
+
+    [Fact]
+    public async Task P7_null_id_throws()
+    {
+        await AssertUnreadableAsync(ClientAnswering(() => Json("""{"id":null,"status":"open","expires_at":1800000000}""")).GetSessionAsync("cs_x", Ct));
+        await AssertUnreadableAsync(ClientAnswering(() => Json("""{"data":[{"id":null,"status":"succeeded","amount":1,"created":1800000000}],"has_more":true}""")).ListRefundsAsync(_clock.GetUtcNow().AddHours(-1), _clock.GetUtcNow(), Ct));
     }
 
     [Fact]

@@ -43,6 +43,7 @@ public sealed class OrderOptions
     private static void Url(string key, string value)
     {
         Require(key, value);
-        if (!Uri.TryCreate(value, UriKind.Absolute, out _)) throw Bad(key, "must be an absolute URL");
+        // P-6: on Unix "/v1" parses as the absolute URL file:///v1, so the scheme is checked too.
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")) throw Bad(key, "must be an absolute http or https URL");
     }
 }

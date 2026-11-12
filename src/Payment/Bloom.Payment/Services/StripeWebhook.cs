@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
@@ -28,71 +29,80 @@ public static class StripeWebhook
         TimeProvider clock, ILoggerFactory loggers, CancellationToken ct)
     {
         var logger = loggers.CreateLogger("Bloom.Payment.StripeWebhook");
-        var buffer = new byte[MaxBodyBytes + 1];
-        var length = await request.Body.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, ct);
-        if (length > MaxBodyBytes)
-        {
-            logger.LogError("A Stripe webhook body above {Max} bytes was refused", MaxBodyBytes);
-            metrics.Webhook("unknown", "error");
-            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
-        }
-        var body = buffer.AsMemory(0, length);
-
-        if (!WebhookSignature.Verify(request.Headers["Stripe-Signature"], body.Span, options.Stripe.WebhookSecret, clock.GetUtcNow()))
-        {
-            logger.LogError("A Stripe webhook with a missing or invalid signature was refused");
-            metrics.Webhook("unknown", "bad_signature");
-            return Results.BadRequest();
-        }
-
-        JsonDocument doc;
+        // P-10: a pooled buffer, not a new 256 KB array per request. It goes back only after the last use of `body`, so everything below runs inside the try.
+        var buffer = ArrayPool<byte>.Shared.Rent(MaxBodyBytes + 1);
         try
         {
-            doc = JsonDocument.Parse(body);
-        }
-        catch (JsonException)
-        {
-            return Malformed(logger, metrics);
-        }
-        using (doc)
-        {
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || Str(root, "id") is not { } eventId || Str(root, "type") is not { } type
-                || Int(root, "created") is not { } created || created is < 0 or > 253402300799) // a Unix time DateTimeOffset can hold
-                return Malformed(logger, metrics);
+            // Rent may hand back a larger array: read into a slice of exactly MaxBodyBytes + 1, and keep only the bytes read.
+            var length = await request.Body.ReadAtLeastAsync(buffer.AsMemory(0, MaxBodyBytes + 1), MaxBodyBytes + 1, throwOnEndOfStream: false, ct);
+            if (length > MaxBodyBytes)
+            {
+                logger.LogError("A Stripe webhook body above {Max} bytes was refused", MaxBodyBytes);
+                metrics.Webhook("unknown", "error");
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+            var body = buffer.AsMemory(0, length);
 
+            if (!WebhookSignature.Verify(request.Headers["Stripe-Signature"], body.Span, options.Stripe.WebhookSecret, clock.GetUtcNow()))
+            {
+                logger.LogError("A Stripe webhook with a missing or invalid signature was refused");
+                metrics.Webhook("unknown", "bad_signature");
+                return Results.BadRequest();
+            }
+
+            JsonDocument doc;
             try
             {
-                await using var tx = await db.Database.BeginTransactionAsync(ct);
-                var now = clock.GetUtcNow();
-                var payload = System.Text.Encoding.UTF8.GetString(body.Span);
-                var stored = await db.Database.ExecuteSqlAsync($"""
-                    INSERT INTO provider_events (event_id, type, payload, received_at) VALUES ({eventId}, {type}, {payload}::jsonb, {now})
-                    ON CONFLICT DO NOTHING
-                    """, ct);
-                if (stored == 0)
+                doc = JsonDocument.Parse(body);
+            }
+            catch (JsonException)
+            {
+                return Malformed(logger, metrics);
+            }
+            using (doc)
+            {
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object || Str(root, "id") is not { } eventId || Str(root, "type") is not { } type
+                    || Int(root, "created") is not { } created || created is < 0 or > 253402300799) // a Unix time DateTimeOffset can hold
+                    return Malformed(logger, metrics);
+
+                try
                 {
-                    metrics.Webhook(type, "duplicate");
+                    await using var tx = await db.Database.BeginTransactionAsync(ct);
+                    var now = clock.GetUtcNow();
+                    var payload = System.Text.Encoding.UTF8.GetString(body.Span);
+                    var stored = await db.Database.ExecuteSqlAsync($"""
+                        INSERT INTO provider_events (event_id, type, payload, received_at) VALUES ({eventId}, {type}, {payload}::jsonb, {now})
+                        ON CONFLICT DO NOTHING
+                        """, ct);
+                    if (stored == 0)
+                    {
+                        metrics.Webhook(type, "duplicate");
+                        return Results.Ok();
+                    }
+
+                    var obj = root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object && data.TryGetProperty("object", out var o) && o.ValueKind == JsonValueKind.Object ? o : default;
+                    var alert = obj.ValueKind == JsonValueKind.Object ? await ApplyAsync(type, obj, created, db, transitions, outbox, logger, ct) : null;
+                    await db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+                    transitions.Emit();
+                    alert?.Invoke(); // after the commit, like the transitions' own logs (P-4)
+
+                    metrics.Webhook(type, "processed");
+                    metrics.WebhookLag((clock.GetUtcNow() - DateTimeOffset.FromUnixTimeSeconds(created)).TotalSeconds);
                     return Results.Ok();
                 }
-
-                var obj = root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object && data.TryGetProperty("object", out var o) && o.ValueKind == JsonValueKind.Object ? o : default;
-                var alert = obj.ValueKind == JsonValueKind.Object ? await ApplyAsync(type, obj, created, db, transitions, outbox, logger, ct) : null;
-                await db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-                transitions.Emit();
-                alert?.Invoke(); // after the commit, like the transitions' own logs (P-4)
-
-                metrics.Webhook(type, "processed");
-                metrics.WebhookLag((clock.GetUtcNow() - DateTimeOffset.FromUnixTimeSeconds(created)).TotalSeconds);
-                return Results.Ok();
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    logger.LogError(e, "Processing Stripe event {EventId} ({Type}) failed", eventId, type);
+                    metrics.Webhook(type, "error");
+                    return Results.StatusCode(StatusCodes.Status500InternalServerError);
+                }
             }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                logger.LogError(e, "Processing Stripe event {EventId} ({Type}) failed", eventId, type);
-                metrics.Webhook(type, "error");
-                return Results.StatusCode(StatusCodes.Status500InternalServerError);
-            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

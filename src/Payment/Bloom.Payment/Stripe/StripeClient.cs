@@ -90,7 +90,10 @@ public sealed class StripeClient(HttpClient http, PaymentOptions options) : IPay
             (var items, after) = await SendAsync(HttpMethod.Get, $"{path}?{query}", null, null, page =>
             {
                 var data = page.GetProperty("data").EnumerateArray().ToList();
-                var next = page.GetProperty("has_more").GetBoolean() ? data[^1].GetProperty("id").GetString() : null;
+                // P-7: a page that says there is more but has no last item would end the list early, or crash on data[^1].
+                var next = page.GetProperty("has_more").GetBoolean()
+                    ? Id(data.Count > 0 ? data[^1] : throw new InvalidOperationException("Stripe sent an empty page with has_more."))
+                    : null;
                 return (data.Select(read).ToList(), next);
             }, ct);
             all.AddRange(items);
@@ -114,7 +117,7 @@ public sealed class StripeClient(HttpClient http, PaymentOptions options) : IPay
             using var json = JsonDocument.Parse(body);
             return read(json.RootElement);
         }
-        catch (Exception e) when (!ct.IsCancellationRequested && e is HttpRequestException or OperationCanceledException or JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+        catch (Exception e) when (!ct.IsCancellationRequested && e is HttpRequestException or OperationCanceledException or JsonException or KeyNotFoundException or InvalidOperationException or FormatException or ArgumentOutOfRangeException)
         {
             throw new ProviderException(true, ProviderException.Unavailable, $"Stripe call {method} {url} failed: {e.Message}", e);
         }
@@ -138,17 +141,19 @@ public sealed class StripeClient(HttpClient http, PaymentOptions options) : IPay
 
     private static string? Text(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
+    private static string Id(JsonElement e) => Text(e, "id") ?? throw new InvalidOperationException("A Stripe object has no id.");
+
     private static DateTimeOffset Unix(JsonElement e, string name) => DateTimeOffset.FromUnixTimeSeconds(e.GetProperty(name).GetInt64());
 
     private static StripeSession Session(JsonElement s) => new(
-        s.GetProperty("id").GetString()!, Text(s, "url"), s.GetProperty("status").GetString()!, Text(s, "payment_status"), Text(s, "payment_intent"),
+        Id(s), Text(s, "url"), s.GetProperty("status").GetString()!, Text(s, "payment_status"), Text(s, "payment_intent"),
         s.TryGetProperty("amount_total", out var total) && total.ValueKind == JsonValueKind.Number ? total.GetInt64() : null, Unix(s, "expires_at"));
 
     private static StripeRefund Refund(JsonElement r) => new(
-        r.GetProperty("id").GetString()!, r.GetProperty("status").GetString()!, r.GetProperty("amount").GetInt64(), Text(r, "failure_reason"),
+        Id(r), r.GetProperty("status").GetString()!, r.GetProperty("amount").GetInt64(), Text(r, "failure_reason"),
         r.TryGetProperty("metadata", out var m) && m.ValueKind == JsonValueKind.Object && Text(m, "refund_id") is { } id && Guid.TryParse(id, out var refundId) ? refundId : null,
         Unix(r, "created"));
 
     private static StripePaymentIntent PaymentIntent(JsonElement p) => new(
-        p.GetProperty("id").GetString()!, p.GetProperty("status").GetString()!, p.GetProperty("amount").GetInt64(), Unix(p, "created"));
+        Id(p), p.GetProperty("status").GetString()!, p.GetProperty("amount").GetInt64(), Unix(p, "created"));
 }
