@@ -18,6 +18,9 @@ public sealed class TestFulfillmentOptions
 
     /// <summary>Reuses this database (for example an API host and a worker host on one database) instead of creating one.</summary>
     public string? ConnectionString { get; set; }
+
+    /// <summary>Extra services of the app (for example a DbContext interceptor), registered before the app's own.</summary>
+    public Action<IServiceCollection>? ConfigureServices { get; set; }
 }
 
 /// <summary>The fulfillment app built through <see cref="FulfillmentApp.Build"/> on <c>TestServer</c> (plan R1), on its own database (plan R23).</summary>
@@ -76,6 +79,7 @@ public sealed class TestFulfillment : IAsyncDisposable
             b.Configuration.AddInMemoryCollection(config);
             b.Services.AddSingleton<TimeProvider>(clock); // registered first, so the app's TryAdd keeps it
             b.Services.AddSingleton<ILoggerProvider>(logs);
+            options.ConfigureServices?.Invoke(b.Services);
             b.Services.AddHttpClient<IShippo, ShippoClient>().ConfigurePrimaryHttpMessageHandler(() => shippo); // the app's own registration adds the rest
         });
         if (fresh)

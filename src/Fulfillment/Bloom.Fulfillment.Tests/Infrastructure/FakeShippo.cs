@@ -40,6 +40,9 @@ public sealed class FakeShippo : HttpMessageHandler
     /// <summary>Runs inside <c>POST transactions/</c>, before the transaction is stored.</summary>
     public Action? BeforeTransaction { get; set; }
 
+    /// <summary>Runs at the start of every call, before anything else (lets a test move the clock while "Shippo" answers, F-3).</summary>
+    public Action? OnRequest { get; set; }
+
     /// <summary>Calls whose path (without the leading slash) starts with <paramref name="pathPrefix"/>, failed ones included; <c>""</c> counts all.</summary>
     public int Calls(string pathPrefix)
     {
@@ -57,16 +60,16 @@ public sealed class FakeShippo : HttpMessageHandler
         lock (_gate) _tracking[number] = status;
     }
 
-    /// <summary>A transaction Shippo already holds (a foreign or duplicate label).</summary>
-    public ShippoLabel AddLabel(string metadata)
+    /// <summary>A transaction Shippo already holds (a foreign or duplicate label). Add in creation order: the list answers newest first.</summary>
+    public ShippoLabel AddLabel(string metadata, DateTimeOffset? created = null, string? trackingNumber = null)
     {
-        lock (_gate) return Store(metadata, null);
+        lock (_gate) return Store(metadata, null, created, trackingNumber);
     }
 
-    private ShippoLabel Store(string metadata, string? token)
+    private ShippoLabel Store(string metadata, string? token, DateTimeOffset? created = null, string? trackingNumber = null)
     {
         var n = _transactions.Count + 1; // callers hold _gate
-        var label = new ShippoLabel($"tx-{n}", $"TRK{n}", $"https://labels.test/{n}.pdf", metadata, DateTimeOffset.UtcNow);
+        var label = new ShippoLabel($"tx-{n}", trackingNumber ?? $"TRK{n}", $"https://labels.test/{n}.pdf", metadata, created ?? DateTimeOffset.UtcNow);
         _transactions.Add(label);
         if (token is not null) _tokens.Add(token);
         return label;
@@ -74,6 +77,7 @@ public sealed class FakeShippo : HttpMessageHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        OnRequest?.Invoke();
         var path = request.RequestUri!.AbsolutePath.TrimStart('/');
         JsonElement? body = request.Content is null ? null : JsonDocument.Parse(await request.Content.ReadAsStringAsync(ct)).RootElement;
         lock (_gate)

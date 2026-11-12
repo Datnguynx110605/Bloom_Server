@@ -40,29 +40,32 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
     /// <summary>Buys every due <c>label_pending</c> shipment, then voids every <c>void_pending</c> one.</summary>
     internal async Task RunOnceAsync(CancellationToken ct)
     {
-        while (await BuyOneAsync(ct)) { }
+        var tried = new List<Guid>(); // a row whose failure couldn't be recorded stays due: try each shipment once per pass, so it neither spins nor blocks the rows behind it (F-2)
+        while (await BuyOneAsync(tried, ct)) { }
         var attempted = new List<Guid>(); // a failed void stays void_pending: try each shipment once per pass, the next tick retries
         while (await VoidOneAsync(attempted, ct)) { }
     }
 
-    private async Task<bool> BuyOneAsync(CancellationToken ct)
+    private async Task<bool> BuyOneAsync(List<Guid> tried, CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
         var shippo = scope.ServiceProvider.GetRequiredService<IShippo>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var now = clock.GetUtcNow();
+        var ids = tried.ToArray();
         var shipment = (await db.Shipments.FromSql($"""
             SELECT * FROM shipments
-            WHERE status = {ShipmentStatuses.LabelPending} AND next_attempt_at <= {now}
+            WHERE status = {ShipmentStatuses.LabelPending} AND next_attempt_at <= {now} AND id <> ALL({ids})
             ORDER BY next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED
             """).AsNoTracking().ToListAsync(ct)).SingleOrDefault();
         if (shipment is null) return false;
+        tried.Add(shipment.Id);
 
         try
         {
             var metadata = ShippoClient.MetadataPrefix + shipment.Id.ToString("D");
-            var found = (await shippo.ListLabelsAsync(shipment.CreatedAt - ClockSkew, ct)).FirstOrDefault(l => l.Metadata == metadata); // lookup before buy (FR-05)
+            var found = (await shippo.ListLabelsAsync(shipment.CreatedAt - ClockSkew, ct)).FirstOrDefault(l => l.Metadata == metadata)?.Validated(); // lookup before buy (FR-05); only the matched label is validated (F-1)
             var label = found ?? await shippo.BuyLabelAsync(await RequestAsync(db, shipment, ct), ct);
             await db.Database.ExecuteSqlAsync($"""
                 UPDATE shipments
@@ -78,8 +81,15 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
         {
             // Any failure of this row (Shippo, an unreadable address, ...) is a failed attempt, so a poison row backs off and the next row is still served.
             // The row lock is released first; the bookkeeping runs in a fresh transaction.
-            await tx.RollbackAsync(CancellationToken.None);
-            await FailAsync(shipment, now, e, ct);
+            try
+            {
+                await tx.RollbackAsync(CancellationToken.None);
+            }
+            catch (Exception rollback)
+            {
+                logger.LogWarning(rollback, "Rolling back the label transaction of shipment {ShipmentId} failed; its lock went with the connection", shipment.Id);
+            }
+            await FailAsync(shipment, e, ct);
         }
         return true;
     }
@@ -110,19 +120,33 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
         return new LabelRequest(shipment.Id, isReturn ? customer : warehouse, isReturn ? warehouse : customer, token, isReturn);
     }
 
-    private async Task FailAsync(Shipment shipment, DateTimeOffset now, Exception e, CancellationToken ct)
+    private async Task FailAsync(Shipment shipment, Exception e, CancellationToken ct)
     {
         var n = shipment.LabelAttempts + 1;
-        var next = now + Backoff[Math.Min(n, Backoff.Length) - 1];
-        await using (var scope = scopes.CreateAsyncScope())
+        DateTimeOffset next;
+        for (var attempt = 1; ; attempt++) // a database failure here would leave the row first in line: one more try, then give up for this pass (F-2)
         {
-            var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
-            await using var tx = await db.Database.BeginTransactionAsync(ct);
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE shipments SET label_attempts = {n}, next_attempt_at = {next}, version = version + 1
-                WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelPending}
-                """, ct);
-            await tx.CommitAsync(ct);
+            next = clock.GetUtcNow() + Backoff[Math.Min(n, Backoff.Length) - 1]; // from now, after the Shippo call (F-3)
+            try
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE shipments SET label_attempts = {n}, next_attempt_at = {next}, version = version + 1
+                    WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelPending}
+                    """, ct);
+                await tx.CommitAsync(ct);
+                break;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                if (attempt == 2)
+                {
+                    logger.LogError(ex, "Recording the failed label attempt of shipment {ShipmentId} failed; it is tried again on the next pass", shipment.Id);
+                    return;
+                }
+            }
         }
         if (n < AlertAttempt) logger.LogWarning(e, "Label for shipment {ShipmentId} failed (attempt {Attempt}); retrying at {NextAttemptAt}", shipment.Id, n, next);
         else if (n == AlertAttempt)

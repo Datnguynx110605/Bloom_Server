@@ -1,6 +1,10 @@
+using System.Data.Common;
 using System.Text.Json;
 using Bloom.Fulfillment.Data;
+using Bloom.Fulfillment.Shippo;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
 namespace Bloom.Fulfillment.Tests;
@@ -241,6 +245,109 @@ public class LabelTests(Containers containers)
         Assert.Equal(ShipmentStatuses.LabelPending, pending.Status);
         Assert.Equal(1, pending.LabelAttempts);
         Assert.Null(pending.TrackingNumber);
+    }
+
+    [Fact]
+    public async Task F1_list_labels_tolerates_malformed_unrelated_entry()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, shipmentId) = await PackedAsync(t);
+        t.Shippo.AddLabel($"bloom:{Guid.NewGuid()}", trackingNumber: ""); // an unrelated SUCCESS entry without a tracking number
+        var own = t.Shippo.AddLabel($"bloom:{shipmentId}");
+
+        var listed = await t.Services.GetRequiredService<IShippo>().ListLabelsAsync(t.Clock.GetUtcNow().AddHours(-1), Ct);
+        Assert.Equal(2, listed.Count);
+
+        await Seed.RunLabelWorkerAsync(t);
+
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal((ShipmentStatuses.LabelReady, own.TransactionId), (shipment.Status, shipment.ShippoTransactionId)); // found and reused, not bought
+        Assert.Equal(2, t.Shippo.Transactions.Count);
+    }
+
+    [Fact]
+    public async Task F1_matched_label_without_a_tracking_number_fails_the_attempt()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, shipmentId) = await PackedAsync(t);
+        t.Shippo.AddLabel($"bloom:{shipmentId}", trackingNumber: "");
+
+        await Seed.RunLabelWorkerAsync(t);
+
+        var pending = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal((ShipmentStatuses.LabelPending, 1), (pending.Status, pending.LabelAttempts));
+        Assert.Null(pending.TrackingNumber);
+        Assert.Single(t.Shippo.Transactions); // nothing bought on top
+    }
+
+    /// <summary>Fails the failure bookkeeping UPDATE (<c>SET label_attempts</c>) <see cref="Failures"/> times: the narrowest seam for a database failure after the Shippo call.</summary>
+    private sealed class FailBookkeeping : DbCommandInterceptor
+    {
+        public int Failures, Hits;
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken ct)
+        {
+            if (!command.CommandText.Contains("SET label_attempts") || Interlocked.Decrement(ref Failures) < 0) return base.NonQueryExecutingAsync(command, eventData, result, ct);
+            Interlocked.Increment(ref Hits);
+            throw new NpgsqlException("injected database failure");
+        }
+    }
+
+    private static async Task<TestFulfillment> StartWithAsync(Containers containers, FailBookkeeping fail) =>
+        await TestFulfillment.StartAsync(containers, o => o.ConfigureServices = s => s.ConfigureDbContext<FulfillmentDbContext>(db => db.AddInterceptors(fail)));
+
+    [Fact]
+    public async Task F2_db_failure_during_rollback_moves_row_back_in_line()
+    {
+        var fail = new FailBookkeeping();
+        await using var t = await StartWithAsync(containers, fail);
+        var (_, shipmentId) = await PackedAsync(t);
+        t.Shippo.FailNext(1);
+        fail.Failures = 1; // the first bookkeeping attempt fails
+
+        await Seed.RunLabelWorkerAsync(t);
+
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal((ShipmentStatuses.LabelPending, 1), (shipment.Status, shipment.LabelAttempts));
+        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1)); // back in line, not first
+        Assert.Equal(1, fail.Hits); // the injection did fire
+    }
+
+    [Fact]
+    public async Task F2_persistent_bookkeeping_failure_does_not_pin_the_row_first()
+    {
+        var fail = new FailBookkeeping();
+        await using var t = await StartWithAsync(containers, fail);
+        var (_, poisonedId) = await PackedAsync(t);
+        t.Clock.Advance(TimeSpan.FromSeconds(1)); // the good row is due later: the poisoned one is served first
+        var good = Seed.Ready();
+        await Seed.ReadyAsync(t, good);
+        var goodId = (await Seed.PackedAsync(t, good, "SN3", "SN4")).ShipmentId;
+        t.Shippo.FailNext(1);
+        fail.Failures = int.MaxValue; // the bookkeeping never succeeds
+
+        await Seed.RunLabelWorkerAsync(t); // doesn't throw, doesn't spin on the poisoned row
+
+        Assert.Equal(ShipmentStatuses.LabelReady, (await Seed.ShipmentAsync(t, goodId)).Status);
+        var poisoned = await Seed.ShipmentAsync(t, poisonedId);
+        Assert.Equal((ShipmentStatuses.LabelPending, 0), (poisoned.Status, poisoned.LabelAttempts));
+        Assert.Equal(2, fail.Hits); // both bookkeeping attempts of the poisoned row failed
+        Assert.Equal(3, t.Shippo.Calls("transactions/")); // the poisoned row's failed lookup once, the good row's lookup and buy
+    }
+
+    [Fact]
+    public async Task F3_retry_delay_measured_after_shippo_call()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (_, shipmentId) = await PackedAsync(t);
+        t.Shippo.FailNext(1);
+        t.Shippo.OnRequest = () => t.Clock.Advance(TimeSpan.FromSeconds(10)); // the call takes 10 s
+
+        await Seed.RunLabelWorkerAsync(t);
+
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal(1, shipment.LabelAttempts);
+        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1)); // after-call time + 1 s, not before-call time + 1 s
     }
 
     /// <summary>Blocks (synchronously: it runs inside the fake's handler) until some session waits for a lock, so the test really exercises the row-lock wait.</summary>

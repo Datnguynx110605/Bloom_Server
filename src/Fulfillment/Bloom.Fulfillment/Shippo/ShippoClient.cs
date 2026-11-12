@@ -44,9 +44,11 @@ public sealed class ShippoClient(HttpClient http, FulfillmentOptions options) : 
             {
                 foreach (var t in page.GetProperty("results").EnumerateArray())
                 {
-                    if (t.GetProperty("object_created").GetDateTimeOffset() < since) return null; // newest first: nothing older matters
-                    if (t.GetProperty("status").GetString() == "SUCCESS" && (t.GetProperty("metadata").GetString() ?? "").StartsWith(MetadataPrefix, StringComparison.Ordinal))
-                        labels.Add(Label(t));
+                    // Lenient (F-1): a malformed entry that isn't ours is skipped, it must not fail every lookup. The label worker validates the one it matches.
+                    if (t.ValueKind != JsonValueKind.Object || !t.TryGetProperty("object_created", out var c) || c.ValueKind != JsonValueKind.String || !c.TryGetDateTimeOffset(out var created)) continue;
+                    if (created < since) return null; // newest first: nothing older matters
+                    if (Text(t, "status") == "SUCCESS" && Text(t, "metadata").StartsWith(MetadataPrefix, StringComparison.Ordinal))
+                        labels.Add(Parse(t, created));
                 }
                 return page.GetProperty("next").GetString();
             }, ct);
@@ -65,13 +67,12 @@ public sealed class ShippoClient(HttpClient http, FulfillmentOptions options) : 
     private static object Address(ShippoAddress a) =>
         new { name = a.Name, street1 = a.Street1, street2 = a.Street2 ?? "", city = a.City, state = a.State, zip = a.Zip, country = "US", phone = a.Phone };
 
-    // A "SUCCESS" transaction without id, tracking number or label URL is unusable: fail the attempt (retry path) instead of writing nulls.
-    private static ShippoLabel Label(JsonElement t) => new(
-        Required(t, "object_id"), Required(t, "tracking_number"), Required(t, "label_url"),
-        t.GetProperty("metadata").GetString()!, t.GetProperty("object_created").GetDateTimeOffset());
+    private static string Text(JsonElement t, string name) => t.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()! : "";
 
-    private static string Required(JsonElement t, string name) =>
-        t.GetProperty(name).GetString() is { Length: > 0 } value ? value : throw new ShippoException($"Shippo transaction has no '{name}'.");
+    // A "SUCCESS" transaction without id, tracking number or label URL is unusable: fail the attempt (retry path) instead of writing nulls.
+    private static ShippoLabel Label(JsonElement t) => Parse(t, t.GetProperty("object_created").GetDateTimeOffset()).Validated();
+
+    private static ShippoLabel Parse(JsonElement t, DateTimeOffset created) => new(Text(t, "object_id"), Text(t, "tracking_number"), Text(t, "label_url"), Text(t, "metadata"), created);
 
     /// <summary>One Shippo call; <paramref name="parse"/> reads the answer. Whatever goes wrong becomes a <see cref="ShippoException"/>.</summary>
     private async Task<T> CallAsync<T>(HttpMethod method, string url, object? body, Func<JsonElement, T> parse, CancellationToken ct)

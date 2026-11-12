@@ -16,10 +16,10 @@ namespace Bloom.Fulfillment.Tests;
 /// <summary>Inventory's packing and stock APIs on Kestrel <c>127.0.0.1:0</c>, HTTP/2 without TLS (as inventory's <c>FakeCatalog</c>). Every call succeeds unless scripted.</summary>
 public sealed class FakeInventory : IAsyncDisposable
 {
-    public sealed record Call(string Method, IMessage Request, string? UserId);
+    public sealed record Call(string Method, IMessage Request, string? UserId, string? UserType = null, string? Role = null);
 
     private readonly ConcurrentQueue<Call> _calls = [];
-    private readonly ConcurrentDictionary<string, (StatusCode Code, string Reason, int Left)> _failures = [];
+    private readonly ConcurrentDictionary<string, (StatusCode Code, string? Reason, int Left)> _failures = [];
     private WebApplication _app = null!;
 
     public Uri Address { get; private set; } = null!;
@@ -33,8 +33,8 @@ public sealed class FakeInventory : IAsyncDisposable
     /// <summary>Awaited at the start of every call, before it is recorded (lets a test make a call slow or look at the database meanwhile).</summary>
     public Func<Task>? Before { get; set; }
 
-    /// <summary>The next <paramref name="times"/> calls of <paramref name="method"/> (for example <c>AssignSerial</c>) fail with a <c>bloom</c> error.</summary>
-    public void Fail(string method, StatusCode code, string reason, int times = 1) => _failures[method] = (code, reason, times);
+    /// <summary>The next <paramref name="times"/> calls of <paramref name="method"/> (for example <c>AssignSerial</c>) fail with a <c>bloom</c> error; a null <paramref name="reason"/> fails with a plain gRPC status instead (no <c>ErrorInfo</c>).</summary>
+    public void Fail(string method, StatusCode code, string? reason, int times = 1) => _failures[method] = (code, reason, times);
 
     public int Count(string method) => _calls.Count(c => c.Method == method);
 
@@ -59,11 +59,11 @@ public sealed class FakeInventory : IAsyncDisposable
     private async Task<Empty> HandleAsync(string method, IMessage request, ServerCallContext context)
     {
         if (Before is { } before) await before();
-        _calls.Enqueue(new Call(method, request, context.RequestHeaders.GetValue("x-bloom-user-id")));
+        _calls.Enqueue(new Call(method, request, context.RequestHeaders.GetValue("x-bloom-user-id"), context.RequestHeaders.GetValue("x-bloom-user-type"), context.RequestHeaders.GetValue("x-bloom-role")));
         if (_failures.TryGetValue(method, out var f) && f.Left > 0)
         {
             _failures[method] = f with { Left = f.Left - 1 };
-            throw BloomErrors.Create(f.Code, f.Reason, $"{method} is scripted to fail.");
+            throw f.Reason is null ? new RpcException(new Status(f.Code, $"{method} is scripted to fail.")) : BloomErrors.Create(f.Code, f.Reason, $"{method} is scripted to fail.");
         }
         if (SoldOut && method == "CommitForReship") throw BloomErrors.Create(StatusCode.FailedPrecondition, "SOLD_OUT", "Sold out.");
         return new Empty();
