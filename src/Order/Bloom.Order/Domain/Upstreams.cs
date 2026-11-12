@@ -45,6 +45,7 @@ public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, Inv
     /// <summary>
     /// Inventory's <c>ReserveStock</c> (idempotent by order). A <c>bloom</c> rejection (<c>SOLD_OUT</c>, <c>RESERVATION_CONFLICT</c>, …) is rethrown as it came (plan R10).
     /// A plain status that the idempotency guard would store as an answer is <c>UNAVAILABLE</c> here, so the key is released instead.
+    /// <c>ORDER_RELEASED</c> (inventory holds a release tombstone for the order, LLD-ADR-014) is <c>CHECKOUT_CLOSED</c> (03-order §5.2, D17).
     /// </summary>
     public async Task ReserveAsync(Guid orderId, IEnumerable<(Guid SkuId, int Quantity)> lines, CancellationToken ct)
     {
@@ -53,6 +54,10 @@ public sealed class Upstreams(CatalogInternal.CatalogInternalClient catalog, Inv
         try
         {
             await inventory.ReserveStockAsync(request, deadline: DateTime.UtcNow + Deadline, cancellationToken: ct);
+        }
+        catch (RpcException e) when (BloomReason(e) == "ORDER_RELEASED")
+        {
+            throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
         }
         catch (RpcException e) when (IsRejection(e) && !IsBloom(e))
         {

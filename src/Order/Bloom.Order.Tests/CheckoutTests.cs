@@ -381,6 +381,33 @@ public class CheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task D17_sweep_release_then_late_reserve_is_CHECKOUT_CLOSED()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, _) = await CartOfOneAsync(t);
+        var key = Guid.NewGuid();
+        t.Upstreams.Fail("ReserveStock", StatusCode.FailedPrecondition, "ORDER_RELEASED"); // inventory tombstoned the order when the sweep's release arrived: it holds nothing
+        t.Upstreams.Before = async method =>
+        {
+            if (method != "ReserveStock") return;
+            t.Clock.Advance(TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(1));
+            await t.Sweeps().RunCreatingAsync(Ct); // the creating sweep cancels the order and sends the release while the reserve is on its way
+        };
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.FailedPrecondition, "CHECKOUT_CLOSED");
+        await FailsAsync(Seed.CheckoutAsync(t, account, key), StatusCode.FailedPrecondition, "CHECKOUT_CLOSED"); // stored on the key
+
+        var order = await OrderOfAsync(t, account);
+        Assert.Equal((OrderStatuses.Cancelled, CancelReasons.CheckoutFailed), (order.Status, order.CancelReason));
+        Assert.Equal(1, t.Upstreams.Count("ReserveStock"));
+        Assert.Equal(order.Id, Assert.Single(await ReleasesAsync(t)).OrderId); // the sweep's release only: nothing is left reserved and nothing more is sent
+        Assert.Single(await Outbox.PayloadsAsync<OrderCancelledV1>(t, OrderMessages.Cancelled));
+        await using var db = t.NewDb();
+        Assert.Equal(SagaTypes.CheckoutCompensation, (await db.OrderSagas.AsNoTracking().SingleAsync(Ct)).Type);
+        Assert.Empty(await db.OrderLines.Where(l => l.OrderId == order.Id).ToListAsync(Ct));
+    }
+
+    [Fact]
     public async Task Empty_cart_is_CART_EMPTY()
     {
         await using var t = await TestOrder.StartAsync(containers);
