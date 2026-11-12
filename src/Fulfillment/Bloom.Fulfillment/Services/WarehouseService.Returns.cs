@@ -28,7 +28,7 @@ public sealed partial class WarehouseService
         return new ListReturnsResponse { Items = { await Views.ReturnsAsync(db, page, context.CancellationToken) } };
     }
 
-    /// <summary><c>label_issued | in_transit → received</c> in one guarded update (R9); zero rows: the status says why.</summary>
+    /// <summary><c>label_issued | in_transit | expired → received</c> (RET-R15: a parcel that arrives after expiry is inspected and decided as usual, D33) in one guarded update (R9); zero rows: the status says why.</summary>
     public override async Task<V1.ReturnRequest> ReceiveReturn(ReceiveReturnRequest request, ServerCallContext context)
     {
         var caller = Caller.From(context).RequireStaff(Caller.Packers);
@@ -39,10 +39,10 @@ public sealed partial class WarehouseService
         var now = clock.GetUtcNow();
         var updated = await db.Database.SqlQuery<Guid>($"""
             UPDATE return_requests SET status = {ReturnStatuses.Received}, version = version + 1, updated_at = {now}
-            WHERE id = {returnId} AND status IN ({ReturnStatuses.LabelIssued}, {ReturnStatuses.InTransit})
+            WHERE id = {returnId} AND status IN ({ReturnStatuses.LabelIssued}, {ReturnStatuses.InTransit}, {ReturnStatuses.Expired})
             RETURNING order_id AS "Value"
             """).ToListAsync(ct);
-        if (updated.Count == 0) throw await WrongReturnStateAsync(db, returnId, "label_issued or in_transit", ct);
+        if (updated.Count == 0) throw await WrongReturnStateAsync(db, returnId, "label_issued, in_transit or expired", ct);
 
         outbox.PublishEvent(FulfillmentMessages.ReturnReceived, new ReturnReceivedV1(updated[0], returnId));
         audit.Record(caller.UserId, caller.Role!, "fulfillment.receive-return", "return_request", returnId.ToString(), new { orderId = updated[0] });

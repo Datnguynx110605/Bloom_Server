@@ -327,6 +327,31 @@ public class ReturnTests(Containers containers)
     }
 
     [Fact]
+    public async Task D33_expired_return_can_be_received()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, serials, customer) = await DeliveredAsync(t);
+        var returnId = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 2));
+        await Seed.RunLabelWorkerAsync(t);
+        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromMinutes(1));
+        await SweepAsync(t);
+        Assert.Equal(ReturnStatuses.Expired, (await Seed.ReturnRequestAsync(t, returnId)).Status);
+
+        using var received = await ReceiveAsync(t, returnId);
+        Assert.Equal("received", (await received.OkJsonAsync()).GetProperty("status").GetString());
+        var message = Assert.Single(await Outbox.PayloadsAsync<ReturnReceivedV1>(t, FulfillmentMessages.ReturnReceived));
+        Assert.Equal((order.OrderId, returnId), (message.OrderId, message.ReturnId));
+
+        using var inspected = await InspectAsync(t, returnId, new[] { Inspect(1, serials[0]), Inspect(2, serials[1]) });
+        Assert.Equal("inspected", (await inspected.OkJsonAsync()).GetProperty("status").GetString());
+        using var decided = await t.SendAsync(HttpMethod.Post, $"{Admin}/{returnId}/decision", new { units = new[] { new { unitNo = 1, decision = "full", partialCents = 0 }, new { unitNo = 2, decision = "reject", partialCents = 0 } } },
+            TestCaller.Staff("support"), Guid.NewGuid());
+        await decided.OkJsonAsync();
+        Assert.Equal(ReturnStatuses.Decided, (await Seed.ReturnRequestAsync(t, returnId)).Status);
+        Assert.Equal(["expired", "decided"], (await Outbox.PayloadsAsync<ReturnClosedV1>(t, FulfillmentMessages.ReturnClosed)).Select(c => c.Reason).ToArray());
+    }
+
+    [Fact]
     public async Task F15_return_request_expires()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
