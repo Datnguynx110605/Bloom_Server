@@ -28,7 +28,7 @@ public sealed class NightlyJob(IServiceScopeFactory scopes, TimeProvider clock, 
             if (wait > TimeSpan.Zero) await Task.Delay(wait, clock, ct);
             try
             {
-                if (await ClaimAsync(ct)) await RunAsync(DateOnly.FromDateTime(next.UtcDateTime).AddDays(-1), ct);
+                await RunTonightAsync(DateOnly.FromDateTime(next.UtcDateTime).AddDays(-1), ct);
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -43,6 +43,14 @@ public sealed class NightlyJob(IServiceScopeFactory scopes, TimeProvider clock, 
                 logger.LogError(ex, "Purge of provider events failed");
             }
         }
+    }
+
+    /// <summary>D26: the comparison of <paramref name="day"/> runs only on the replica that wins the night's claim. False when another replica already has it.</summary>
+    internal async Task<bool> RunTonightAsync(DateOnly day, CancellationToken ct)
+    {
+        if (!await ClaimAsync(ct)) return false;
+        await RunAsync(day, ct);
+        return true;
     }
 
     /// <summary>D26: true for the one replica that moves <c>job_runs.last_run_date</c> to today's UTC date (the database's), so the comparison runs once per night.</summary>

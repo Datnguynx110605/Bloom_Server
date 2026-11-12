@@ -156,13 +156,14 @@ public static class StripeWebhook
         var openedAt = DateTimeOffset.FromUnixTimeSeconds(Int(dispute, "created") ?? eventCreated);
         var updatedAt = DateTimeOffset.FromUnixTimeSeconds(eventCreated); // D25: the newest event wins
 
-        await db.Database.ExecuteSqlAsync($"""
+        var applied = await db.Database.ExecuteSqlAsync($"""
             INSERT INTO disputes (id, payment_id, stripe_dispute_id, status, amount_cents, reason, opened_at, updated_at)
             VALUES ({Guid.CreateVersion7()}, {paymentId}, {id}, {status}, {amount}, {reason}, {openedAt}, {updatedAt})
             ON CONFLICT (stripe_dispute_id) DO UPDATE SET status = EXCLUDED.status, amount_cents = EXCLUDED.amount_cents, reason = EXCLUDED.reason, updated_at = EXCLUDED.updated_at
             WHERE disputes.updated_at <= EXCLUDED.updated_at
             """, ct);
-        logger.LogError("Stripe dispute {DisputeId} on payment {PaymentId} is {Status}", id, paymentId, status);
+        if (applied == 1) // 0: a newer event already won, so this status is stale and must not alert Support
+            logger.LogError("Stripe dispute {DisputeId} on payment {PaymentId} is {Status}", id, paymentId, status);
     }
 
     private static Guid? PaymentId(JsonElement obj) => MetadataId(obj, "payment_id");

@@ -273,6 +273,7 @@ public class WebhookTests(Containers containers)
         using var stale = await StripeEvents.PostAsync(t, StripeEvents.Json("charge.dispute.created", StripeEvents.Dispute("dp_1", p.Pi, "needs_response", 1000, "fraudulent"), early));
 
         Assert.Equal(System.Net.HttpStatusCode.OK, stale.StatusCode);
+        Assert.DoesNotContain(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("needs_response")); // a stale event must not alert Support
         await using (var db = t.NewDb())
         {
             var row = await db.Disputes.AsNoTracking().SingleAsync(Ct);

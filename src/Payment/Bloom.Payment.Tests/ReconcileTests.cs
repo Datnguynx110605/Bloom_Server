@@ -336,7 +336,8 @@ public class ReconcileTests(Containers containers)
     public async Task D26_two_workers_same_night_one_run()
     {
         await using var t = await TestPayment.StartAsync(containers);
-        var today = await t.NewDb().Database.SqlQuery<DateTime>($"SELECT (now() AT TIME ZONE 'UTC')::date AS \"Value\"").SingleAsync(Ct);
+        await using var todayDb = t.NewDb();
+        var today = await todayDb.Database.SqlQuery<DateTime>($"SELECT (now() AT TIME ZONE 'UTC')::date AS \"Value\"").SingleAsync(Ct);
 
         var claims = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Nightly(t).ClaimAsync(Ct)));
 
@@ -347,6 +348,25 @@ public class ReconcileTests(Containers containers)
 
         await t.SqlAsync($"UPDATE job_runs SET last_run_date = last_run_date - 1"); // the next night
         Assert.True(await Nightly(t).ClaimAsync(Ct));
+    }
+
+    [Fact]
+    public async Task D26_two_workers_same_night_run_the_comparison_once()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        t.Clock.SetUtcNow(DayNoon);
+        var (_, piId, _) = await PaidWithRefundAsync(t);
+        var dashboard = t.Stripe.AddDashboardRefund(piId, 100, DayNoon.AddHours(-2));
+
+        var ran = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Nightly(t).RunTonightAsync(Day, Ct)));
+
+        Assert.Equal(1, ran.Count(r => r));
+        Assert.Equal(1, t.Stripe.Requests.Count(r => r.Method == "GET" && r.Path == "v1/refunds")); // one comparison, one set of list calls
+        Assert.Equal(1, t.Stripe.Requests.Count(r => r.Method == "GET" && r.Path == "v1/payment_intents"));
+        Assert.Equal(1, metrics.Latest("reconcile_mismatches"));
+        var error = Assert.Single(t.Logs.Entries, e => e.StartsWith("[Error]", StringComparison.Ordinal));
+        Assert.Contains($"stripe_only refund {dashboard}", error);
     }
 
     [Fact]

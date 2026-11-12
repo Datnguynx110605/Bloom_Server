@@ -414,7 +414,7 @@ public class RefundTests(Containers containers)
         var done = await t.RefundAsync(command.RefundId);
         Assert.Equal(RefundStatuses.Succeeded, done.Status);
         Assert.Equal(2, Creates(t).Count());
-        Assert.Single(Creates(t).Select(r => r.Form.Single(p => p.Key == "metadata[refund_id]").Value).Distinct()); // one refund at Stripe
+        Assert.All(Creates(t), r => Assert.Equal($"bloom:refund:{command.RefundId:D}", r.IdempotencyKey)); // the retry reuses the key, so Stripe makes one refund
         Assert.Single(await Completed(t));
     }
 
