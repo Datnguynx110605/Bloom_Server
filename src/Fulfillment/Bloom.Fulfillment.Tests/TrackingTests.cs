@@ -189,7 +189,7 @@ public class TrackingTests(Containers containers)
     }
 
     /// <summary>A label_ready shipment scanned 3 h after its task was created; Shippo reports TRANSIT with a date <paramref name="statusOffset"/> after the task created_at (null = no date).</summary>
-    private async Task<(DateTimeOffset Created, DateTimeOffset Handed, double Count, double Sum)> ScanAsync(TimeSpan? statusOffset)
+    private async Task<(DateTimeOffset Created, DateTimeOffset Handed, double Count, double Sum)> ScanAsync(TimeSpan? statusOffset, TimeSpan? zone = null)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
@@ -200,7 +200,7 @@ public class TrackingTests(Containers containers)
         DateTimeOffset created;
         await using (var db = t.NewDb()) created = (await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, Ct)).CreatedAt;
         t.Clock.Advance(TimeSpan.FromHours(3));
-        t.Shippo.SetTracking(tracking, "TRANSIT", statusOffset is { } o ? created + o : null);
+        t.Shippo.SetTracking(tracking, "TRANSIT", statusOffset is { } o ? (created + o).ToOffset(zone ?? TimeSpan.Zero) : null); // zone: the UTC offset the carrier writes the date in
         using (var response = await PostAsync(t, Body(tracking, "TRANSIT"))) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
@@ -213,6 +213,14 @@ public class TrackingTests(Containers containers)
     public async Task D32_scan_with_date_hands_over_at_that_date()
     {
         var (created, handed, count, sum) = await ScanAsync(TimeSpan.FromHours(2));
+        Assert.Equal(created.AddHours(2), handed, TimeSpan.FromMilliseconds(1));
+        Assert.Equal((1, 7200), (count, sum));
+    }
+
+    [Fact]
+    public async Task D32_scan_date_with_a_utc_offset_is_stored()
+    {
+        var (created, handed, count, sum) = await ScanAsync(TimeSpan.FromHours(2), TimeSpan.FromHours(2)); // "...+02:00": Npgsql rejects a non-zero offset
         Assert.Equal(created.AddHours(2), handed, TimeSpan.FromMilliseconds(1));
         Assert.Equal((1, 7200), (count, sum));
     }

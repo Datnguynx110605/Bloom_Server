@@ -63,7 +63,7 @@ public sealed class ShippoClient(HttpClient http, FulfillmentOptions options) : 
         CallAsync(HttpMethod.Get, $"tracks/{Uri.EscapeDataString(options.Shippo.Carrier)}/{Uri.EscapeDataString(trackingNumber)}", null, t =>
         {
             var status = t.GetProperty("tracking_status");
-            var date = status.TryGetProperty("status_date", out var d) && d.ValueKind == JsonValueKind.String && d.TryGetDateTimeOffset(out var parsed) ? parsed : (DateTimeOffset?)null;
+            var date = status.TryGetProperty("status_date", out var d) && d.ValueKind == JsonValueKind.String && d.TryGetDateTimeOffset(out var parsed) ? parsed.ToUniversalTime() : (DateTimeOffset?)null; // Npgsql writes only offset 0
             return new ShippoTracking(status.GetProperty("status").GetString()!, date);
         }, ct);
 
