@@ -107,6 +107,43 @@ public class StockApiTests(Containers containers)
     }
 
     [Fact]
+    public async Task IN3_reserve_shortage_then_pk_race_is_mapped()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 2);
+        var order = Guid.CreateVersion7();
+        await using var gate = await SideDb.GateInsertsAsync(t, "stock_allocations", "NEW.version = 0"); // the reserve's own insert waits; the winner's (version 1) doesn't
+        await using var taker = await SideDb.OpenAsync(t); // another order holding both units, not yet committed
+        await using var pause = await SideDb.OpenAsync(t);
+        await using var winner = await SideDb.OpenAsync(t);
+        await using var probe = await SideDb.OpenAsync(t);
+        await taker.ExecAsync($"BEGIN; UPDATE stock_items SET reserved = 2 WHERE sku_id = '{sku}'");
+
+        // Attempt 1 waits for the taker's row lock, holding the allocations table in a read.
+        var reserve = Seed.ReserveAsync(t, order, (sku, 1));
+        await probe.WaitForAsync(SideDb.LockWaiters, 1, "attempt 1 waits for the stock row");
+        // Queued behind that read: when attempt 1 rolls back, attempt 2 is parked at its first read of the allocations table.
+        var parking = pause.ExecAsync("BEGIN; LOCK TABLE stock_allocations IN ACCESS EXCLUSIVE MODE");
+        await probe.WaitForAsync(SideDb.LockWaiters, 2, "the table lock queues behind attempt 1");
+        await taker.ExecAsync("COMMIT"); // attempt 1 finds no free unit and rolls back
+        await parking;
+        await probe.WaitForAsync(SideDb.LockWaiters, 1, "attempt 2 waits for the allocations table");
+        await winner.ExecAsync($"UPDATE stock_items SET reserved = 1 WHERE sku_id = '{sku}'"); // a unit is free again, as the winner's reservation
+        await pause.ExecAsync("COMMIT"); // attempt 2 reads no allocation, takes the unit and parks at its insert
+        await probe.WaitForAsync(SideDb.GateWaiters, 1, "attempt 2 waits at its insert");
+        await winner.ExecAsync($"""
+            INSERT INTO stock_allocations (ref_id, sku_id, order_id, kind, quantity, status, version, created_at, updated_at)
+            VALUES ('{order}', '{sku}', '{order}', 'regular', 1, 'reserved', 1, now(), now())
+            """);
+        await gate.ExecAsync($"SELECT pg_advisory_unlock({SideDb.GateKey})");
+
+        await reserve; // attempt 2's insert hits the winner's key: a duplicate of the winner, so ok
+        Assert.Equal(1, (await Seed.ItemAsync(t, sku))!.Reserved);
+        Assert.Single(await AllocationsAsync(t, order));
+    }
+
+    [Fact]
     public async Task Concurrent_duplicates_taking_the_last_units_are_all_ok()
     {
         await using var t = await TestInventory.StartAsync(containers);

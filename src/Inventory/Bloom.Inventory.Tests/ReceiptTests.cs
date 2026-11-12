@@ -365,6 +365,60 @@ public class ReceiptTests(Containers containers)
         Assert.Single(await db.GoodsReceipts.ToListAsync(Ct));
     }
 
+    /// <summary>The first int of the allocator's per-order advisory lock (<c>Allocator.OrderLockNamespace</c>, "OLK").</summary>
+    private const int OrderLockNamespace = 0x4F4C4B;
+
+    [Fact]
+    public async Task IN1_order_locks_taken_once_in_ascending_order()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var skus = new[] { Seed.Sku(t), Seed.Sku(t), Seed.Sku(t), Seed.Sku(t) }.OrderBy(s => s.ToString(), StringComparer.Ordinal).ToArray();
+        var (p, q) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        var paid = t.Clock.GetUtcNow().AddHours(-1);
+        // Receipt 1 (skus 0, 1) serves P then Q; receipt 2 (skus 2, 3) serves Q then P: one order lock per allocator call crosses.
+        await Seed.BackorderAsync(t, skus[0], 1, paid, p);
+        await Seed.BackorderAsync(t, skus[3], 1, paid, p);
+        await Seed.BackorderAsync(t, skus[1], 1, paid, q);
+        await Seed.BackorderAsync(t, skus[2], 1, paid, q);
+        await using var gate = await SideDb.OpenAsync(t);
+        await using var probe = await SideDb.OpenAsync(t);
+        var waiters = $"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = {OrderLockNamespace}";
+        await gate.ExecAsync($"SELECT pg_advisory_lock({OrderLockNamespace}, hashtext('{p}'))");
+
+        var first = PostAsync(t, new { lines = new[] { Line(skus[0], 1), Line(skus[1], 1) } });
+        await probe.WaitForAsync(waiters, 1, "receipt 1 waits for P's order lock");
+        var second = PostAsync(t, new { lines = new[] { Line(skus[2], 1), Line(skus[3], 1) } });
+        await probe.WaitForAsync(waiters, 2, "receipt 2 waits for an order lock");
+        await gate.ExecAsync($"SELECT pg_advisory_unlock({OrderLockNamespace}, hashtext('{p}'))");
+
+        foreach (var response in await Task.WhenAll(first, second)) await response.OkJsonAsync();
+        await using var db = t.NewDb();
+        Assert.All(await db.StockAllocations.AsNoTracking().ToListAsync(Ct), a => Assert.Equal(AllocationStatuses.Committed, a.Status));
+        Assert.Equal(new[] { p, q }.Order(), (await Outbox.PayloadsAsync<StockAllocatedV1>(t, InventoryMessages.StockAllocated)).Select(m => m.OrderId).Order());
+    }
+
+    [Fact]
+    public async Task IN4_concurrent_invalid_receipts_with_crossed_imeis_get_RECEIPT_INVALID()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var (a, b) = (Seed.Sku(t, serialized: true), Seed.Sku(t, serialized: true));
+        string[] imeis = [Seed.Imei(1), Seed.Imei(2)];
+        // A serial named GATE* waits at its insert until both receipts hold their first IMEI.
+        await using var gate = await SideDb.GateInsertsAsync(t, "serial_units", "NEW.serial LIKE 'GATE%'");
+        await using var probe = await SideDb.OpenAsync(t);
+
+        var first = PostAsync(t, new { lines = new[] { Line(a, 2, ["A1", "GATEA"], [imeis[0], imeis[1]]) } });
+        var second = PostAsync(t, new { lines = new[] { Line(b, 2, ["B1", "GATEB"], [imeis[1], imeis[0]]) } });
+        await probe.WaitForAsync(SideDb.GateWaiters, 2, "both receipts reach the gate");
+        await gate.ExecAsync($"SELECT pg_advisory_unlock({SideDb.GateKey})");
+
+        var responses = await Task.WhenAll(first, second);
+        Assert.Equal(1, responses.Count(r => r.StatusCode == HttpStatusCode.OK));
+        await responses.Single(r => r.StatusCode != HttpStatusCode.OK).ExpectErrorAsync(400, "RECEIPT_INVALID");
+        await using var db = t.NewDb();
+        Assert.Equal(2, await db.SerialUnits.CountAsync(Ct));
+    }
+
     [Theory, InlineData("support"), InlineData("catalog_manager")]
     public async Task Only_warehouse_and_admin_record_receipts(string role)
     {

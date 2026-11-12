@@ -1,6 +1,7 @@
 using Bloom.Inventory.Consumers;
 using Bloom.Inventory.Contracts;
 using Bloom.Inventory.Data;
+using Bloom.Inventory.Domain;
 using Bloom.Order.Contracts;
 using Microsoft.EntityFrameworkCore;
 
@@ -234,5 +235,47 @@ public class ReleaseTests(Containers containers)
         Assert.Equal([orderId], await ReleasedAsync(t));
         var item = (await Seed.ItemAsync(t, sku))!;
         Assert.Equal((4, 1), (item.OnHand, item.Committed));
+    }
+
+    [Fact]
+    public async Task IN6_release_second_lock_keeps_ascending_order()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var skus = new[] { Seed.Sku(t), Seed.Sku(t) }.OrderBy(StockLocks.Key).ToArray(); // the advisory locks are taken in key order
+        var (low, high) = (skus[0], skus[1]);
+        await Seed.ReceiveAsync(t, low, 5);
+        await Seed.ReceiveAsync(t, high, 5);
+        var (orderId, reship) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        await Seed.ReserveAsync(t, orderId, (high, 1));
+        await using var holdHigh = await SideDb.OpenAsync(t);
+        await using var holdLow = await SideDb.OpenAsync(t);
+        await using var probe = await SideDb.OpenAsync(t);
+        await holdHigh.ExecAsync($"SELECT pg_advisory_lock({StockLocks.Key(high)})");
+        await holdLow.ExecAsync($"SELECT pg_advisory_lock({StockLocks.Key(low)})");
+
+        var release = Seed.ReleaseAsync(t, orderId); // reads {high}, waits for its lock
+        try
+        {
+            await probe.WaitForAsync(SideDb.WaitersOn(StockLocks.Key(high)), 1, "the release waits for the high SKU");
+            // A reship lands the lower SKU between the release's read and its lock.
+            await t.Stock.CommitForReshipAsync(new() { ReshipId = reship.ToString(), OrderId = orderId.ToString(), Lines = { Seed.Line(low, 1) } }, cancellationToken: Ct);
+            await holdHigh.ExecAsync($"SELECT pg_advisory_unlock({StockLocks.Key(high)})");
+            await probe.WaitForAsync(SideDb.WaitersOn(StockLocks.Key(low)), 1, "the release waits for the low SKU");
+
+            // Waiting for the low SKU, the release must not still hold the high one.
+            var free = await probe.ScalarAsync<bool>($"SELECT pg_try_advisory_lock({StockLocks.Key(high)})");
+            if (free) await probe.ExecAsync($"SELECT pg_advisory_unlock({StockLocks.Key(high)})");
+            Assert.True(free, "the release took the lower SKU's lock while holding the higher one");
+        }
+        finally
+        {
+            await holdLow.ExecAsync($"SELECT pg_advisory_unlock({StockLocks.Key(low)})");
+            await release;
+        }
+
+        Assert.All(await Seed.AllocationsAsync(t, orderId), a => Assert.Equal(AllocationStatuses.Released, a.Status));
+        Assert.Equal((5, 0), ((await Seed.ItemAsync(t, high))!.OnHand, (await Seed.ItemAsync(t, high))!.Reserved));
+        var lowItem = (await Seed.ItemAsync(t, low))!; // the reship's commitment came back
+        Assert.Equal((5, 0, 0), (lowItem.OnHand, lowItem.Reserved, lowItem.Committed));
     }
 }

@@ -13,6 +13,8 @@ namespace Bloom.Inventory.Consumers;
 /// </summary>
 public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, OutboxWriter outbox, TimeProvider clock) : IMessageHandler
 {
+    private const string LockSavepoint = "release_locks";
+
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Command(InventoryMessages.ReleaseReservation)];
 
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
@@ -20,13 +22,17 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
         var (orderId, reshipId) = envelope.GetPayload<ReleaseReservationV1>();
 
         // Lock first, then read the statuses: a payment or shipment racing this release has finished by the time the lock is ours.
-        // A reship may add a SKU between the read and the lock; lock the union and read again until the set is stable (advisory locks are re-entrant).
+        // A reship may add a SKU between the read and the lock. Then the locks are released (rolling back to the savepoint frees everything taken after it)
+        // and the union is locked again in one ascending pass (IN-6), and the read repeats until the set is stable. Advisory locks are re-entrant.
+        var tx = db.Database.CurrentTransaction!;
+        await tx.CreateSavepointAsync(LockSavepoint, ct);
         var locked = new HashSet<Guid>();
         List<StockAllocation> allocations;
         while (true)
         {
             allocations = await db.StockAllocations.AsNoTracking().Where(a => a.OrderId == orderId && (reshipId == null || a.RefId == reshipId)).OrderBy(a => a.SkuId).ToListAsync(ct);
             if (allocations.All(a => locked.Contains(a.SkuId))) break;
+            if (locked.Count > 0) await tx.RollbackToSavepointAsync(LockSavepoint, ct);
             locked.UnionWith(allocations.Select(a => a.SkuId));
             await locks.LockAsync(locked, ct);
         }
@@ -65,7 +71,7 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
             }
         }
 
-        foreach (var skuId in freed) await allocator.RunAsync(skuId, ct); // freed units serve waiting pre-orders first
+        await allocator.RunAsync(freed, ct); // freed units serve waiting pre-orders first
         if (reshipId is null) // an order-level release closes the order for a late paid or reserve; a reship release must not (LLD-ADR-014)
             await db.Database.ExecuteSqlAsync($"INSERT INTO released_orders (order_id) VALUES ({orderId}) ON CONFLICT DO NOTHING", ct);
         outbox.PublishEvent(InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));

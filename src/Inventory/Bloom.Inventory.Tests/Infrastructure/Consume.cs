@@ -10,8 +10,8 @@ public static class Consume
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    /// <summary>Runs a handler the way <c>ConsumerHost</c> does: own scope, one transaction, SaveChanges, commit (plan R22).</summary>
-    public static async Task Async<THandler>(TestInventory t, string messageType, object payload, Guid? messageId = null) where THandler : IMessageHandler
+    /// <summary>Runs a handler the way <c>ConsumerHost</c> does: own scope, one transaction, SaveChanges, commit (plan R22). <paramref name="commit"/> false rolls back instead.</summary>
+    public static async Task Async<THandler>(TestInventory t, string messageType, object payload, Guid? messageId = null, bool commit = true) where THandler : IMessageHandler
     {
         var ct = TestContext.Current.CancellationToken;
         await using var scope = t.Services.CreateAsyncScope();
@@ -21,6 +21,7 @@ public static class Consume
             JsonSerializer.SerializeToElement(payload, Web));
         await scope.ServiceProvider.GetRequiredService<THandler>().HandleAsync(envelope, ct);
         await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        if (commit) await tx.CommitAsync(ct);
+        else await tx.RollbackAsync(ct);
     }
 }

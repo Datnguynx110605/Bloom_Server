@@ -233,4 +233,20 @@ public class FulfillmentConsumerTests(Containers containers)
 
         Assert.Equal((1, 0, 2, 0, 0, 0), Seed.Counters((await Seed.ItemAsync(t, sku))!));
     }
+
+    [Fact]
+    public async Task IN7_second_lost_in_transit_command_does_not_double_count_lost()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var orderId = await CommittedAsync(t, [(sku, 3)]);
+        await Seed.ShipAsync(t, orderId, orderId, (sku, 3));
+
+        await LostAsync(t, orderId);
+        await LostAsync(t, orderId); // another message, the same units
+
+        Assert.Equal((2, 0, 0, 0, 0, 3), Seed.Counters((await Seed.ItemAsync(t, sku))!));
+        Assert.Single(await Seed.LedgerAsync(t, sku), e => e.EntryType == EntryTypes.LostInTransit);
+    }
 }

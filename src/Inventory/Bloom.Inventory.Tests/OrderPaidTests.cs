@@ -228,4 +228,22 @@ public class OrderPaidTests(Containers containers)
         Assert.Contains(t.Logs.Entries, e => e.Contains(regular.ToString()) && e.Contains("released"));
         Assert.Single(await Seed.LedgerAsync(t, sku)); // only the receipt
     }
+
+    [Fact]
+    public async Task IN5_ledger_metric_not_counted_on_rollback()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var paid = Seed.Paid(Guid.CreateVersion7(), Guid.CreateVersion7(), t.Clock.GetUtcNow(), (sku, 1));
+
+        await Consume.Async<OrderPaidConsumer>(t, OrderMessages.Paid, paid, commit: false); // the allocator serves it, then the transaction rolls back
+        Assert.Equal(0, metrics.Sum("ledger_entries_total", ("entry_type", EntryTypes.BackorderAllocated)));
+        Assert.Equal(0, metrics.Count("backorder_wait_seconds"));
+
+        await Seed.PaidAsync(t, paid);
+        Assert.Equal(1, metrics.Sum("ledger_entries_total", ("entry_type", EntryTypes.BackorderAllocated)));
+        Assert.Equal(1, metrics.Count("backorder_wait_seconds"));
+    }
 }

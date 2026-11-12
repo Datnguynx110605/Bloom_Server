@@ -65,6 +65,6 @@ public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, A
                 VALUES ({paid.OrderId}, {skuId}, {paid.OrderId}, {AllocationKinds.Preorder}, {q}, {AllocationStatuses.Backordered}, {paid.PaidAt.ToUniversalTime()}, 0, {now}, {now})
                 ON CONFLICT (ref_id, sku_id) DO NOTHING
                 """, ct);
-        foreach (var (skuId, _) in lines) await allocator.RunAsync(skuId, ct);
+        await allocator.RunAsync(lines.Select(l => l.SkuId), ct);
     }
 }

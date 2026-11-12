@@ -28,10 +28,17 @@ public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks lock
 
         var serials = await db.SerialUnits.AsNoTracking().Where(s => s.RefId == refId && s.Status == SerialStatuses.Shipped)
             .GroupBy(s => s.SkuId).Select(g => new { SkuId = g.Key, Count = g.Count() }).ToDictionaryAsync(g => g.SkuId, g => g.Count, ct);
+        // The ledger holds what an earlier command of this refId already counted; a plain SKU's units are lost once (IN-7).
+        var counted = await db.StockLedger.AsNoTracking().Where(e => e.RefId == refId && e.EntryType == EntryTypes.LostInTransit)
+            .GroupBy(e => e.SkuId).Select(g => new { SkuId = g.Key, Lost = g.Sum(e => e.DLost) }).ToDictionaryAsync(g => g.SkuId, g => g.Lost, ct);
         var counts = new List<(StockAllocation Allocation, int Lost)>();
         foreach (var a in shipped)
         {
-            if (!items[a.SkuId].Serialized) counts.Add((a, a.Quantity));
+            if (!items[a.SkuId].Serialized)
+            {
+                var remaining = a.Quantity - counted.GetValueOrDefault(a.SkuId);
+                if (remaining > 0) counts.Add((a, remaining));
+            }
             else if (serials.TryGetValue(a.SkuId, out var n)) counts.Add((a, n));
             else throw new PermanentFailureException($"Lost in transit {refId}: serialized SKU {a.SkuId} has no shipped serial.");
         }

@@ -73,20 +73,26 @@ public sealed partial class WarehouseService(
             var receiptId = Guid.CreateVersion7();
             db.GoodsReceipts.Add(new GoodsReceipt { Id = receiptId, StaffId = caller.UserId, Note = request.Note, ReceivedAt = now });
             foreach (var line in sorted)
-            {
                 db.GoodsReceiptLines.Add(new GoodsReceiptLine { ReceiptId = receiptId, SkuId = line.SkuId, Quantity = line.Quantity });
-                for (var j = 0; j < line.Serials.Count; j++)
-                    db.SerialUnits.Add(new SerialUnit
-                    {
-                        Serial = line.Serials[j], Imei = line.Imeis.Count > 0 ? line.Imeis[j] : null, SkuId = line.SkuId,
-                        Status = SerialStatuses.InStock, ReceiptId = receiptId, UpdatedAt = now,
-                    });
-            }
+            await db.SaveChangesAsync(ct);
             try
             {
-                await db.SaveChangesAsync(ct);
+                // One statement in a fixed order (IMEI, then serial), not EF's insert order: two receipts with crossed IMEIs would otherwise wait for each other's unique index entries (IN-4).
+                var units = sorted.SelectMany(l => l.Serials.Select((serial, j) => (l.SkuId, Serial: serial, Imei: l.Imeis.Count > 0 ? l.Imeis[j] : null)))
+                    .OrderBy(u => u.Imei, StringComparer.Ordinal).ThenBy(u => u.Serial, StringComparer.Ordinal).ToList();
+                if (units.Count > 0)
+                {
+                    string[] serials = [.. units.Select(u => u.Serial)];
+                    string?[] unitImeis = [.. units.Select(u => u.Imei)];
+                    Guid[] unitSkus = [.. units.Select(u => u.SkuId)];
+                    await db.Database.ExecuteSqlAsync($"""
+                        INSERT INTO serial_units (serial, imei, sku_id, status, receipt_id, version, updated_at)
+                        SELECT u.serial, u.imei, u.sku_id, {SerialStatuses.InStock}, {receiptId}, 0, {now}
+                        FROM unnest({serials}, {unitImeis}, {unitSkus}) WITH ORDINALITY AS u(serial, imei, sku_id, ord) ORDER BY u.ord
+                        """, ct);
+                }
             }
-            catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, TableName: "serial_units" } pg)
+            catch (PostgresException pg) when (pg is { SqlState: PostgresErrorCodes.UniqueViolation, TableName: "serial_units" })
             {
                 // A concurrent receipt won the race for a serial or IMEI: the guard rolls this one back and stores the rejection.
                 throw InventoryErrors.ReceiptInvalid([("lines", $"A serial or IMEI was received concurrently ({pg.ConstraintName}).")]);
@@ -98,7 +104,7 @@ public sealed partial class WarehouseService(
                 await db.Database.ExecuteSqlAsync($"UPDATE stock_items SET on_hand = on_hand + {line.Quantity}, updated_at = {now} WHERE sku_id = {line.SkuId}", ct);
                 ledger.Add(line.SkuId, EntryTypes.Received, new(OnHand: line.Quantity), RefTypes.Receipt, receiptId);
             }
-            foreach (var line in sorted) await allocator.RunAsync(line.SkuId, ct);
+            await allocator.RunAsync(sorted.Select(l => l.SkuId), ct);
 
             audit.Record(caller.UserId, caller.Role!, "inventory.goods-received", "receipt", receiptId.ToString(),
                 new { lines = sorted.Select(l => new { skuId = l.SkuId, quantity = l.Quantity }) });

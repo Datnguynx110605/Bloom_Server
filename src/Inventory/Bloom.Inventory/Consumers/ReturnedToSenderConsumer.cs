@@ -58,6 +58,6 @@ public sealed class ReturnedToSenderConsumer(InventoryDbContext db, StockLocks l
             }
         }
 
-        foreach (var skuId in units.Where(u => u.Outcome == Sealed).Select(u => u.SkuId).Distinct().Order()) await allocator.RunAsync(skuId, ct);
+        await allocator.RunAsync(units.Where(u => u.Outcome == Sealed).Select(u => u.SkuId).Order(), ct);
     }
 }

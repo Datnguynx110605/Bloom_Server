@@ -122,10 +122,10 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
             {
                 await db.SaveChangesAsync(ct);
             }
-            catch (DbUpdateException e) when (attempt == 0 && Db.IsUniqueViolation(e, "PK_stock_allocations"))
+            catch (DbUpdateException e) when (Db.IsUniqueViolation(e, "PK_stock_allocations"))
             {
                 db.ChangeTracker.Clear();
-                continue; // the tx is disposed (rolled back) here; the retry compares with the winner's rows
+                continue; // a duplicate committed first, also after a shortage retry (IN-3): the tx is disposed (rolled back) here and the retry compares with the winner's rows
             }
             await tx.CommitAsync(ct);
             return;
