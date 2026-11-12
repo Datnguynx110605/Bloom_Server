@@ -206,7 +206,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `fulfillment.shipment-shipped.v1` | → `shipped` |
 | `fulfillment.shipment-delivered.v1` | → `delivered`, `delivered_at`; publish `order.delivered.v1` |
 | `fulfillment.delivery-failed.v1` | → `delivery_failed`; coupon use → `restored` (ORD-R17) |
-| `fulfillment.return-requested.v1` / `fulfillment.return-closed.v1` | Per `returnId`: insert an `order_returns` row / mark it closed (`closed_at`; inserts it closed if `return-requested` hasn't arrived yet) |
+| `fulfillment.return-requested.v1` / `fulfillment.return-closed.v1` | Per `returnId`: insert an `order_returns` row / mark it closed |
 | `fulfillment.return-decided.v1` | Add accepted units to `returned_qty`; status → `partially_returned` or `returned` (§6.7) |
 | `identity.account-deleted.v1` | Anonymize (§6.9) |
 
