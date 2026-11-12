@@ -80,7 +80,6 @@ public sealed class Reconciler(IServiceScopeFactory scopes, TimeProvider clock, 
             var kind = await apply(transitions, stripe, ct);
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-            transitions.Emit();
             if (kind is not null) metrics.ReconcileFix(kind);
         }
         catch (ProviderException e)

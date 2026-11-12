@@ -7,6 +7,7 @@ using Bloom.Payment.Stripe;
 using Bloom.Payment.Worker;
 using Bloom.Shared;
 using Bloom.Shared.Observability;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.Reflection;
 using Google.Rpc;
 using Microsoft.EntityFrameworkCore;
@@ -36,7 +37,8 @@ public static class PaymentApp
         builder.Services.TryAddSingleton(TimeProvider.System); // tests register a fake first (plan R3)
         builder.Services.AddSingleton<PaymentMetrics>();
         builder.Services.AddScoped<Transitions>();
-        builder.Services.AddDbContext<PaymentDbContext>(o => o.UseNpgsql(options.Database));
+        builder.Services.AddSingleton<AfterCommitInterceptor>();
+        builder.Services.AddDbContext<PaymentDbContext>((sp, o) => o.UseNpgsql(options.Database).AddInterceptors(sp.GetRequiredService<AfterCommitInterceptor>()));
         var bloom = builder.Services.AddBloom<PaymentDbContext>(o =>
         {
             o.ServiceName = "payment";

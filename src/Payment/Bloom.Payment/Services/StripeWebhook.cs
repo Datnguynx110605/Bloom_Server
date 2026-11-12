@@ -85,7 +85,6 @@ public static class StripeWebhook
                     var alert = obj.ValueKind == JsonValueKind.Object ? await ApplyAsync(type, obj, created, db, transitions, outbox, logger, ct) : null;
                     await db.SaveChangesAsync(ct);
                     await tx.CommitAsync(ct);
-                    transitions.Emit();
                     alert?.Invoke(); // after the commit, like the transitions' own logs (P-4)
 
                     metrics.Webhook(type, "processed");
