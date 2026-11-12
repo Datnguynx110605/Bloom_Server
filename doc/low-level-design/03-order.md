@@ -5,8 +5,8 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
-| **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R18), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
+| **Last updated** | 2026-11-12 |
+| **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R20), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
 | **HLD** | [high-level-design.md §5, §8.1 – §8.3, §8.5](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-013 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [01-launch.md](01-launch.md), [02-inventory.md](02-inventory.md) |
 
@@ -206,7 +206,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `fulfillment.shipment-shipped.v1` | → `shipped` |
 | `fulfillment.shipment-delivered.v1` | → `delivered`, `delivered_at`; publish `order.delivered.v1` |
 | `fulfillment.delivery-failed.v1` | → `delivery_failed`; coupon use → `restored` (ORD-R17) |
-| `fulfillment.return-requested.v1` / `fulfillment.return-closed.v1` | Per `returnId`: insert an `order_returns` row / mark it closed |
+| `fulfillment.return-requested.v1` / `fulfillment.return-closed.v1` | Per `returnId`: insert an `order_returns` row / mark it closed (a close that arrives first inserts the row closed) |
 | `fulfillment.return-decided.v1` | Add accepted units to `returned_qty`; status → `partially_returned` or `returned` (§6.7) |
 | `identity.account-deleted.v1` | Anonymize (§6.9) |
 
@@ -421,7 +421,7 @@ On `launch.stage-changed.v1` with `stage = released`: set `launch_released = tru
 | Metric | Labels | Purpose |
 |---|---|---|
 | `checkout_start_seconds` | `kind` | OR-01 |
-| `checkout_total` | `kind`, `result` (`ok`, `sold_out`, `limit_exceeded`, `coupon_*`, `failed`) | Outcomes |
+| `checkout_total` | `kind`, `result` (`ok`, `sold_out`, `limit_exceeded`, `coupon_*`, `order_total_too_low`, `failed`) | Outcomes |
 | `orders_by_status` | `status` | Lifecycle |
 | `checkout_expired_total` | — | Abandonment |
 | `late_payments_total` | — | Late-payment refunds |
