@@ -5,9 +5,9 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-12 |
 | **Product design** | [doc/product-design](../product-design/00-overview.md) |
-| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 018) |
+| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 019) |
 
 ## Summary
 
