@@ -201,9 +201,10 @@ public sealed class SupportService(
     private async Task<Guid> CommitReshipAsync(Guid shipmentId, ServerCallContext context, CancellationToken ct)
     {
         var shipment = await db.Shipments.AsNoTracking().SingleOrDefaultAsync(s => s.Id == shipmentId, ct) ?? throw FulfillmentErrors.NotFound("The shipment");
-        RequireLost(await db.DeliveryFailures.AsNoTracking().SingleOrDefaultAsync(f => f.ShipmentId == shipmentId, ct));
+        var failure = await db.DeliveryFailures.AsNoTracking().SingleOrDefaultAsync(f => f.ShipmentId == shipmentId, ct);
+        RequireLost(failure);
         var lines = await db.PackTaskLines.AsNoTracking().Where(l => l.TaskId == shipment.PackTaskId && l.Kind == LineKinds.Product).ToListAsync(ct);
-        var reshipId = Ids.ReshipId(shipmentId);
+        var reshipId = Ids.ReshipId(shipmentId, failure!.DismissedAt);
         await inventory.CommitForReshipAsync(reshipId, shipment.OrderId, lines.GroupBy(l => l.SkuId).Select(g => (g.Key, g.Sum(l => l.Quantity))), context);
         return reshipId;
     }
@@ -212,7 +213,7 @@ public sealed class SupportService(
     /// The guard's apply step: failure → <c>resolved_reship</c> (guarded, so a failure that was dismissed or resolved while inventory was working is <c>INVALID_STATE</c>), shipment → <c>lost</c>,
     /// and the reship's pack task with the same lines and address. No refund, no <c>delivery-failed</c> (§6.5).
     /// D27: a failure no longer open sends <c>inventory.release-reservation.v1 {orderId, reshipId}</c> before <c>INVALID_STATE</c>, unless it is <c>resolved_reship</c> with this same <c>reshipId</c>
-    /// (a concurrent call applied it; the id is deterministic per shipment, so releasing it would free the applied reship's stock). The guard rolls a rejected apply back to its savepoint, so the
+    /// (a concurrent call applied it; the id is deterministic per flag occurrence, so releasing it would free the applied reship's stock). The guard rolls a rejected apply back to its savepoint, so the
     /// release is committed on its own scope first, with no cancellation: a client cancel must not drop it. A crash after that commit makes the retry fail <see cref="RequireLost"/> in
     /// <see cref="CommitReshipAsync"/> before any inventory call, so no second release; a crash before it leaves the reservation held (the design's own window).
     /// </summary>
