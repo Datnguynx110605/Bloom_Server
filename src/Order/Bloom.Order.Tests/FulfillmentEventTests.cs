@@ -98,10 +98,6 @@ public class FulfillmentEventTests(Containers containers)
         var (_, orderId, _) = await PaidAsync(t);
         var at = t.Clock.GetUtcNow();
 
-        await ShippedAsync(t, orderId); // shipped before packing: no-op
-        await DeliveredAsync(t, orderId, at);
-        var paid = await OrderAsync(t, orderId);
-        Assert.Equal(OrderStatuses.Paid, paid.Status);
         await PackingStartedAsync(t, Guid.NewGuid()); // unknown order: no-op, no error
 
         await PackingStartedAsync(t, orderId);
@@ -121,6 +117,60 @@ public class FulfillmentEventTests(Containers containers)
         Assert.Single(await Outbox.PayloadsAsync<OrderDeliveredV1>(t, OrderMessages.Delivered));
     }
 
+    private static Task FailedAsync(TestOrder t, Guid id) => Consume.Async<DeliveryFailedConsumer>(t, FulfillmentMessages.DeliveryFailed, new DeliveryFailedV1(id, "lost"));
+
+    /// <summary>Puts a paid order in <paramref name="from"/> by the normal events, runs <paramref name="event"/>, and expects exactly one more history row, from → to.</summary>
+    private async Task AssertEdgeAsync(string from, string to, Func<TestOrder, Guid, Task> @event)
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (_, orderId, _) = await PaidAsync(t);
+        if (from != OrderStatuses.Paid) await PackingStartedAsync(t, orderId);
+        if (from == OrderStatuses.Shipped) await ShippedAsync(t, orderId);
+        Assert.Equal(from, (await OrderAsync(t, orderId)).Status);
+        var before = (await HistoryAsync(t, orderId)).Count;
+
+        await @event(t, orderId);
+
+        Assert.Equal(to, (await OrderAsync(t, orderId)).Status);
+        var history = await HistoryAsync(t, orderId);
+        var row = Assert.Single(history.Skip(before));
+        Assert.Equal((from, to, "system"), (row.FromStatus, row.ToStatus, row.ActorType));
+    }
+
+    [Fact]
+    public Task D19_shipped_from_paid() => AssertEdgeAsync(OrderStatuses.Paid, OrderStatuses.Shipped, (t, id) => ShippedAsync(t, id));
+
+    [Fact]
+    public Task D19_delivered_from_paid() => AssertEdgeAsync(OrderStatuses.Paid, OrderStatuses.Delivered, (t, id) => DeliveredAsync(t, id, t.Clock.GetUtcNow()));
+
+    [Fact]
+    public Task D19_delivered_from_packing() => AssertEdgeAsync(OrderStatuses.Packing, OrderStatuses.Delivered, (t, id) => DeliveredAsync(t, id, t.Clock.GetUtcNow()));
+
+    [Fact]
+    public Task D19_delivery_failed_from_paid() => AssertEdgeAsync(OrderStatuses.Paid, OrderStatuses.DeliveryFailed, FailedAsync);
+
+    [Fact]
+    public Task D19_delivery_failed_from_packing() => AssertEdgeAsync(OrderStatuses.Packing, OrderStatuses.DeliveryFailed, FailedAsync);
+
+    [Fact]
+    public async Task D19_late_earlier_event_is_noop()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (_, orderId, _) = await PaidAsync(t);
+        var at = t.Clock.GetUtcNow();
+        await DeliveredAsync(t, orderId, at); // skipped ahead from paid
+        var delivered = await OrderAsync(t, orderId);
+        var history = (await HistoryAsync(t, orderId)).Count;
+
+        await PackingStartedAsync(t, orderId); // the earlier events arrive late
+        await ShippedAsync(t, orderId);
+        await FailedAsync(t, orderId);
+
+        var after = await OrderAsync(t, orderId);
+        Assert.Equal((OrderStatuses.Delivered, delivered.Version, history), (after.Status, after.Version, (await HistoryAsync(t, orderId)).Count));
+        Assert.Single(await Outbox.PayloadsAsync<OrderDeliveredV1>(t, OrderMessages.Delivered));
+    }
+
     [Fact]
     public async Task Delivery_failed_restores_the_coupon()
     {
@@ -133,10 +183,7 @@ public class FulfillmentEventTests(Containers containers)
         }
         Task FailedAsync() => Consume.Async<DeliveryFailedConsumer>(t, FulfillmentMessages.DeliveryFailed, new DeliveryFailedV1(orderId, "lost"));
 
-        await FailedAsync(); // not shipped yet: no-op
-        Assert.Equal(OrderStatuses.Paid, (await OrderAsync(t, orderId)).Status);
         Assert.Equal((CouponUseStatuses.Consumed, 1), await StateAsync());
-
         await PackingStartedAsync(t, orderId);
         await ShippedAsync(t, orderId);
         await FailedAsync();

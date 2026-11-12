@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Order.Consumers;
 
 // Fulfillment's events (03-order §5.3, §6.1, §6.7), each in ConsumerHost's transaction. Every status change is Transitions.MoveAsync with the system actor; an unknown order or an order in
-// another status is a no-op, which is how reordered and reship events (ORD-R13) do nothing.
+// another status is a no-op, which is how reordered and reship events (ORD-R13) do nothing. Events may skip ahead (§6.1, D19): a late earlier event finds the order further on.
 
 /// <summary><c>fulfillment.packing-started.v1</c>: <c>paid → packing</c>.</summary>
 public sealed class PackingStartedConsumer(Transitions transitions) : IMessageHandler
@@ -19,17 +19,17 @@ public sealed class PackingStartedConsumer(Transitions transitions) : IMessageHa
         await transitions.MoveAsync(envelope.GetPayload<PackingStartedV1>().OrderId, [OrderStatuses.Paid], OrderStatuses.Packing, Actor.System, null, null, null, ct);
 }
 
-/// <summary><c>fulfillment.shipment-shipped.v1</c>: <c>packing → shipped</c>. A reship's shipped finds the order past <c>packing</c> and does nothing.</summary>
+/// <summary><c>fulfillment.shipment-shipped.v1</c>: <c>paid | packing → shipped</c> (D19). A reship's shipped finds the order past <c>packing</c> and does nothing.</summary>
 public sealed class ShipmentShippedConsumer(Transitions transitions) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("fulfillment", FulfillmentMessages.ShipmentShipped)];
 
     public async Task HandleAsync(Envelope envelope, CancellationToken ct) =>
-        await transitions.MoveAsync(envelope.GetPayload<ShipmentShippedV1>().OrderId, [OrderStatuses.Packing], OrderStatuses.Shipped, Actor.System, null, null, null, ct);
+        await transitions.MoveAsync(envelope.GetPayload<ShipmentShippedV1>().OrderId, [OrderStatuses.Paid, OrderStatuses.Packing], OrderStatuses.Shipped, Actor.System, null, null, null, ct);
 }
 
 /// <summary>
-/// <c>fulfillment.shipment-delivered.v1</c>: <c>shipped → delivered</c> with <c>delivered_at</c> from the message, then <c>order.delivered.v1</c> with the distinct product ids of the product lines.
+/// <c>fulfillment.shipment-delivered.v1</c>: <c>paid | packing | shipped → delivered</c> (D19) with <c>delivered_at</c> from the message, then <c>order.delivered.v1</c> with the distinct product ids of the product lines.
 /// <c>RefId</c> is ignored: a reship's delivery moves a <c>shipped</c> order the same way (spec §7).
 /// </summary>
 public sealed class ShipmentDeliveredConsumer(OrderDbContext db, Transitions transitions, OutboxWriter outbox) : IMessageHandler
@@ -40,7 +40,7 @@ public sealed class ShipmentDeliveredConsumer(OrderDbContext db, Transitions tra
     {
         var delivered = envelope.GetPayload<ShipmentDeliveredV1>();
         var at = delivered.DeliveredAt;
-        if (!await transitions.MoveAsync(delivered.OrderId, [OrderStatuses.Shipped], OrderStatuses.Delivered, Actor.System, null, null, s => s.SetProperty(o => o.DeliveredAt, (DateTimeOffset?)at), ct)) return;
+        if (!await transitions.MoveAsync(delivered.OrderId, [OrderStatuses.Paid, OrderStatuses.Packing, OrderStatuses.Shipped], OrderStatuses.Delivered, Actor.System, null, null, s => s.SetProperty(o => o.DeliveredAt, (DateTimeOffset?)at), ct)) return;
 
         var accountId = await db.Orders.AsNoTracking().Where(o => o.Id == delivered.OrderId).Select(o => o.AccountId).SingleAsync(ct);
         var products = await db.OrderLines.AsNoTracking().Where(l => l.OrderId == delivered.OrderId && l.Kind == LineKinds.Product).Select(l => l.ProductId).Distinct().ToListAsync(ct);
@@ -48,7 +48,7 @@ public sealed class ShipmentDeliveredConsumer(OrderDbContext db, Transitions tra
     }
 }
 
-/// <summary><c>fulfillment.delivery-failed.v1</c> (ORD-R17): <c>shipped → delivery_failed</c>, and the order's coupon use <c>consumed → restored</c>.</summary>
+/// <summary><c>fulfillment.delivery-failed.v1</c> (ORD-R17): <c>paid | packing | shipped → delivery_failed</c> (D19), and the order's coupon use <c>consumed → restored</c>.</summary>
 public sealed class DeliveryFailedConsumer(Transitions transitions, Coupons coupons) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("fulfillment", FulfillmentMessages.DeliveryFailed)];
@@ -56,7 +56,7 @@ public sealed class DeliveryFailedConsumer(Transitions transitions, Coupons coup
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
     {
         var failed = envelope.GetPayload<DeliveryFailedV1>();
-        if (await transitions.MoveAsync(failed.OrderId, [OrderStatuses.Shipped], OrderStatuses.DeliveryFailed, Actor.System, null, null, null, ct))
+        if (await transitions.MoveAsync(failed.OrderId, [OrderStatuses.Paid, OrderStatuses.Packing, OrderStatuses.Shipped], OrderStatuses.DeliveryFailed, Actor.System, null, null, null, ct))
             await coupons.MoveUseAsync(failed.OrderId, CouponUseStatuses.Consumed, CouponUseStatuses.Restored, ct);
     }
 }
