@@ -135,7 +135,12 @@ public sealed class AccountService(
         };
         // The account row first, then the addresses (same order as DeleteAccount, D11): two concurrent creates cannot pass the limit
         // together, and two default upserts cannot both clear the old default and leave two.
-        if (request.Id.Length == 0 || request.IsDefault) await db.Database.ExecuteSqlAsync($"SELECT 1 FROM accounts WHERE id = {caller.UserId} FOR UPDATE", ct);
+        // A delete that held the lock first has committed by now: a deleted account takes no address (§8).
+        if (request.Id.Length == 0 || request.IsDefault)
+        {
+            var status = await db.Database.SqlQuery<string>($"SELECT status AS \"Value\" FROM accounts WHERE id = {caller.UserId} FOR UPDATE").SingleOrDefaultAsync(ct);
+            if (status is null or AccountStatuses.Deleted) throw IdentityErrors.Error(IdentityErrors.NotFound, "No such account.");
+        }
         if (request.Id.Length == 0)
         {
             if (await db.Addresses.CountAsync(a => a.AccountId == caller.UserId, ct) >= MaxAddresses)
