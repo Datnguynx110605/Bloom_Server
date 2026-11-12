@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) ORD-R08 … R17, [07-returns-refunds](../product-design/07-returns-refunds.md) RET-R01 … R15, WAR-R01 … R06, BI-05, BI-07 |
 | **HLD** | [high-level-design.md §5, §8.4](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-018 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [02-inventory.md](02-inventory.md), [03-order.md](03-order.md), [04-payment.md](04-payment.md) |
