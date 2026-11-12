@@ -186,6 +186,30 @@ public class SessionTests(Containers containers)
     }
 
     [Fact]
+    public async Task ID_T17_revoked_refresh_after_sign_out_everywhere_is_invalid_without_side_effects() // D8, LLD-ADR-013
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var account = await Seed.CustomerAsync(t);
+        var oldDevice = await Seed.SessionAsync(t, account);
+        await Seed.SessionAsync(t, account);
+        var caller = TestCaller.Customer(account.Id, t.Clock.GetUtcNow());
+        Assert.Equal(HttpStatusCode.OK, (await t.SendAsync(HttpMethod.Post, "/api/me/sign-out-everywhere", caller: caller)).StatusCode);
+        t.Clock.Advance(TimeSpan.FromMinutes(1));
+        var current = await Seed.SessionAsync(t, account);
+
+        var stale = await RefreshAsync(t, oldDevice.RefreshToken);
+
+        await stale.ExpectErrorAsync(401, "REFRESH_INVALID");
+        Assert.Equal(RefreshStatuses.Active, (await RowAsync(t, current.RefreshToken)).Status);
+        Assert.Equal(HttpStatusCode.OK, (await RefreshAsync(t, current.RefreshToken)).StatusCode);
+        Assert.Equal(0, metrics.Sum("refresh_total", ("result", "reuse")));
+        Assert.Equal(1, metrics.Sum("refresh_total", ("result", "invalid")));
+        Assert.Equal(1, metrics.Sum("revocations_total"));
+        Assert.Single(await Outbox.EnvelopesAsync(t, "identity.tokens-revoked.v1")); // the sign-out's, not a reuse revoke-all
+    }
+
+    [Fact]
     public async Task ID_T07_staff_family_expires_after_12_hours()
     {
         await using var t = await TestIdentity.StartAsync(containers);

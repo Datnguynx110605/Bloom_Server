@@ -59,7 +59,12 @@ public sealed class SessionService(
         }
 
         var account = await db.Accounts.SingleOrDefaultAsync(a => a.Id == token.AccountId);
-        if (token.Status != RefreshStatuses.Active && account is not null) // reuse (ID-03)
+        if (token.Status == RefreshStatuses.Revoked) // a deliberate revocation is not theft: no side effects (LLD-ADR-013)
+        {
+            metrics.Refresh("invalid");
+            return null;
+        }
+        if (token.Status == RefreshStatuses.Rotated && account is not null) // reuse (ID-03)
         {
             await RevokeAllAsync(account, "refresh_reuse");
             await db.SaveChangesAsync();
