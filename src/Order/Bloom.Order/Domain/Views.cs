@@ -39,8 +39,11 @@ public static class Views
     public static IQueryable<OrderRow> OwnOrders(OrderDbContext db, Guid accountId) =>
         db.Orders.AsNoTracking().Where(o => o.AccountId == accountId && o.Status != OrderStatuses.Creating);
 
-    /// <summary>The order with its lines and history. <c>NOT_FOUND</c> when <paramref name="scope"/> does not hold it, the same error for every reason.</summary>
-    public static async Task<Api.Order> OrderAsync(OrderDbContext db, IQueryable<OrderRow> scope, Guid id, CancellationToken ct)
+    /// <summary>
+    /// The order with its lines and history. <c>NOT_FOUND</c> when <paramref name="scope"/> does not hold it, the same error for every reason. For a customer (<paramref name="customerId"/>, D22) the
+    /// history drops <c>actor_id</c> unless it is theirs and drops <c>reason</c> on staff rows; Support and Admin pass no customer and see everything.
+    /// </summary>
+    public static async Task<Api.Order> OrderAsync(OrderDbContext db, IQueryable<OrderRow> scope, Guid id, CancellationToken ct, Guid? customerId = null)
     {
         var o = await scope.SingleOrDefaultAsync(x => x.Id == id, ct) ?? throw OrderErrors.NotFound("The order");
         var lines = await db.OrderLines.AsNoTracking().Where(l => l.OrderId == id).OrderBy(l => l.LineNo).ToListAsync(ct);
@@ -68,7 +71,9 @@ public static class Views
         }));
         view.History.AddRange(history.Select(h => new Api.StatusChange
         {
-            FromStatus = h.FromStatus ?? "", ToStatus = h.ToStatus, ActorType = h.ActorType, ActorId = h.ActorId?.ToString("D") ?? "", Reason = h.Reason ?? "", At = Timestamp.FromDateTimeOffset(h.At),
+            FromStatus = h.FromStatus ?? "", ToStatus = h.ToStatus, ActorType = h.ActorType,
+            ActorId = customerId is not null && h.ActorId != customerId ? "" : h.ActorId?.ToString("D") ?? "",
+            Reason = customerId is not null && h.ActorType == ActorTypes.Staff ? "" : h.Reason ?? "", At = Timestamp.FromDateTimeOffset(h.At),
         }));
         return view;
     }

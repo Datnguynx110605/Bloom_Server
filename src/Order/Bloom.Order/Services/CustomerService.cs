@@ -21,7 +21,7 @@ public sealed class CustomerService(OrderDbContext db, Cancellations cancellatio
     {
         var caller = Caller.From(context).RequireCustomer();
         var id = Inputs.Id(request.OrderId, "order_id");
-        return await Views.OrderAsync(db, Views.OwnOrders(db, caller.UserId), id, context.CancellationToken);
+        return await Views.OrderAsync(db, Views.OwnOrders(db, caller.UserId), id, context.CancellationToken, caller.UserId);
     }
 
     public override async Task<Api.Order> CancelOrder(CancelOrderRequest request, ServerCallContext context)
@@ -29,6 +29,6 @@ public sealed class CustomerService(OrderDbContext db, Cancellations cancellatio
         var caller = Caller.From(context).RequireCustomer();
         var id = Inputs.Id(request.OrderId, "order_id");
         await cancellations.CancelAsync(id, request.Version, caller, null, context.CancellationToken);
-        return await Views.OrderAsync(db, Views.OwnOrders(db, caller.UserId), id, context.CancellationToken);
+        return await Views.OrderAsync(db, Views.OwnOrders(db, caller.UserId), id, context.CancellationToken, caller.UserId);
     }
 }

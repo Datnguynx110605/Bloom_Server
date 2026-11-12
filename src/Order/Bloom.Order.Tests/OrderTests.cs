@@ -47,6 +47,56 @@ public class OrderTests(Containers containers)
         Assert.Equal(("customer", account.ToString("D")), (order.History[1].ActorType, order.History[1].ActorId));
     }
 
+    /// <summary>A pending order with three more history rows: the system's (a reason code), staff's (a note) and the customer's own.</summary>
+    private static async Task<(Guid Account, Guid OrderId, Guid StaffId)> OrderWithMixedHistoryAsync(TestOrder t)
+    {
+        var account = Guid.NewGuid();
+        var orderId = Guid.Parse((await CheckoutAsync(t, account)).OrderId);
+        var staffId = Guid.NewGuid();
+        var at = t.Clock.GetUtcNow();
+        await using var db = t.NewDb();
+        db.OrderStatusHistory.AddRange(
+            new OrderStatusHistory { OrderId = orderId, FromStatus = "pending_payment", ToStatus = "cancelled", ActorType = ActorTypes.System, Reason = "checkout_expired", At = at },
+            new OrderStatusHistory { OrderId = orderId, FromStatus = "cancelled", ToStatus = "cancelled", ActorType = ActorTypes.Staff, ActorId = staffId, Reason = "Fraud suspected", At = at },
+            new OrderStatusHistory { OrderId = orderId, FromStatus = "cancelled", ToStatus = "cancelled", ActorType = ActorTypes.Customer, ActorId = account, Reason = "changed_mind", At = at });
+        await db.SaveChangesAsync(Ct);
+        return (account, orderId, staffId);
+    }
+
+    [Fact]
+    public async Task D22_customer_history_hides_staff_actor_and_reason()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, orderId, _) = await OrderWithMixedHistoryAsync(t);
+
+        var order = await t.Rpc.Customer.GetOrderAsync(new GetOrderRequest { OrderId = orderId.ToString("D") }, TestCaller.Customer(account).Call());
+
+        Assert.Equal(
+            [("", "creating", "customer", account.ToString("D"), ""), ("creating", "pending_payment", "customer", account.ToString("D"), ""),
+             ("pending_payment", "cancelled", "system", "", "checkout_expired"), // system rows keep their reason codes
+             ("cancelled", "cancelled", "staff", "", ""), // no staff id, no staff note
+             ("cancelled", "cancelled", "customer", account.ToString("D"), "changed_mind")], // the customer's own row is whole
+            order.History.Select(h => (h.FromStatus, h.ToStatus, h.ActorType, h.ActorId, h.Reason)));
+        Assert.All(order.History, h => Assert.NotNull(h.At));
+    }
+
+    [Fact]
+    public async Task D22_support_sees_everything()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, orderId, staffId) = await OrderWithMixedHistoryAsync(t);
+
+        foreach (var caller in new[] { TestCaller.Staff("support"), TestCaller.Staff("admin") })
+        {
+            var order = await t.Rpc.Staff.GetOrderAsync(new GetOrderRequest { OrderId = orderId.ToString("D") }, caller.Call());
+
+            Assert.Equal(
+                [("customer", account.ToString("D"), ""), ("customer", account.ToString("D"), ""), ("system", "", "checkout_expired"),
+                 ("staff", staffId.ToString("D"), "Fraud suspected"), ("customer", account.ToString("D"), "changed_mind")],
+                order.History.Select(h => (h.ActorType, h.ActorId, h.Reason)));
+        }
+    }
+
     [Fact]
     public async Task Other_customers_and_creating_orders_are_NOT_FOUND()
     {
