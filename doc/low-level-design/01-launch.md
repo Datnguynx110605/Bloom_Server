@@ -8,6 +8,7 @@
 | **Last updated** | 2026-10-31 |
 | **Product rules** | [04-launch](../product-design/04-launch.md) (LCH-R01 … R28), BI-01, BI-03 |
 | **HLD** | [high-level-design.md §5, §8.1](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-012 |
+| **Decision records** | [LLD-ADR-012](adr/LLD-ADR-012-admission-paced-per-launch.md) |
 | **Depends on** | [00-reliability.md](00-reliability.md) (outbox, inbox, conditional updates, error contract) |
 
 ## 1. Problem and scope
@@ -304,7 +305,7 @@ Every admin change uses optimistic locking (`version`), is audited (`identity.st
 | Exceeding the limit | Guarded update on `limit_usage` (§6.5 step 5) |
 | Pass reuse | Primary key on `consumed_passes.pass_id` in the hold transaction |
 | Two admission workers | Transaction-level advisory lock per launch, plus the tick key `wr:{L}:tick` (§6.4 step 7, [LLD-ADR-012](adr/LLD-ADR-012-admission-paced-per-launch.md)) |
-| Hold vs room close / stage change | Row lock on `launches`: a hold reads it `FOR SHARE` (§6.5 step 3). Room close (admission tick §6.4 step 5 and the settlement-side close) and every stage change (scheduler, admin) take it `FOR UPDATE` before evaluating their conditions, in a statement after the lock (a fresh READ COMMITTED snapshot) |
+| Hold vs room close / stage change | Row lock on `launches`: a hold reads it `FOR SHARE` (§6.5 step 3). Room close (admission tick §6.4 step 5) and every stage change (scheduler, admin) take it `FOR UPDATE` before evaluating their conditions, in a statement after the lock (a fresh READ COMMITTED snapshot) |
 | Losing a customer between pop and pass | Pop and pass record in one Lua script |
 | Duplicate or reordered settlement | Inbox + hold-status guards (§6.6) |
 | Deadlocks between holds | Fixed lock order |
