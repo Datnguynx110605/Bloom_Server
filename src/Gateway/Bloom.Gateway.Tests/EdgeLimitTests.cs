@@ -322,9 +322,9 @@ public class EdgeLimitTests(Containers containers)
         for (var i = 0; i < 5; i++)
             (await SendAsync(gateway, "GET", "/api/catalog/x")).Dispose();
 
-        Assert.Equal(1, await CallsAsync(inspector, "script|load"));
-        Assert.Equal(5, await CallsAsync(inspector, "evalsha"));
-        Assert.Equal(0, await CallsAsync(inspector, "eval"));
+        Assert.Equal(1, await RedisStats.CommandStatAsync(inspector, "script|load", "calls"));
+        Assert.Equal(5, await RedisStats.CommandStatAsync(inspector, "evalsha", "calls"));
+        Assert.Equal(0, await RedisStats.CommandStatAsync(inspector, "eval", "calls"));
     }
 
     [Fact]
@@ -361,12 +361,6 @@ public class EdgeLimitTests(Containers containers)
     [Fact]
     public void Script_loads_on_the_primary() =>
         Assert.False(EdgeStore.Primary(containers.Redis).IsReplica); // R2: only the single-node test Redis is exercised here
-
-    private static async Task<long> CallsAsync(IConnectionMultiplexer redis, string command)
-    {
-        var stats = (await redis.GetServers().Single().InfoAsync("commandstats")).SelectMany(g => g).ToList();
-        return stats.FirstOrDefault(p => p.Key == $"cmdstat_{command}").Value is { } value ? long.Parse(value.Split(',')[0]["calls=".Length..]) : 0;
-    }
 
     /// <summary>The next 60 s fixed-window boundary after the gateway's clock; the clock can only move forward.</summary>
     private static DateTimeOffset StartOfNextWindow(TestGateway gateway) =>

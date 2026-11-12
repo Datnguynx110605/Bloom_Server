@@ -155,17 +155,11 @@ public class RedisOutageTests(Containers containers)
         await Poll.UntilAsync(async () =>
         {
             gateway.Clock.Advance(TimeSpan.FromSeconds(6));
-            return probe.ExecuteTask!.IsFaulted || await RejectedPingsAsync(admin) >= 2;
+            return probe.ExecuteTask!.IsFaulted || await RedisStats.CommandStatAsync(admin, "ping", "rejected_calls") >= 2;
         }, 10, "the probe has ticked twice");
 
         Assert.False(probe.ExecuteTask!.IsFaulted);
         Assert.Equal(0, metrics.Gauge("gateway_redis_degraded"));
-    }
-
-    private static async Task<long> RejectedPingsAsync(IConnectionMultiplexer redis)
-    {
-        var stats = (await redis.GetServers().Single().InfoAsync("commandstats")).SelectMany(g => g);
-        return stats.FirstOrDefault(p => p.Key == "cmdstat_ping").Value is { } v ? long.Parse(v.Split("rejected_calls=")[1].Split(',')[0]) : 0;
     }
 
     [Fact]
