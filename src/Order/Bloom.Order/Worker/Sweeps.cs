@@ -80,6 +80,7 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Orde
                     var handled = await handle(scope.ServiceProvider, order);
                     await db.SaveChangesAsync(ct);
                     done += handled;
+                    await tx.ReleaseSavepointAsync("order_step", ct); // else every order of the batch leaves a subtransaction open
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
