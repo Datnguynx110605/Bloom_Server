@@ -24,15 +24,15 @@ doc/
 │   ├── 00-overview.md            vision, goals, invariants, scope, actors
 │   ├── 01-glossary.md            domain terms
 │   ├── 02-catalog.md … 11-notifications.md   one file per domain area
-│   └── adr/                      PD-ADR-001 … 008
+│   └── adr/                      PD-ADR-001 … 009
 ├── high-level-design/
 │   ├── high-level-design.md      architecture, services, data, interfaces, cross-cutting
-│   └── adr/                      HLD-ADR-001 … 018
+│   └── adr/                      HLD-ADR-001 … 019
 └── low-level-design/
     ├── README.md                 component index
     ├── 00-reliability.md         shared outbox / inbox / idempotency / concurrency
     ├── 01-launch.md … 09-notification.md   one file per service
-    └── adr/                      LLD-ADR-001 … 010
+    └── adr/                      LLD-ADR-001 … 015
 ```
 
 ## Conventions

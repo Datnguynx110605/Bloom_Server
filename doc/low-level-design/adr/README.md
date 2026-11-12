@@ -22,3 +22,4 @@ Component-level decisions. Conventions and the MADR template are defined once in
 | [LLD-ADR-012](LLD-ADR-012-admission-paced-per-launch.md) | Admission is paced per launch, not per replica | launch | Accepted | 2026-11-12 |
 | [LLD-ADR-013](LLD-ADR-013-revoked-refresh-not-reuse.md) | A revoked refresh token is not reuse | identity | Accepted | 2026-11-12 |
 | [LLD-ADR-014](LLD-ADR-014-release-tombstone.md) | Release tombstone | inventory | Accepted | 2026-11-12 |
+| [LLD-ADR-015](LLD-ADR-015-consumer-queue-dlx.md) | Consumer queues dead-letter at the delivery limit | reliability | Accepted | 2026-11-12 |

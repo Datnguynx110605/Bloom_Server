@@ -15,6 +15,8 @@ public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter
     /// <summary>
     /// Runs the allocator for each SKU, then takes the order locks of every order it served once, in ascending order id, after the last SKU (IN-1): the callers
     /// hold all their SKU locks, so nothing holding an order lock waits on a SKU lock, and two transactions never take order locks in crossed order.
+    /// The release/reserve/paid order lock (<see cref="StockLocks.LockOrderAsync"/>, a single bigint: another key space from this two-int one) is taken before any SKU lock;
+    /// nothing holding the allocator's two-int lock waits on the order lock, so there is no cycle.
     /// </summary>
     public async Task RunAsync(IEnumerable<Guid> skuIds, CancellationToken ct)
     {
@@ -56,7 +58,7 @@ public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter
                 throw new InvalidOperationException($"Allocation {a.RefId}/{skuId} left 'backordered' while the SKU row was locked.");
             ledger.Add(skuId, EntryTypes.BackorderAllocated, new(OnHand: -q, Committed: q), RefTypes.Of(a.Kind), a.RefId);
             var waited = (now - a.PaidAt!.Value).TotalSeconds;
-            db.AfterCommit(() => metrics.BackorderAllocated(waited));
+            db.AfterCommit.Add(() => { metrics.BackorderAllocated(waited); return Task.CompletedTask; });
             served.Add(a.OrderId);
         }
         return served;

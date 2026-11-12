@@ -5,27 +5,26 @@ using Bloom.Inventory.Domain;
 using Bloom.Inventory.Errors;
 using Bloom.Inventory.Observability;
 using Google.Protobuf.WellKnownTypes;
+using Google.Rpc;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Services;
 
 /// <summary>02-inventory §3 component <c>Stock API</c> (§5.1): <c>order</c> and <c>fulfillment</c> call it over plain gRPC; it has no HTTP route (spec §6). Each call runs its own transaction (plan R10).</summary>
-public sealed class StockService(InventoryDbContext db, Ledger ledger, InventoryMetrics metrics, TimeProvider clock) : InventoryStock.InventoryStockBase
+public sealed class StockService(InventoryDbContext db, StockLocks locks, Ledger ledger, InventoryMetrics metrics, TimeProvider clock) : InventoryStock.InventoryStockBase
 {
     /// <summary>§6.1 plus plan R21: <c>regular</c> / <c>reserved</c> allocations, ledger <c>reserved</c>. Records <c>reserve_total</c> / <c>reserve_seconds</c> for the two outcomes the metric knows.</summary>
     public override async Task<Empty> ReserveStock(ReserveStockRequest request, ServerCallContext context)
     {
         var orderId = Inputs.Id(request.OrderId, "order_id");
         var lines = ParseLines(request.Lines);
-        if (await db.ReleasedOrders.AnyAsync(r => r.OrderId == orderId, context.CancellationToken)) // LLD-ADR-014: a released order never holds stock again
-            throw InventoryErrors.Error(InventoryErrors.OrderReleased, "The order was released.");
         var started = Stopwatch.GetTimestamp();
         try
         {
             await CommitAsync(orderId, orderId, lines, AllocationKinds.Regular, AllocationStatuses.Reserved, context.CancellationToken);
         }
-        catch (RpcException e) when (e.StatusCode == StatusCode.FailedPrecondition) // SOLD_OUT or SKU_NOT_STOCKED; the other errors in here have other statuses
+        catch (RpcException e) when (e.StatusCode == StatusCode.FailedPrecondition && e.GetRpcStatus()?.GetDetail<ErrorInfo>()?.Reason != InventoryErrors.OrderReleased) // SOLD_OUT or SKU_NOT_STOCKED; ORDER_RELEASED is no outcome the metric knows
         {
             metrics.Reserve("sold_out", Stopwatch.GetElapsedTime(started).TotalSeconds);
             throw;
@@ -66,7 +65,7 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
     }
 
     /// <summary>
-    /// Plan R9, R21. Compares with the allocations already held under <paramref name="refId"/>, then runs the guarded updates one SKU at a time in
+    /// Plan R9, R21. A regular reserve first takes the order's lock and checks the tombstone (IR-05); then compares with the allocations already held under <paramref name="refId"/>, then runs the guarded updates one SKU at a time in
     /// ascending <c>sku_id</c> (the update takes the row lock, so every writer locks in the same order), then inserts the allocations and ledger rows.
     /// A concurrent duplicate loses on the allocation key, or on a shortage the winner caused; it rolls back and compares once more.
     /// </summary>
@@ -76,6 +75,13 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
         for (var attempt = 0; ; attempt++)
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct);
+            if (kind == AllocationKinds.Regular)
+            {
+                await locks.LockOrderAsync(orderId, ct); // IR-05: a release in flight has committed by now
+                // LLD-ADR-014: a released order never holds stock again. Before the held comparison: a replay after a release must not answer ok.
+                if (await db.ReleasedOrders.AnyAsync(r => r.OrderId == orderId, ct))
+                    throw InventoryErrors.Error(InventoryErrors.OrderReleased, "The order was released.");
+            }
             var held = await db.StockAllocations.AsNoTracking().Where(a => a.RefId == refId).Select(a => new { a.SkuId, a.Quantity }).ToListAsync(ct);
             if (held.Count > 0)
             {

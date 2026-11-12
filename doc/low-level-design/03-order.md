@@ -5,8 +5,8 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
-| **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R18), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
+| **Last updated** | 2026-11-12 |
+| **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R20), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
 | **HLD** | [high-level-design.md §5, §8.1 – §8.3, §8.5](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-013 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [01-launch.md](01-launch.md), [02-inventory.md](02-inventory.md) |
 
@@ -61,7 +61,6 @@
 | `stock_allocated` | `bool` | default false (pre-orders) |
 | `launch_released` | `bool` | default false (pre-orders) |
 | `handed_to_fulfillment` | `bool` | default false; true once "order ready to fulfill" is emitted |
-| `open_returns` | `int` | default 0, ≥ 0 |
 | `deadline_at` | `timestamptz` | `creating`: +2 min; `pending_payment`: +15 min; else null |
 | `shipping_option` | `text` | `standard` \| `express` |
 | `ship_to` | `jsonb` | address snapshot (name, lines, city, state, ZIP, phone) |
@@ -106,6 +105,8 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `started_at`, `completed_at` | `timestamptz` | |
 
 **`checkout_keys`** — PK `(account_id, idempotency_key)`: `order_id`. A resumed `StartCheckout` finds its order through it (§6.2).
+
+**`order_returns`** — one row per return: `order_id` (FK to `orders`), `return_id`, `closed_at timestamptz` null. PK `(order_id, return_id)`. A return is open while `closed_at` is null (§5.3).
 
 ### 4.2 Cart
 
@@ -205,7 +206,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `fulfillment.shipment-shipped.v1` | → `shipped` |
 | `fulfillment.shipment-delivered.v1` | → `delivered`, `delivered_at`; publish `order.delivered.v1` |
 | `fulfillment.delivery-failed.v1` | → `delivery_failed`; coupon use → `restored` (ORD-R17) |
-| `fulfillment.return-requested.v1` / `fulfillment.return-closed.v1` | `open_returns += 1` / `−= 1` |
+| `fulfillment.return-requested.v1` / `fulfillment.return-closed.v1` | Per `returnId`: insert an `order_returns` row / mark it closed (a close that arrives first inserts the row closed) |
 | `fulfillment.return-decided.v1` | Add accepted units to `returned_qty`; status → `partially_returned` or `returned` (§6.7) |
 | `identity.account-deleted.v1` | Anonymize (§6.9) |
 
@@ -224,6 +225,7 @@ Indexes: `(status, deadline_at) WHERE status IN ('creating','pending_payment')` 
 | `COUPON_MIN_SPEND` | `FAILED_PRECONDITION` | Eligible lines below minimum (PRM-R11) |
 | `COUPON_NOT_APPLICABLE` | `FAILED_PRECONDITION` | No eligible lines, or launch order (LCH-R14) |
 | `COUPON_LIMIT_REACHED` | `FAILED_PRECONDITION` | Total or per-customer limit (BI-04) |
+| `ORDER_TOTAL_TOO_LOW` | `FAILED_PRECONDITION` | Order total below 50 cents (CHK-R20) |
 | `SOLD_OUT`, `LIMIT_EXCEEDED`, `PASS_*` | as returned | Passed through from inventory / launch |
 | `CANCEL_NOT_ALLOWED` | `FAILED_PRECONDITION` | Status doesn't allow it, or packing already started (customer); fulfillment's `PACKING_STARTED` maps to it |
 | `ALREADY_SHIPPED` | `FAILED_PRECONDITION` | Support cancel refused by fulfillment |
@@ -277,7 +279,7 @@ Guarded by the idempotency key (multi-step form, [00-reliability.md §7.4](00-re
    - regular: every product SKU `buyable`, no launch SKU in `pre-launch` stages, quantities ≤ 10;
    - launch: every product SKU in the given launch, stage `preorder_open` (judged by its launch, not by `buyable`: catalog returns `buyable = false` for `preorder_open`, [08-catalog §6.1](08-catalog.md)); plans only;
    - plans: eligible for the parent line's product; plan qty ≤ parent qty (WAR-R01).
-4. **Compute totals** (§6.3), including the coupon check (validity, eligibility, minimum spend). No counters touched yet.
+4. **Compute totals** (§6.3), including the coupon check (validity, eligibility, minimum spend). A total below 50 cents → `ORDER_TOTAL_TOO_LOW` (CHK-R20). No counters touched yet.
 5. **Hold (gRPC):** regular → inventory `ReserveStock(order_id, product lines)`; launch → launch `HoldAllocation(order_id, pass, product lines)`.
 6. **Tx 2:** hold the coupon (§6.8); insert lines; set totals, `tax_rate_bp`, `status = pending_payment`, `deadline_at = now + 15 min`. Commit.
 7. **Payment (gRPC):** `CreatePayment(order_id, total, account)` (idempotent by `order_id`); store `payment_id`.
@@ -316,7 +318,7 @@ All amounts are integer cents.
 5. **Split** (largest remainder): each eligible line gets `floor(D × gross_i / Σ eligible)`; the leftover cents go one each to lines with the largest fractional remainders, ties to the lower `line_no`. Σ shares = `D` exactly.
 6. **Tax** per product line: `round_half_up((gross − discount) × tax_rate_bp / 10000)`. Plans and shipping: 0 (CHK-R08).
 7. `paid_cents = gross − discount + tax`. Shipping: Standard 0, Express `express_fee_cents`.
-8. `total = Σ paid_cents + shipping`.
+8. `total = Σ paid_cents + shipping`. The total must be at least 50 cents (CHK-R20).
 
 ### 6.4 Payment succeeded
 
@@ -373,7 +375,7 @@ On `launch.stage-changed.v1` with `stage = released`: set `launch_released = tru
 
 **Account deleted (ACC-R06):** replace `ship_to` name, address lines and phone with `"[deleted]"` on all the account's orders; delete the cart. Amounts, SKUs, dates and `account_id` stay.
 
-**`HasUnsettledOrders`** (ACC-R13) returns true if any order of the account has: status in `pending_payment`, `paid`, `awaiting_stock`, `packing`, `shipped`; or `open_returns > 0`; or `delivered_at > now() − 14 days`.
+**`HasUnsettledOrders`** (ACC-R13) returns true if any order of the account has: status in `pending_payment`, `paid`, `awaiting_stock`, `packing`, `shipped`; or an `order_returns` row with `closed_at` null; or `delivered_at > now() − 14 days`.
 
 ## 7. Concurrency and consistency
 
@@ -419,7 +421,7 @@ On `launch.stage-changed.v1` with `stage = released`: set `launch_released = tru
 | Metric | Labels | Purpose |
 |---|---|---|
 | `checkout_start_seconds` | `kind` | OR-01 |
-| `checkout_total` | `kind`, `result` (`ok`, `sold_out`, `limit_exceeded`, `coupon_*`, `failed`) | Outcomes |
+| `checkout_total` | `kind`, `result` (`ok`, `sold_out`, `limit_exceeded`, `coupon_*`, `order_total_too_low`, `failed`) | Outcomes |
 | `orders_by_status` | `status` | Lifecycle |
 | `checkout_expired_total` | — | Abandonment |
 | `late_payments_total` | — | Late-payment refunds |

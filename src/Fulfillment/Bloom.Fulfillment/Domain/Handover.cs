@@ -12,17 +12,17 @@ namespace Bloom.Fulfillment.Domain;
 public sealed class Handover(FulfillmentDbContext db, OutboxWriter outbox)
 {
     /// <summary>
-    /// Guarded task <c>packed → handed_over</c>, then shipment <c>label_ready → handed_over</c> at <paramref name="now"/>, and <c>shipment-shipped</c> for an outbound task.
+    /// Guarded task <c>packed → handed_over</c>, then shipment <c>label_ready → handed_over</c> with <c>handed_over_at</c> = <paramref name="handedOverAt"/> (everything else at <paramref name="now"/>), and <c>shipment-shipped</c> for an outbound task.
     /// Returns false, with nothing staged, when either guard hits no row. <paramref name="task"/> is null for a ship-back.
     /// </summary>
-    public async Task<bool> ApplyAsync(Shipment shipment, PackTask? task, DateTimeOffset now, CancellationToken ct)
+    public async Task<bool> ApplyAsync(Shipment shipment, PackTask? task, DateTimeOffset now, DateTimeOffset handedOverAt, CancellationToken ct)
     {
         var won = task is null || await db.Database.ExecuteSqlAsync($"""
             UPDATE pack_tasks SET status = {TaskStatuses.HandedOver}, version = version + 1, updated_at = {now}
             WHERE id = {task.Id} AND status = {TaskStatuses.Packed}
             """, ct) == 1;
         won = won && await db.Database.ExecuteSqlAsync($"""
-            UPDATE shipments SET status = {ShipmentStatuses.HandedOver}, handed_over_at = {now}, version = version + 1
+            UPDATE shipments SET status = {ShipmentStatuses.HandedOver}, handed_over_at = {handedOverAt}, version = version + 1
             WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelReady}
             """, ct) == 1;
         if (!won) return false;

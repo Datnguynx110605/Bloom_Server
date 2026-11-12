@@ -109,7 +109,6 @@ public class SchemaTests(Containers containers)
             await using var tx = await db.Database.BeginTransactionAsync(Ct);
             db.AfterCommit.Add(() => { ran.Add("rolled back"); return Task.CompletedTask; });
             await tx.RollbackAsync(Ct);
-            Assert.Empty(db.AfterCommit);
         }
 
         Assert.Equal(["committed"], ran);

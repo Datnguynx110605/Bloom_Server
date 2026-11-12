@@ -54,16 +54,24 @@ public sealed class EdgeStore(IConnectionMultiplexer redis, TimeProvider time, I
     private async Task<RedisResult> EvaluateAsync(RedisKey[] keys, RedisValue[] args)
     {
         var db = redis.GetDatabase();
-        var script = _loaded ??= await Script.LoadAsync(redis.GetServers()[0]);
+        var script = _loaded ??= await Script.LoadAsync(Primary(redis));
         try
         {
             return await db.ScriptEvaluateAsync(script.Hash, keys, args);
         }
         catch (RedisServerException e) when (e.Message.StartsWith("NOSCRIPT", StringComparison.Ordinal))
         {
-            script = _loaded = await Script.LoadAsync(redis.GetServers()[0]);
+            script = _loaded = await Script.LoadAsync(Primary(redis));
             return await db.ScriptEvaluateAsync(script.Hash, keys, args);
         }
+    }
+
+    // ponytail: first connected non-replica server; only a single-node Redis is tested, add a primary+replica fixture if that matters.
+    // With none connected or all replicas, fall back to the first server: loading then fails as an outage (RedisConnectionException, READONLY) and takes the degraded path, as before.
+    internal static IServer Primary(IConnectionMultiplexer redis)
+    {
+        var servers = redis.GetServers();
+        return servers.FirstOrDefault(s => s.IsConnected && !s.IsReplica) ?? servers[0];
     }
 
     // fw:{policy}:{subject}:{floor(now / window)} (plan P18)

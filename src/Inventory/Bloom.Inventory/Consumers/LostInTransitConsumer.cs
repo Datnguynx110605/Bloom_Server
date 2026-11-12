@@ -9,7 +9,8 @@ namespace Bloom.Inventory.Consumers;
 /// <summary>
 /// <c>inventory.mark-lost-in-transit.v1</c> (02-inventory §6.7, plan R17): the units of the <c>shipped</c> allocations of <c>refId</c> become <c>lost</c>
 /// (serials <c>shipped</c> → <c>lost</c>, <c>lost += count</c>; <c>lost += quantity</c> for a non-serialized SKU). The allocations stay <c>shipped</c>.
-/// No shipped allocation, or a serialized one with no shipped serial, is real drift: permanent failure before any write.
+/// No shipped allocation, or a serialized one with no shipped serial that no earlier command counted, is real drift: permanent failure before any write.
+/// A repeat for a ref whose serialized units are already counted is a no-op.
 /// Runs in <c>ConsumerHost</c>'s transaction (plan R10); SKU rows are locked first (plan R9).
 /// </summary>
 public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks locks, Ledger ledger, TimeProvider clock) : IMessageHandler
@@ -40,6 +41,7 @@ public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks lock
                 if (remaining > 0) counts.Add((a, remaining));
             }
             else if (serials.TryGetValue(a.SkuId, out var n)) counts.Add((a, n));
+            else if (counted.ContainsKey(a.SkuId)) continue; // its serials are already lost: a repeat is a no-op (02-inventory §8)
             else throw new PermanentFailureException($"Lost in transit {refId}: serialized SKU {a.SkuId} has no shipped serial.");
         }
 

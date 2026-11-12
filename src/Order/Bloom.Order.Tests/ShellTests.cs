@@ -90,6 +90,7 @@ public class ShellTests(Containers containers)
         { "CANCEL_NOT_ALLOWED", StatusCode.FailedPrecondition }, { "ALREADY_SHIPPED", StatusCode.FailedPrecondition },
         { "COUPON_CODE_TAKEN", StatusCode.AlreadyExists }, { "CHECKOUT_CLOSED", StatusCode.FailedPrecondition },
         { "NOT_FOUND", StatusCode.NotFound }, { "VALIDATION_FAILED", StatusCode.InvalidArgument },
+        { "ORDER_TOTAL_TOO_LOW", StatusCode.FailedPrecondition },
     };
 
     [Theory, MemberData(nameof(ReasonTable))]

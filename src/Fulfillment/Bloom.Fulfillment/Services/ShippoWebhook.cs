@@ -70,7 +70,7 @@ public static class ShippoWebhook
         try
         {
             var status = await shippo.GetTrackingStatusAsync(tracking, ct); // FR-04
-            var changed = await ApplyAsync(shipmentId.Value, status, db, failures, handover, outbox, clock.GetUtcNow(), logger, ct);
+            var changed = await ApplyAsync(shipmentId.Value, status, db, failures, handover, outbox, metrics, clock.GetUtcNow(), logger, ct);
             metrics.Webhook(changed ? "applied" : "unchanged");
             return Results.Ok();
         }
@@ -104,8 +104,10 @@ public static class ShippoWebhook
 
     /// <summary>Locks the shipment, then applies the re-fetched status. Returns whether the shipment's status changed.</summary>
     private static async Task<bool> ApplyAsync(
-        Guid id, string tracking, FulfillmentDbContext db, Failures failures, Handover handover, OutboxWriter outbox, DateTimeOffset now, ILogger logger, CancellationToken ct)
+        Guid id, ShippoTracking carrier, FulfillmentDbContext db, Failures failures, Handover handover, OutboxWriter outbox, FulfillmentMetrics metrics, DateTimeOffset now, ILogger logger, CancellationToken ct)
     {
+        var tracking = carrier.Status;
+        double? handoverSeconds = null; // R21, recorded once the transaction committed
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         // D32 may hand the task over, so the task's lock comes first (lock order: pack_tasks → shipments, as HandOver and CancelPackTask take them)
         var labelTaskId = await db.Shipments.AsNoTracking().Where(x => x.Id == id && x.Direction == Directions.Outbound && x.Status == ShipmentStatuses.LabelReady).Select(x => x.PackTaskId).SingleOrDefaultAsync(ct);
@@ -128,11 +130,16 @@ public static class ShippoWebhook
         if (s.Direction == Directions.Outbound && s.Status == ShipmentStatuses.LabelReady && to is ShipmentStatuses.InTransit or ShipmentStatuses.Delivered) // D32: a carrier scan implies the handover
         {
             var task = s.PackTaskId is { } taskId ? await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, ct) : null;
-            if (!await handover.ApplyAsync(s, task, now, ct))
+            // item 7: the carrier's scan date, clamped to [task created_at, now] against carrier clock skew
+            var handedOverAt = carrier.StatusDate ?? now;
+            if (handedOverAt > now) handedOverAt = now;
+            if (task is not null && handedOverAt < task.CreatedAt) handedOverAt = task.CreatedAt;
+            if (!await handover.ApplyAsync(s, task, now, handedOverAt, ct))
             {
                 logger.LogWarning("Shippo reported {Tracking} on label_ready shipment {ShipmentId} but its task is not packed; ignored", tracking, s.Id);
                 return false;
             }
+            if (task is not null) handoverSeconds = (handedOverAt - task.CreatedAt).TotalSeconds;
         }
         if (s.Status == ShipmentStatuses.PossiblyLost && to is ShipmentStatuses.InTransit or ShipmentStatuses.Delivered) await failures.DismissAsync(s.Id, ct); // late news (§8)
         var settle = to == ShipmentStatuses.PossiblyLost ? null : to; // Failures.FlagAsync moves that one
@@ -163,6 +170,7 @@ public static class ShippoWebhook
         }
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+        if (handoverSeconds is { } seconds) metrics.HandedOver(s.Service, seconds);
         return to is not null;
     }
 

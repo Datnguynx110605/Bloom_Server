@@ -5,10 +5,10 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [10-accounts-access](../product-design/10-accounts-access.md) ACC-R01 … R14, BI-06 |
 | **HLD** | [high-level-design.md §5, §9.1](../high-level-design/high-level-design.md), HLD-ADR-010, HLD-ADR-011, HLD-ADR-016 |
-| **Decision records** | [LLD-ADR-008](adr/LLD-ADR-008-verify-first-signup.md) |
+| **Decision records** | [LLD-ADR-008](adr/LLD-ADR-008-verify-first-signup.md), [LLD-ADR-013](adr/LLD-ADR-013-revoked-refresh-not-reuse.md) |
 | **Depends on** | [00-reliability.md](00-reliability.md), [03-order.md](03-order.md) (`HasUnsettledOrders`) |
 
 ## 1. Problem and scope
@@ -346,6 +346,7 @@ Inbox transaction: insert `audit_log` with `id = messageId` (`ON CONFLICT DO NOT
 | Staff member loses the TOTP device | Admin `ResetStaffMfa`. |
 | Deleted customer's email registers again | Allowed: the email was freed. |
 | order down during deletion | `ORDER_SERVICE_UNAVAILABLE`, nothing changed. |
+| Address change racing a delete | `UpsertAddress` re-checks `status` under the account row lock: `NOT_FOUND`. |
 
 ## 9. Security and validation
 

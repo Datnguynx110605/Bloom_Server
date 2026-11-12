@@ -1,4 +1,6 @@
 using System.Net;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using Testcontainers.Redis;
@@ -136,6 +138,28 @@ public class RedisOutageTests(Containers containers)
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(1, metrics.Gauge("gateway_redis_degraded"));
+    }
+
+    [Fact]
+    public async Task Probe_treats_a_non_outage_server_error_as_up()
+    {
+        await using var redis = new RedisBuilder("redis:8.2.3").Build();
+        await redis.StartAsync(Ct);
+        await using var admin = await ConnectionMultiplexer.ConnectAsync(redis.GetConnectionString() + ",allowAdmin=true");
+        await admin.GetDatabase().ExecuteAsync("ACL", "SETUSER", "probe", "on", ">pw", "~*", "+@all", "-ping"); // PING answers NOPERM: Redis is up
+        await using var gateway = await TestGateway.StartAsync(containers, o => o.Config["Gateway:Redis"] = $"{redis.GetConnectionString()},user=probe,password=pw");
+        using var metrics = new MetricCapture(gateway.Services);
+        var probe = gateway.Services.GetServices<IHostedService>().OfType<RedisDegradedProbe>().Single();
+
+        // Tick until the probe has been refused twice: the loop survived the first refusal. A dead loop shows as a faulted task instead.
+        await Poll.UntilAsync(async () =>
+        {
+            gateway.Clock.Advance(TimeSpan.FromSeconds(6));
+            return probe.ExecuteTask!.IsFaulted || await RedisStats.CommandStatAsync(admin, "ping", "rejected_calls") >= 2;
+        }, 10, "the probe has ticked twice");
+
+        Assert.False(probe.ExecuteTask!.IsFaulted);
+        Assert.Equal(0, metrics.Gauge("gateway_redis_degraded"));
     }
 
     [Fact]

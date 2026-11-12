@@ -117,15 +117,30 @@ public class SchemaTests(Containers containers)
             VALUES ({raw}, 1, 'product', {Id()}, {Id()}, {Id()}, 'x', false, 1, 0, 0, 0, 0)
             """, Ct);
         var defaults = await db.Database.SqlQuery<string>($"""
-            SELECT concat_ws(',', o.stock_allocated, o.launch_released, o.handed_to_fulfillment, o.open_returns, o.version, l.returned_qty, l.refunded_cents) AS "Value"
+            SELECT concat_ws(',', o.stock_allocated, o.launch_released, o.handed_to_fulfillment, o.version, l.returned_qty, l.refunded_cents) AS "Value"
             FROM orders o JOIN order_lines l ON l.order_id = o.id WHERE o.id = {raw}
             """).SingleAsync(Ct);
-        Assert.Equal("f,f,f,0,0,0,0", defaults);
+        Assert.Equal("f,f,f,0,0,0", defaults);
 
         var e = await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
             db.Database.ExecuteSqlAsync($"UPDATE order_lines SET refunded_cents = paid_cents + 1 WHERE order_id = {order.Id}", Ct));
         Assert.Equal("23514", e.SqlState);
         Assert.Equal("ck_order_lines_refund_le_paid", e.ConstraintName);
+    }
+
+    [Fact]
+    public async Task Order_returns_is_keyed_per_return_and_belongs_to_an_order()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        await using var db = t.NewDb();
+        var order = await InsertAsync(db, NewOrder());
+        var returnId = Id();
+        await InsertAsync(db, new OrderReturn { OrderId = order.Id, ReturnId = returnId });
+
+        await using var d1 = t.NewDb();
+        Assert.Equal("PK_order_returns", await ViolationAsync(d1, new OrderReturn { OrderId = order.Id, ReturnId = returnId }, "23505"));
+        await using var d2 = t.NewDb();
+        Assert.Equal("FK_order_returns_orders_order_id", await ViolationAsync(d2, new OrderReturn { OrderId = Id(), ReturnId = Id() }, "23503"));
     }
 
     [Fact]

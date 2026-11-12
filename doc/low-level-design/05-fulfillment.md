@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) ORD-R08 … R17, [07-returns-refunds](../product-design/07-returns-refunds.md) RET-R01 … R15, WAR-R01 … R06, BI-05, BI-07 |
 | **HLD** | [high-level-design.md §5, §8.4](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-018 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [02-inventory.md](02-inventory.md), [03-order.md](03-order.md), [04-payment.md](04-payment.md) |
@@ -251,7 +251,7 @@ Webhook: wrong secret → `404`. Otherwise read `tracking_number`, **re-fetch** 
 
 Every update sets `last_tracking_at`. Transitions are guarded, so repeated or late callbacks are no-ops.
 
-**A carrier scan implies handover.** `TRANSIT` or `DELIVERED` on a `label_ready` outbound shipment first applies the HandOver step (§6.2 step 4: task → `handed_over`, publish `shipment-shipped`, `handed_over_at` = event time), then the normal transition.
+**A carrier scan implies handover.** `TRANSIT` or `DELIVERED` on a `label_ready` outbound shipment first applies the HandOver step (§6.2 step 4: task → `handed_over`, publish `shipment-shipped`, `handed_over_at` = the carrier's `status_date` (processing time if absent)), then the normal transition.
 
 **A lost parcel delivered later is recorded and alerted.** `DELIVERED` on a `lost` shipment sets `delivered_at`, keeps status `lost`, and logs an Error (alert → Support). No stock or money moves.
 
@@ -283,7 +283,7 @@ Every update sets `last_tracking_at`. Transitions are guarded, so repeated or la
 |---|---|
 | `RecordReturnedToSender` (after `RETURNED`) | `inventory.receive-returned-to-sender.v1` with per-unit `sealed` / `failed`; refund **remaining order total** (`total_cents − Σ refunded`, includes Express); coverages `cancelled`; publish `delivery-failed`; failure `resolved_refund` |
 | `ConfirmLost(refund)` | `inventory.mark-lost-in-transit.v1`; same full refund; coverages `cancelled`; publish `delivery-failed`; `resolved_refund` |
-| `ConfirmLost(reship)` | inventory `CommitForReship(reship_id, product lines)` (sync; `SOLD_OUT` → `RESHIP_NO_STOCK`); `inventory.mark-lost-in-transit.v1` for the original; new pack task (`kind = reship`, `ref_id = reship_id`, same lines and address); coverages move to the new serials at its packing; `resolved_reship`. Order stays *Shipped*. If the apply transaction finds the failure no longer confirmed, it writes `inventory.release-reservation.v1 {orderId, reshipId}` to the outbox, commits, and then returns `INVALID_STATE`. |
+| `ConfirmLost(reship)` | inventory `CommitForReship(reship_id, product lines)` (sync; `SOLD_OUT` → `RESHIP_NO_STOCK`); `inventory.mark-lost-in-transit.v1` for the original; new pack task (`kind = reship`, `ref_id = reship_id`, same lines and address); coverages move to the new serials at its packing; `resolved_reship`. Order stays *Shipped*. If the apply transaction finds the failure no longer confirmed and not resolved by this same reship, it writes `inventory.release-reservation.v1 {orderId, reshipId}` to the outbox, commits, and then returns `INVALID_STATE`. |
 | `DismissPossiblyLost` | Shipment back to its previous status (`delivery_failures.previous_status`); failure `dismissed`, `dismissed_at` set |
 
 If the refund amount is 0 (for example the order is already fully refunded): no `payment.refund-payment.v1` and no saga; the response has `refund_id = ""` and `amount_cents = 0`; `delivery-failed` is still published.
@@ -326,6 +326,7 @@ If the refund amount is 0 (for example the order is already fully refunded): no 
 | Duplicate return request (same `Idempotency-Key`) | The same return request is returned. |
 | Package flagged possibly lost, then delivered | `DELIVERED` applies; possibly-lost dismissed automatically. |
 | Reship with no stock | `RESHIP_NO_STOCK`; Support chooses refund. |
+| Reship after a released reship | The reship id is per flag occurrence (shipment id + `dismissed_at`), so inventory commits stock again. |
 | Returned-to-sender after a partial earlier refund | Refunds the remaining total only. |
 
 ## 9. Security and validation

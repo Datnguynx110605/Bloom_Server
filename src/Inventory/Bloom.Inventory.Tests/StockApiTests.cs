@@ -195,6 +195,23 @@ public class StockApiTests(Containers containers)
     }
 
     [Fact]
+    public async Task Reserve_metric_counts_SOLD_OUT_but_not_ORDER_RELEASED()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 1);
+        var released = Guid.CreateVersion7();
+        await Seed.ReleaseAsync(t, released);
+
+        await Rpc.FailsAsync(t.Stock.ReserveStockAsync(Reserve(released, Seed.Line(sku, 1)), cancellationToken: Ct), "ORDER_RELEASED");
+        Assert.Equal(0, metrics.Sum("reserve_total", ("result", "sold_out")));
+
+        await Rpc.FailsAsync(t.Stock.ReserveStockAsync(Reserve(Guid.CreateVersion7(), Seed.Line(sku, 2)), cancellationToken: Ct), "SOLD_OUT");
+        Assert.Equal(1, metrics.Sum("reserve_total", ("result", "sold_out")));
+    }
+
+    [Fact]
     public async Task Same_order_with_other_lines_is_RESERVATION_CONFLICT()
     {
         await using var t = await TestInventory.StartAsync(containers);

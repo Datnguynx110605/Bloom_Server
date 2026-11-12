@@ -154,7 +154,7 @@ public class DeletionTests(Containers containers)
         await held.ReleaseAsync();
 
         Assert.Equal(HttpStatusCode.OK, (await delete).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await upsert).StatusCode); // it ran after the delete; the account's own rows are not this test's concern
+        await (await upsert).ExpectErrorAsync(404, "NOT_FOUND"); // it ran after the delete and found the account gone (item 5)
     }
 
     [Fact]

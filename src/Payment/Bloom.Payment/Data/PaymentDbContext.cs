@@ -8,8 +8,9 @@ using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace Bloom.Payment.Data;
 
-public sealed partial class PaymentDbContext(DbContextOptions<PaymentDbContext> options) : DbContext(options)
+public sealed partial class PaymentDbContext(DbContextOptions<PaymentDbContext> options) : DbContext(options), IAfterCommitContext
 {
+    public AfterCommitActions AfterCommit { get; } = new();
     public DbSet<PaymentRow> Payments => Set<PaymentRow>();
     public DbSet<RefundRow> Refunds => Set<RefundRow>();
     public DbSet<ProviderEvent> ProviderEvents => Set<ProviderEvent>();

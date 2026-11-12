@@ -198,7 +198,9 @@ public class CustomerTests(Containers containers)
         var scores = new List<double>();
         foreach (var account in late) scores.Add((await t.Redis.SortedSetScoreAsync(RedisKeys.Queue(launch.Id), account.ToString("D")))!.Value);
         Assert.Equal([2d, 3d, 4d], scores); // 1 + elapsed seconds
-        foreach (var account in early) Assert.InRange((await Status(t, launch.Id, account)).Position, 1, 3);
+        var earlyPositions = new List<int>();
+        foreach (var account in early) earlyPositions.Add((await Status(t, launch.Id, account)).Position);
+        Assert.Equal([1, 2, 3], earlyPositions.Order());
     }
 
     [Fact]

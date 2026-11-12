@@ -42,7 +42,7 @@ public sealed partial class WarehouseService
         var now = clock.GetUtcNow();
         var task = shipment.PackTaskId is { } taskId ? await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, ct) : null;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var won = await handover.ApplyAsync(shipment, task, now, ct);
+        var won = await handover.ApplyAsync(shipment, task, now, now, ct);
         if (!won)
         {
             await tx.RollbackAsync(ct);

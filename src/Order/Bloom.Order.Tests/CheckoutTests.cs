@@ -167,6 +167,46 @@ public class CheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task CHK_R20_full_coupon_with_standard_shipping_is_refused()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (account, _) = await CartOfOneAsync(t);
+        await CouponAsync(t, "FREE-100", r => r.Value = 100);
+        var key = Guid.NewGuid();
+
+        await FailsAsync(Seed.CheckoutAsync(t, account, key, r => r.CouponCode = "FREE-100"), StatusCode.FailedPrecondition, "ORDER_TOTAL_TOO_LOW");
+
+        await AssertCancelledAsync(t, account);
+        Assert.Equal(0, t.Upstreams.Count("ReserveStock"));
+        Assert.Equal(1, metrics.Sum("checkout_total", ("kind", "regular"), ("result", "order_total_too_low")));
+        await FailsAsync(Seed.CheckoutAsync(t, account, key, r => r.CouponCode = "FREE-100"), StatusCode.FailedPrecondition, "ORDER_TOTAL_TOO_LOW"); // stored on the key
+        Assert.Equal(0, t.Upstreams.Count("ReserveStock"));
+    }
+
+    [Fact]
+    public async Task CHK_R20_total_of_exactly_50_succeeds()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, _) = await CartOfOneAsync(t, priceCents: 46); // 46 + 4 tax
+
+        var response = await Seed.CheckoutAsync(t, account);
+
+        Assert.Equal(50, response.TotalCents);
+    }
+
+    [Fact]
+    public async Task CHK_R20_total_of_49_is_refused()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var (account, _) = await CartOfOneAsync(t, priceCents: 45); // 45 + 4 tax
+
+        await FailsAsync(Seed.CheckoutAsync(t, account), StatusCode.FailedPrecondition, "ORDER_TOTAL_TOO_LOW");
+
+        await AssertCancelledAsync(t, account);
+    }
+
+    [Fact]
     public async Task O05_last_coupon_use_two_concurrent_checkouts()
     {
         await using var t = await TestOrder.StartAsync(containers);

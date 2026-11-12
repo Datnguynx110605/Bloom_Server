@@ -27,6 +27,8 @@ public sealed class CheckoutService(
     OrderDbContext db, IdempotencyGuard guard, Upstreams upstreams, Transitions transitions, CheckoutFailures failures, Coupons coupons,
     OrderMetrics metrics, OrderOptions options, TimeProvider clock, ILogger<CheckoutService> logger) : OrderCheckout.OrderCheckoutBase
 {
+    private const long MinTotalCents = 50; // CHK-R20: the card processor's minimum
+
     private static readonly TimeSpan CreatingWindow = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan PaymentWindow = TimeSpan.FromMinutes(15);
 
@@ -165,7 +167,9 @@ public sealed class CheckoutService(
             (couponId, terms) = (id, checkedTerms);
         }
         var shipping = order.ShippingOption == ShippingOptions.Express ? await db.CheckoutSettings.AsNoTracking().Select(s => s.ExpressFeeCents).SingleAsync(ct) : 0;
-        return new Placement(lines, Pricing.Compute(lines, terms, launchOrder: launch, options.TaxRateBasisPoints!.Value, shipping), couponId);
+        var totals = Pricing.Compute(lines, terms, launchOrder: launch, options.TaxRateBasisPoints!.Value, shipping);
+        if (totals.TotalCents < MinTotalCents) throw OrderErrors.Error(OrderErrors.OrderTotalTooLow, "The order total must be at least $0.50."); // CHK-R20
+        return new Placement(lines, totals, couponId);
 
         PricedLine Line(CartLine l, int no, int? parentNo)
         {

@@ -141,6 +141,35 @@ public class AddressTests(Containers containers)
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Upsert_waiting_behind_delete_is_not_found(bool update)
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var account = await Seed.CustomerAsync(t);
+        var caller = TestCaller.Customer(t, account);
+        var existing = (await (await UpsertAsync(t, caller, Body())).OkJsonAsync()).GetProperty("id").GetString()!;
+        var body = Body(isDefault: update);
+        if (update)
+        {
+            body["id"] = existing;
+            body["version"] = 1;
+        }
+
+        // A delete holds the account row; the upsert queues behind it, then finds the account gone (item 5).
+        await using var delete = await RowLock.HoldAsync(t, $"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE");
+        var upsert = UpsertAsync(t, caller, body);
+        await RowLock.WaitForWaitersAsync(t, 1, "the upsert waiting on the account row");
+        await delete.ExecuteAsync($"UPDATE accounts SET status = 'deleted' WHERE id = {account.Id}");
+        await delete.ExecuteAsync($"DELETE FROM addresses WHERE account_id = {account.Id}");
+        await delete.ReleaseAsync();
+
+        await (await upsert).ExpectErrorAsync(404, "NOT_FOUND");
+        await using var db = t.NewDb();
+        Assert.Equal(0, await db.Addresses.CountAsync(a => a.AccountId == account.Id, Ct));
+    }
+
+    [Theory]
     [InlineData("state", "XX")]
     [InlineData("zip", "1234")]
     [InlineData("phone", "555-1234")]

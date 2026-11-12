@@ -8,13 +8,13 @@ One LLD per component. Each is consistent with the [high-level design](../high-l
 
 | # | Document | Component | Purpose | Builds on | ADRs |
 |---|---|---|---|---|---|
-| 00 | [00-reliability](00-reliability.md) | Shared library | Outbox + relay, inbox, retries / DLQ, idempotency keys, conditional updates, optimistic locking, error contract | — | [001](adr/LLD-ADR-001-two-phase-idempotency.md) … [006](adr/LLD-ADR-006-inbox-key.md), [009](adr/LLD-ADR-009-dlq-admin-endpoint.md), [010](adr/LLD-ADR-010-dlq-busy-advisory-lock.md) |
-| 01 | [01-launch](01-launch.md) | launch | Waiting room, admission passes, allocation and purchase-limit holds | 00 | — |
-| 02 | [02-inventory](02-inventory.md) | inventory | Stock counters, reservations, backorders (strict FIFO), serial units, receipts, ledger | 00 | — |
+| 00 | [00-reliability](00-reliability.md) | Shared library | Outbox + relay, inbox, retries / DLQ, idempotency keys, conditional updates, optimistic locking, error contract | — | [001](adr/LLD-ADR-001-two-phase-idempotency.md) … [006](adr/LLD-ADR-006-inbox-key.md), [009](adr/LLD-ADR-009-dlq-admin-endpoint.md), [010](adr/LLD-ADR-010-dlq-busy-advisory-lock.md), [011](adr/LLD-ADR-011-dlq-pass-lock-transaction-scoped.md), [015](adr/LLD-ADR-015-consumer-queue-dlx.md) |
+| 01 | [01-launch](01-launch.md) | launch | Waiting room, admission passes, allocation and purchase-limit holds | 00 | [012](adr/LLD-ADR-012-admission-paced-per-launch.md) |
+| 02 | [02-inventory](02-inventory.md) | inventory | Stock counters, reservations, backorders (strict FIFO), serial units, receipts, ledger | 00 | [014](adr/LLD-ADR-014-release-tombstone.md) |
 | 03 | [03-order](03-order.md) | order | Cart, checkout saga, pricing, coupons, order lifecycle, cancellation | 00, 01, 02 | — |
 | 04 | [04-payment](04-payment.md) | payment | Stripe Checkout sessions, webhooks, refunds, reconciliation | 00, 03 | [007](adr/LLD-ADR-007-stripe-checkout-hosted.md) |
 | 05 | [05-fulfillment](05-fulfillment.md) | fulfillment | Packing, Shippo labels and tracking, returns, delivery failures, warranty coverage | 00, 02, 03, 04 | — |
-| 06 | [06-identity](06-identity.md) | identity | Verify-first sign-up, tokens and revocation, staff MFA, audit log | 00, 03 | [008](adr/LLD-ADR-008-verify-first-signup.md) |
+| 06 | [06-identity](06-identity.md) | identity | Verify-first sign-up, tokens and revocation, staff MFA, audit log | 00, 03 | [008](adr/LLD-ADR-008-verify-first-signup.md), [013](adr/LLD-ADR-013-revoked-refresh-not-reuse.md) |
 | 07 | [07-api-gateway](07-api-gateway.md) | api-gateway | Routing, JWT, revocation check, rate limits, trusted context | 06 | — |
 | 08 | [08-catalog](08-catalog.md) | catalog | Products, SKUs, prices, search, cache, reviews, images | 00, 01 | — |
 | 09 | [09-notification](09-notification.md) | notification | Emails, in-app notifications, WebSocket push | 00, 06 | — |

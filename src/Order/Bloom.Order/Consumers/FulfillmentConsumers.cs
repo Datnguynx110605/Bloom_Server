@@ -61,29 +61,43 @@ public sealed class DeliveryFailedConsumer(Transitions transitions, Coupons coup
     }
 }
 
-/// <summary><c>fulfillment.return-requested.v1</c>: <c>open_returns + 1</c>.</summary>
-public sealed class ReturnRequestedConsumer(OrderDbContext db, TimeProvider clock) : IMessageHandler
+/// <summary>
+/// <c>fulfillment.return-requested.v1</c>: one <c>order_returns</c> row per return (a close that arrived first wins). An unknown order inserts nothing.
+/// The order's <c>version</c> moves only when a row was inserted; one statement, so the insert and the bump commit together.
+/// </summary>
+public sealed class ReturnRequestedConsumer(OrderDbContext db) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("fulfillment", FulfillmentMessages.ReturnRequested)];
 
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
-        await db.Orders.Where(o => o.Id == envelope.GetPayload<ReturnRequestedV1>().OrderId)
-            .ExecuteUpdateAsync(s => s.SetProperty(o => o.OpenReturns, o => o.OpenReturns + 1).SetProperty(o => o.Version, o => o.Version + 1).SetProperty(o => o.UpdatedAt, now), ct);
+        var requested = envelope.GetPayload<ReturnRequestedV1>();
+        await db.Database.ExecuteSqlAsync($"""
+            WITH ins AS (
+                INSERT INTO order_returns (order_id, return_id) SELECT id, {requested.ReturnId} FROM orders WHERE id = {requested.OrderId}
+                ON CONFLICT DO NOTHING RETURNING order_id)
+            UPDATE orders SET version = version + 1, updated_at = now() WHERE id IN (SELECT order_id FROM ins)
+            """, ct);
     }
 }
 
-/// <summary><c>fulfillment.return-closed.v1</c>: <c>open_returns − 1</c>, never below 0.</summary>
-public sealed class ReturnClosedConsumer(OrderDbContext db, TimeProvider clock) : IMessageHandler
+/// <summary>
+/// <c>fulfillment.return-closed.v1</c>: marks the return closed, or inserts it already closed when its request has not arrived yet (D33 repeats are no-ops). An unknown order inserts nothing.
+/// The order's <c>version</c> moves only when a row changed.
+/// </summary>
+public sealed class ReturnClosedConsumer(OrderDbContext db) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("fulfillment", FulfillmentMessages.ReturnClosed)];
 
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
-        await db.Orders.Where(o => o.Id == envelope.GetPayload<ReturnClosedV1>().OrderId && o.OpenReturns > 0)
-            .ExecuteUpdateAsync(s => s.SetProperty(o => o.OpenReturns, o => o.OpenReturns - 1).SetProperty(o => o.Version, o => o.Version + 1).SetProperty(o => o.UpdatedAt, now), ct);
+        var closed = envelope.GetPayload<ReturnClosedV1>();
+        await db.Database.ExecuteSqlAsync($"""
+            WITH ins AS (
+                INSERT INTO order_returns (order_id, return_id, closed_at) SELECT id, {closed.ReturnId}, now() FROM orders WHERE id = {closed.OrderId}
+                ON CONFLICT (order_id, return_id) DO UPDATE SET closed_at = EXCLUDED.closed_at WHERE order_returns.closed_at IS NULL RETURNING order_id)
+            UPDATE orders SET version = version + 1, updated_at = now() WHERE id IN (SELECT order_id FROM ins)
+            """, ct);
     }
 }
 

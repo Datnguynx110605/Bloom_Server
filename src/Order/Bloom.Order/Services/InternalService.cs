@@ -20,7 +20,7 @@ public sealed class InternalService(OrderDbContext db, TimeProvider clock) : Ord
         var account = Inputs.Id(request.AccountId, "account_id");
         var since = clock.GetUtcNow() - ReturnWindow;
         var unsettled = await db.Orders.AsNoTracking().AnyAsync(o => o.AccountId == account
-            && (UnsettledStatuses.Contains(o.Status) || o.OpenReturns > 0 || o.DeliveredAt > since), context.CancellationToken);
+            && (UnsettledStatuses.Contains(o.Status) || db.OrderReturns.Any(r => r.OrderId == o.Id && r.ClosedAt == null) || o.DeliveredAt > since), context.CancellationToken);
         return new HasUnsettledOrdersResponse { HasUnsettledOrders = unsettled };
     }
 }

@@ -21,6 +21,9 @@ public sealed class RowLock : IAsyncDisposable
         return new RowLock(db, tx);
     }
 
+    /// <summary>Runs a statement inside the held transaction, as the lock holder's own write.</summary>
+    public Task ExecuteAsync(FormattableString sql) => _db.Database.ExecuteSqlInterpolatedAsync(sql, TestContext.Current.CancellationToken);
+
     public Task ReleaseAsync() => _tx.CommitAsync(TestContext.Current.CancellationToken);
 
     /// <summary>Waits until <paramref name="count"/> backends wait on a lock.</summary>

@@ -130,7 +130,7 @@ public sealed class EdgeMiddleware(RequestDelegate next, TokenValidator validato
         _ => e is RedisException or TimeoutException, // RedisTimeoutException is a TimeoutException, not a RedisException
     };
 
-    private static readonly string[] OutageCodes = ["LOADING", "READONLY", "MASTERDOWN", "CLUSTERDOWN", "TRYAGAIN", "BUSY"];
+    private static readonly string[] OutageCodes = ["LOADING", "READONLY", "MASTERDOWN", "CLUSTERDOWN", "TRYAGAIN", "BUSY", "MISCONF", "OOM", "NOREPLICAS"];
 
     private static bool RoleAllowed(EdgeRoute route, Caller caller) => route.Auth switch
     {

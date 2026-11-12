@@ -256,7 +256,7 @@ public class DeliveryFailureTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var f = await PossiblyLostAsync(t);
-        var reshipId = Ids.ReshipId(f.ShipmentId);
+        var reshipId = Ids.ReshipId(f.ShipmentId, null); // never dismissed
 
         var body = await LostOkAsync(t, f.ShipmentId, "reship");
 
@@ -343,7 +343,7 @@ public class DeliveryFailureTests(Containers containers)
         await Seed.TrackAsync(t, tracking, "FAILURE");
         await LostOkAsync(t, firstShipment, "reship");
         var second = Assert.Single(await ReshipTasksAsync(t, f.Order.OrderId), p => p.Id != first.Id);
-        Assert.Equal(Ids.ReshipId(firstShipment), second.RefId);
+        Assert.Equal(Ids.ReshipId(firstShipment, null), second.RefId);
         await PackAndHandOverAsync(t, second, "RBA" + suffix, "RBB" + suffix);
 
         var now = (await Seed.CoveragesAsync(t, f.Order.OrderId)).ToDictionary(c => c.Id, c => c.Serial);
@@ -422,7 +422,34 @@ public class DeliveryFailureTests(Containers containers)
         Assert.Equal(FailureStatuses.Dismissed, (await Seed.FailureAsync(t, f.ShipmentId))!.Status);
         Assert.Empty(await Outbox.PayloadsAsync<MarkLostInTransitV1>(t, FulfillmentMessages.MarkLostInTransit));
         var release = Assert.Single(await Outbox.PayloadsAsync<ReleaseReservationV1>(t, InventoryMessages.ReleaseReservation)); // D27: committed, though the reship is not
-        Assert.Equal((f.Order.OrderId, Ids.ReshipId(f.ShipmentId)), (release.OrderId, release.ReshipId));
+        Assert.Equal((f.Order.OrderId, Ids.ReshipId(f.ShipmentId, null)), (release.OrderId, release.ReshipId));
+    }
+
+    [Fact]
+    public async Task Reship_after_released_reship_commits_again_under_new_id()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var f = await PossiblyLostAsync(t);
+        t.Inventory.Before = async () => await Seed.TrackAsync(t, f.Tracking, "TRANSIT"); // dismissed while inventory is committing id A
+        using (var first = await LostAsync(t, f.ShipmentId, "reship")) await first.ExpectErrorAsync(400, "INVALID_STATE");
+        t.Inventory.Before = null;
+        var idA = Ids.ReshipId(f.ShipmentId, null);
+        Assert.Equal(idA, Assert.Single(await Outbox.PayloadsAsync<ReleaseReservationV1>(t, InventoryMessages.ReleaseReservation)).ReshipId); // D27 release for A
+
+        t.Clock.Advance(TimeSpan.FromMinutes(5));
+        await Seed.TrackAsync(t, f.Tracking, "FAILURE"); // flagged again
+        var dismissedAt = (await Seed.FailureAsync(t, f.ShipmentId))!.DismissedAt;
+        Assert.NotNull(dismissedAt);
+        var idB = Ids.ReshipId(f.ShipmentId, dismissedAt);
+        Assert.NotEqual(idA, idB);
+
+        var body = await LostOkAsync(t, f.ShipmentId, "reship");
+
+        Assert.Equal([idA.ToString(), idB.ToString()], t.Inventory.Calls.Where(c => c.Method == "CommitForReship").Select(c => ((CommitForReshipRequest)c.Request).ReshipId));
+        Assert.Equal(idB, Assert.Single(await ReshipTasksAsync(t, f.Order.OrderId)).RefId);
+        Assert.Equal(("resolved_reship", idB.ToString()), (body.GetProperty("status").GetString(), body.GetProperty("reshipId").GetString()));
+        var failure = (await Seed.FailureAsync(t, f.ShipmentId))!;
+        Assert.Equal((FailureStatuses.ResolvedReship, idB), (failure.Status, failure.ReshipId));
     }
 
     [Fact]
@@ -519,8 +546,11 @@ public class DeliveryFailureTests(Containers containers)
         Assert.Equal(Guid.Parse("2ed6657d-e927-568b-95e1-2665a8aea6a2"), Ids.NameBased(Guid.Parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "www.example.com"));
 
         var shipment = Guid.NewGuid();
-        Assert.Equal(Ids.ReshipId(shipment), Ids.ReshipId(shipment));
-        Assert.NotEqual(Ids.ReshipId(shipment), Ids.ReshipId(Guid.NewGuid()));
-        Assert.Equal(5, Ids.ReshipId(shipment).Version);
+        var at = DateTimeOffset.UnixEpoch.AddDays(20000);
+        Assert.Equal(Ids.ReshipId(shipment, at), Ids.ReshipId(shipment, at));
+        Assert.NotEqual(Ids.ReshipId(shipment, null), Ids.ReshipId(Guid.NewGuid(), null));
+        Assert.NotEqual(Ids.ReshipId(shipment, null), Ids.ReshipId(shipment, at));
+        Assert.NotEqual(Ids.ReshipId(shipment, at), Ids.ReshipId(shipment, at.AddMilliseconds(1)));
+        Assert.Equal(5, Ids.ReshipId(shipment, at).Version);
     }
 }

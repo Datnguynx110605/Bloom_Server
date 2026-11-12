@@ -188,6 +188,63 @@ public class TrackingTests(Containers containers)
         Assert.Equal(scan == "DELIVERED" ? 1 : 0, (await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered)).Count);
     }
 
+    /// <summary>A label_ready shipment scanned 3 h after its task was created; Shippo reports TRANSIT with a date <paramref name="statusOffset"/> after the task created_at (null = no date).</summary>
+    private async Task<(DateTimeOffset Created, DateTimeOffset Handed, double Count, double Sum)> ScanAsync(TimeSpan? statusOffset, TimeSpan? zone = null)
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var ready = Seed.Ready();
+        await Seed.ReadyAsync(t, ready);
+        var (taskId, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB", "SNA");
+        var tracking = (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!;
+        DateTimeOffset created;
+        await using (var db = t.NewDb()) created = (await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, Ct)).CreatedAt;
+        t.Clock.Advance(TimeSpan.FromHours(3));
+        t.Shippo.SetTracking(tracking, "TRANSIT", statusOffset is { } o ? (created + o).ToOffset(zone ?? TimeSpan.Zero) : null); // zone: the UTC offset the carrier writes the date in
+        using (var response = await PostAsync(t, Body(tracking, "TRANSIT"))) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal(ShipmentStatuses.InTransit, shipment.Status);
+        Assert.Equal(t.Clock.GetUtcNow(), shipment.LastTrackingAt!.Value, TimeSpan.FromMilliseconds(1)); // only handed_over_at takes the carrier's date
+        return (created, shipment.HandedOverAt!.Value, metrics.Count("time_to_handover_seconds"), metrics.Sum("time_to_handover_seconds"));
+    }
+
+    [Fact]
+    public async Task D32_scan_with_date_hands_over_at_that_date()
+    {
+        var (created, handed, count, sum) = await ScanAsync(TimeSpan.FromHours(2));
+        Assert.Equal(created.AddHours(2), handed, TimeSpan.FromMilliseconds(1));
+        Assert.Equal((1, 7200), (count, sum));
+    }
+
+    [Fact]
+    public async Task D32_scan_date_with_a_utc_offset_is_stored()
+    {
+        var (created, handed, count, sum) = await ScanAsync(TimeSpan.FromHours(2), TimeSpan.FromHours(2)); // "...+02:00": Npgsql rejects a non-zero offset
+        Assert.Equal(created.AddHours(2), handed, TimeSpan.FromMilliseconds(1));
+        Assert.Equal((1, 7200), (count, sum));
+    }
+
+    [Fact]
+    public async Task D32_scan_without_date_hands_over_at_processing_time()
+    {
+        var (created, handed, count, sum) = await ScanAsync(null);
+        Assert.Equal(created.AddHours(3), handed, TimeSpan.FromMilliseconds(1));
+        Assert.Equal((1, 10800), (count, sum));
+    }
+
+    [Fact]
+    public async Task D32_scan_date_is_clamped()
+    {
+        var future = await ScanAsync(TimeSpan.FromHours(5)); // after processing time (+3 h)
+        Assert.Equal(future.Created.AddHours(3), future.Handed, TimeSpan.FromMilliseconds(1));
+        Assert.Equal((1, 10800), (future.Count, future.Sum));
+
+        var past = await ScanAsync(TimeSpan.FromHours(-1)); // before the task existed
+        Assert.Equal(past.Created, past.Handed, TimeSpan.FromMilliseconds(1));
+        Assert.Equal((1, 0), (past.Count, past.Sum));
+    }
+
     [Fact]
     public async Task D34_delivered_on_lost_sets_delivered_at_keeps_lost_logs_error()
     {

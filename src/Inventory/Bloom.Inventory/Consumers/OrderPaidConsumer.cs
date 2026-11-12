@@ -18,6 +18,7 @@ public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, A
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
     {
         var paid = envelope.GetPayload<OrderPaidV1>();
+        await locks.LockOrderAsync(paid.OrderId, ct); // before the tombstone check: a release in flight has committed or rolled back by now (IR-05)
         if (await db.ReleasedOrders.AnyAsync(r => r.OrderId == paid.OrderId, ct))
         {
             logger.LogWarning("Order {OrderId} paid after its reservation was released; no allocations created (LLD-ADR-014)", paid.OrderId);

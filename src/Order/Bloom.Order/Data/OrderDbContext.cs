@@ -14,6 +14,7 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
     public DbSet<OrderStatusHistory> OrderStatusHistory => Set<OrderStatusHistory>();
     public DbSet<OrderSaga> OrderSagas => Set<OrderSaga>();
     public DbSet<CheckoutKey> CheckoutKeys => Set<CheckoutKey>();
+    public DbSet<OrderReturn> OrderReturns => Set<OrderReturn>();
     public DbSet<Cart> Carts => Set<Cart>();
     public DbSet<CartLine> CartLines => Set<CartLine>();
     public DbSet<Coupon> Coupons => Set<Coupon>();
@@ -38,12 +39,10 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
                 t.HasCheckConstraint("ck_orders_shipping_option", $"shipping_option IN ({In(ShippingOptions.All)})");
                 t.HasCheckConstraint("ck_orders_amounts_non_negative",
                     "subtotal_cents >= 0 AND discount_cents >= 0 AND tax_cents >= 0 AND shipping_cents >= 0 AND total_cents >= 0");
-                t.HasCheckConstraint("ck_orders_open_returns_non_negative", "open_returns >= 0");
             });
             e.Property(x => x.StockAllocated).HasDefaultValue(false);
             e.Property(x => x.LaunchReleased).HasDefaultValue(false);
             e.Property(x => x.HandedToFulfillment).HasDefaultValue(false);
-            e.Property(x => x.OpenReturns).HasDefaultValue(0);
             e.Property(x => x.Version).HasDefaultValue(0L);
             e.Property(x => x.ShipTo).HasColumnType("jsonb").HasConversion(
                 v => JsonSerializer.Serialize(v, JsonSerializerOptions.Web),
@@ -90,6 +89,13 @@ public sealed partial class OrderDbContext(DbContextOptions<OrderDbContext> opti
                 t.HasCheckConstraint("ck_order_sagas_pending_steps", $"pending_steps <@ ARRAY[{In(SagaSteps.All)}]::text[]");
             });
             e.HasKey(x => new { x.OrderId, x.Type });
+            e.HasOne<OrderRow>().WithMany().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        mb.Entity<OrderReturn>(e =>
+        {
+            e.ToTable("order_returns");
+            e.HasKey(x => new { x.OrderId, x.ReturnId });
             e.HasOne<OrderRow>().WithMany().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Restrict);
         });
 

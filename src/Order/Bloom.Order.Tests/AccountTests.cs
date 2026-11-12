@@ -10,14 +10,14 @@ public class AccountTests(Containers containers)
 {
     private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
 
-    private static async Task<OrderRow> OrderAsync(TestOrder t, Guid account, string status, int openReturns = 0, DateTimeOffset? deliveredAt = null)
+    private static async Task<OrderRow> OrderAsync(TestOrder t, Guid account, string status, DateTimeOffset? deliveredAt = null)
     {
         var now = t.Clock.GetUtcNow();
         var order = new OrderRow
         {
             Id = Guid.CreateVersion7(), Number = "BLM-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant(), AccountId = account, Kind = OrderKinds.Regular, Status = status,
             ShippingOption = "standard", ShipTo = new ShipToV1("Ada Lovelace", ["1 Main St", "Apt 2"], "Reno", "NV", "89501", "+17755550100"), Currency = "USD",
-            SubtotalCents = 2000, TaxCents = 165, ShippingCents = 500, TotalCents = 2665, OpenReturns = openReturns, DeliveredAt = deliveredAt, CreatedAt = now, UpdatedAt = now,
+            SubtotalCents = 2000, TaxCents = 165, ShippingCents = 500, TotalCents = 2665, DeliveredAt = deliveredAt, CreatedAt = now, UpdatedAt = now,
         };
         await using var db = t.NewDb();
         db.Orders.Add(order);
@@ -97,7 +97,16 @@ public class AccountTests(Containers containers)
             Assert.False(await UnsettledAsync(t, account), status);
         }
         var withReturn = Guid.NewGuid();
-        await OrderAsync(t, withReturn, OrderStatuses.PartiallyReturned, openReturns: 1);
+        var open = await OrderAsync(t, withReturn, OrderStatuses.PartiallyReturned);
+        await using var db = t.NewDb();
+        db.OrderReturns.Add(new OrderReturn { OrderId = open.Id, ReturnId = Guid.NewGuid() });
+        await db.SaveChangesAsync(Ct);
         Assert.True(await UnsettledAsync(t, withReturn));
+
+        var closed = Guid.NewGuid();
+        var closedOrder = await OrderAsync(t, closed, OrderStatuses.PartiallyReturned);
+        db.OrderReturns.Add(new OrderReturn { OrderId = closedOrder.Id, ReturnId = Guid.NewGuid(), ClosedAt = t.Clock.GetUtcNow() });
+        await db.SaveChangesAsync(Ct);
+        Assert.False(await UnsettledAsync(t, closed));
     }
 }

@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace Bloom.Inventory.Data;
 
-public sealed partial class InventoryDbContext(DbContextOptions<InventoryDbContext> options) : DbContext(options)
+public sealed partial class InventoryDbContext(DbContextOptions<InventoryDbContext> options) : DbContext(options), IAfterCommitContext
 {
     public DbSet<StockItem> StockItems => Set<StockItem>();
     public DbSet<StockAllocation> StockAllocations => Set<StockAllocation>();
@@ -16,19 +16,8 @@ public sealed partial class InventoryDbContext(DbContextOptions<InventoryDbConte
     public DbSet<StockAdjustment> StockAdjustments => Set<StockAdjustment>();
     public DbSet<LedgerEntry> StockLedger => Set<LedgerEntry>();
 
-    private readonly List<Action> _afterCommit = [];
-
-    /// <summary>Runs <paramref name="action"/> when the current transaction commits (IN-5: metrics count what was stored). Dropped when a new transaction starts, so a rolled-back one never counts.</summary>
-    public void AfterCommit(Action action) => _afterCommit.Add(action);
-
-    internal void RunAfterCommit()
-    {
-        var actions = _afterCommit.ToArray();
-        _afterCommit.Clear();
-        foreach (var action in actions) action();
-    }
-
-    internal void DropAfterCommit() => _afterCommit.Clear();
+    /// <summary>Metrics that run when the current transaction commits (IN-5: metrics count what was stored). Dropped on a rollback, so a rolled-back transaction never counts.</summary>
+    public AfterCommitActions AfterCommit { get; } = new();
 
     private static string In(IEnumerable<string> values) => string.Join(", ", values.Select(v => $"'{v}'"));
 

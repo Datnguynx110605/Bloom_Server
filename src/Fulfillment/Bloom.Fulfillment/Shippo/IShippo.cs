@@ -11,9 +11,12 @@ public interface IShippo
 
     Task VoidLabelAsync(string transactionId, CancellationToken ct);
 
-    /// <summary>Shippo's <c>tracking_status.status</c> for the number (FR-04: statuses come only from here).</summary>
-    Task<string> GetTrackingStatusAsync(string trackingNumber, CancellationToken ct);
+    /// <summary>Shippo's <c>tracking_status</c> for the number (FR-04: statuses come only from here).</summary>
+    Task<ShippoTracking> GetTrackingStatusAsync(string trackingNumber, CancellationToken ct);
 }
+
+/// <param name="StatusDate"><c>tracking_status.status_date</c>; null when missing, null or unparsable.</param>
+public sealed record ShippoTracking(string Status, DateTimeOffset? StatusDate);
 
 public sealed record ShippoAddress(string Name, string Street1, string? Street2, string City, string State, string Zip, string Phone);
 

@@ -20,6 +20,7 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
     {
         var (orderId, reshipId) = envelope.GetPayload<ReleaseReservationV1>();
+        if (reshipId is null) await locks.LockOrderAsync(orderId, ct); // before the savepoint below: rolling back to it must never free the order lock (IR-05)
 
         // Lock first, then read the statuses: a payment or shipment racing this release has finished by the time the lock is ours.
         // A reship may add a SKU between the read and the lock. Then the locks are released (rolling back to the savepoint frees everything taken after it)

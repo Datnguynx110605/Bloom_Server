@@ -76,7 +76,6 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
             }
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-            transitions.Emit();
         }
         catch (ProviderException e)
         {
@@ -118,7 +117,6 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
             }
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-            transitions.Emit();
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
@@ -148,7 +146,6 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
             await db.SaveChangesAsync(ct);
         }
         await tx.CommitAsync(ct);
-        transitions.Emit();
         if (!pending) return; // nothing was rescheduled or failed, so there is nothing to log
         if (n < MaxAttempts) logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); retrying at {NextAttemptAt}", refund.Id, n, next);
         else logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); giving up", refund.Id, n);
