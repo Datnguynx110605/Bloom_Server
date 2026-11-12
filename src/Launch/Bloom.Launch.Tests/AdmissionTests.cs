@@ -190,7 +190,8 @@ public class AdmissionTests(Containers containers)
             t.Clock.Advance(TimeSpan.FromMilliseconds(500));
         }
 
-        Assert.InRange(admitted, 1, 10 * rate);
+        // One admission per model second. The key's real 1 s TTL runs in parallel: a test stall of more than 1 s between two ticks can (rarely) add an extra admit.
+        Assert.Equal(10 * rate, admitted);
     }
 
     [Fact]
@@ -210,6 +211,38 @@ public class AdmissionTests(Containers containers)
         Assert.Equal("none", second.Result);
         Assert.Equal(15, await t.Redis.SortedSetLengthAsync(RedisKeys.Queue(launch.Id)));
         Assert.Equal(5, await t.Redis.SortedSetLengthAsync(RedisKeys.Passes(launch.Id)));
+    }
+
+    [Fact]
+    public async Task L07_two_workers_at_once_pop_at_most_once()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, rate: 5, products: new SeedProduct(2, 1000));
+        await QueueAsync(t, launch.Id, 20);
+        await t.Redis.KeyDeleteAsync(RedisKeys.Tick(launch.Id));
+
+        var results = await Task.WhenAll(t.TickPacedAsync(launch.Id), t.TickPacedAsync(launch.Id));
+
+        Assert.Equal(5, results.Sum(r => r.Admitted.Count)); // the loser is "skipped_lock" or "none", by timing
+        Assert.Equal(15, await t.Redis.SortedSetLengthAsync(RedisKeys.Queue(launch.Id)));
+    }
+
+    [Fact]
+    public async Task L07_tick_key_expires_after_1000ms()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, rate: 5, products: new SeedProduct(2, 1000));
+        await QueueAsync(t, launch.Id, 20);
+        await t.Redis.KeyDeleteAsync(RedisKeys.Tick(launch.Id));
+
+        Assert.Equal(5, (await t.TickPacedAsync(launch.Id)).Admitted.Count);
+
+        // The key the script set, not one the test touched: it has a TTL of at most 1 s, so the next second's tick is not stalled forever.
+        var ttl = await t.Redis.KeyTimeToLiveAsync(RedisKeys.Tick(launch.Id));
+        Assert.NotNull(ttl);
+        Assert.InRange(ttl.Value, TimeSpan.Zero.Add(TimeSpan.FromTicks(1)), TimeSpan.FromMilliseconds(1000));
+        await Poll.UntilAsync(async () => !await t.Redis.KeyExistsAsync(RedisKeys.Tick(launch.Id)), 5, "the tick key expires");
+        Assert.Equal(5, (await t.TickPacedAsync(launch.Id)).Admitted.Count);
     }
 
     [Fact]
