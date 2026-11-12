@@ -93,7 +93,8 @@ public sealed partial class AdminService(
         catch (PostgresException e) when (Db.IsUniqueViolation(e, SlugIndex)) { throw SlugTaken(); }
 
         if (diff.Has("name")) // the category name is part of its products' search vectors (R12)
-            await derived.RefreshAsync(await db.Products.Where(p => p.CategoryId == id).Select(p => p.Id).ToArrayAsync(ct));
+            await derived.RefreshAsync(await db.Database.SqlQuery<Guid>( // C-1: ascending id order, the same as the launch consumer, so the two never deadlock
+                $"SELECT id AS \"Value\" FROM products WHERE category_id = {id} ORDER BY id FOR UPDATE").ToArrayAsync(ct));
         audit.Record(caller, "catalog.category-updated", "category", id, diff.Details);
         invalidation.Categories();
         if (diff.Has("name") || diff.Has("parentId")) invalidation.Listings(); // search vectors, category filter (R10)

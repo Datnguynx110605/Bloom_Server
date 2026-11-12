@@ -1,4 +1,6 @@
+using System.Net;
 using System.Text.Json;
+using Bloom.Catalog.Contracts;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Catalog.Tests;
@@ -233,6 +235,50 @@ public class ProductAdminTests(Containers containers)
         await (await UpdateAsync(t, id, UpdateBody(category.Id, "First", product.Slug, "1"))).OkJsonAsync();
 
         await (await UpdateAsync(t, id, UpdateBody(category.Id, "Second", product.Slug, "1"))).ExpectErrorAsync(409, "CONCURRENCY_CONFLICT");
+    }
+
+    [Fact]
+    public async Task Concurrent_updates_with_the_same_version_leave_one_winner()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var category = await Seed.CategoryAsync(t);
+        var (product, _) = await Seed.ProductAsync(t, category.Id);
+        var id = product.Id.ToString();
+
+        var responses = await Task.WhenAll(new[] { "First", "Second" }.Select(name => UpdateAsync(t, id, UpdateBody(category.Id, name, product.Slug, "1"))));
+
+        Assert.Equal([HttpStatusCode.OK, HttpStatusCode.Conflict], responses.Select(r => r.StatusCode).Order());
+        await responses.Single(r => r.StatusCode == HttpStatusCode.Conflict).ExpectErrorAsync(409, "CONCURRENCY_CONFLICT");
+        await using var db = t.NewDb();
+        var row = await db.Products.AsNoTracking().SingleAsync(p => p.Id == product.Id, TestContext.Current.CancellationToken);
+        Assert.Equal(2, row.Version);
+        Assert.Single(await Outbox.AuditAsync(t)); // the loser wrote no audit
+    }
+
+    [Fact]
+    public async Task Serialized_change_racing_the_first_receipt_has_one_winner()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var ct = TestContext.Current.CancellationToken;
+        var category = await Seed.CategoryAsync(t);
+
+        // 08-catalog §7: whichever runs first wins; the lock's answer and the final flag must always agree
+        for (var i = 0; i < 6; i++)
+        {
+            var (product, skus) = await Seed.ProductAsync(t, category.Id);
+            var update = UpdateAsync(t, product.Id.ToString(), UpdateBody(category.Id, product.Name, product.Slug, "1", serialized: true));
+            var locked = t.Internal.LockSkuForStockAsync(new LockSkuForStockRequest { SkuId = skus[0].Id.ToString() }, cancellationToken: ct).ResponseAsync;
+
+            var response = await update;
+            var lockedAnswer = (await locked).Serialized;
+
+            await using var db = t.NewDb();
+            var row = await db.Products.AsNoTracking().SingleAsync(p => p.Id == product.Id, ct);
+            Assert.True(row.SerializedLocked);
+            Assert.Equal(row.Serialized, lockedAnswer);
+            if (row.Serialized) await response.OkJsonAsync();
+            else await response.ExpectErrorAsync(400, "SERIALIZED_LOCKED");
+        }
     }
 
     [Fact]

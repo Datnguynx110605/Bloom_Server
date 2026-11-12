@@ -1,4 +1,5 @@
 using Bloom.Catalog.Validation;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace Bloom.Catalog.Tests;
@@ -162,6 +163,25 @@ public class CategoryTests(Containers containers)
     }
 
     [Fact]
+    public async Task Changing_only_the_sort_order_deletes_the_tree_but_leaves_listings_and_products_alone()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var category = await Seed.CategoryAsync(t);
+        var (product, _) = await Seed.ProductAsync(t, category.Id);
+        await (await t.SendAsync(HttpMethod.Get, Public)).OkJsonAsync();
+        await t.Redis.StringSetAsync("catalog:version", "7");
+        await using var before = t.NewDb();
+        var vector = await before.Database.SqlQuery<string>($"SELECT search_vector::text AS \"Value\" FROM products WHERE id = {product.Id}").SingleAsync(TestContext.Current.CancellationToken);
+
+        await (await t.SendAsync(HttpMethod.Put, $"{Admin}/{category.Id}", new { name = category.Name, slug = category.Slug, sortOrder = 5, version = "1" }, Manager)).OkJsonAsync();
+
+        Assert.False(await t.Redis.KeyExistsAsync("categories"));
+        Assert.Equal(7, (long)await t.Redis.StringGetAsync("catalog:version")); // R10: only a name or parent change touches listings
+        await using var after = t.NewDb();
+        Assert.Equal(vector, await after.Database.SqlQuery<string>($"SELECT search_vector::text AS \"Value\" FROM products WHERE id = {product.Id}").SingleAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Redis_down_reads_and_writes_still_work()
     {
         await using var t = await TestCatalog.StartAsync(containers,
@@ -215,6 +235,68 @@ public class CategoryTests(Containers containers)
         await (await UpdateAsync(t, category.Id.ToString(), "Stale", category.Slug, "1")).ExpectErrorAsync(409, "CONCURRENCY_CONFLICT");
 
         Assert.True(await t.Redis.KeyExistsAsync("categories"));
+    }
+
+    [Fact]
+    public async Task C1_category_rename_refreshes_products_in_ascending_id_order()
+    {
+        // The app's connections scan tables in heap order (no index or bitmap scan), so an unordered refresh would lock rows in heap order.
+        var database = await containers.CreateDatabaseAsync();
+        await using (var setup = new Data.CatalogDbContext(new DbContextOptionsBuilder<Data.CatalogDbContext>().UseNpgsql(database).Options))
+            await setup.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        await using var t = await TestCatalog.StartAsync(containers, o =>
+        {
+            o.ConnectionString = database;
+            o.Config["Catalog:Database"] = $"{database};Options=-c enable_indexscan=off -c enable_bitmapscan=off";
+        });
+        var ct = TestContext.Current.CancellationToken;
+        var category = await Seed.CategoryAsync(t);
+        var low = (await Seed.ProductAsync(t, category.Id)).Product.Id;
+        var high = (await Seed.ProductAsync(t, category.Id)).Product.Id;
+        Assert.True(low.CompareTo(high) < 0);
+        await using (var db = t.NewDb()) // a rewritten row moves to the end of the heap: a scan now reaches `high` before `low`
+            await db.Database.ExecuteSqlAsync($"UPDATE products SET updated_at = updated_at WHERE id = {low}", ct);
+
+        // another transaction holds the LOWEST id (the launch consumer's first lock)
+        await using var holder = t.NewDb();
+        await using var hold = await holder.Database.BeginTransactionAsync(ct);
+        await holder.Database.ExecuteSqlAsync($"SELECT id FROM products WHERE id = {low} FOR UPDATE", ct);
+
+        var rename = UpdateAsync(t, category.Id.ToString(), "Renamed", category.Slug, "1");
+        await Poll.UntilAsync(async () =>
+        {
+            await using var probe = t.NewDb();
+            return await probe.Database.SqlQuery<long>($"SELECT count(*) AS \"Value\" FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()").SingleAsync(ct) > 0;
+        }, 30, "the rename to wait on the lowest product id");
+
+        // ascending order: the rename waits on `low` before touching `high`, so `high` is still free
+        await using (var probe = t.NewDb())
+            Assert.Single(await probe.Database.SqlQuery<Guid>($"SELECT id AS \"Value\" FROM products WHERE id = {high} FOR UPDATE SKIP LOCKED").ToArrayAsync(ct));
+
+        await hold.RollbackAsync(ct);
+        await (await rename).OkJsonAsync();
+        await using var check = t.NewDb();
+        Assert.Equal(2, await check.Database.SqlQuery<long>($"SELECT count(*) AS \"Value\" FROM products WHERE category_id = {category.Id} AND search_vector @@ to_tsquery('english', 'renamed')").SingleAsync(ct));
+    }
+
+    [Fact]
+    public async Task Rename_and_launch_event_on_the_same_products_do_not_deadlock()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var category = await Seed.CategoryAsync(t);
+        var phones = new List<SeededPhone>();
+        for (var i = 0; i < 6; i++) phones.Add(await Seed.PhoneAsync(t, category.Id, $"Phone {i}"));
+        var ids = phones.Select(p => p.Product.Id).ToArray();
+        var skus = phones.SelectMany(p => p.Skus).Select(s => new Catalog.Data.Sku { Id = s.Id, ProductId = s.ProductId, Code = s.Code }).ToArray();
+
+        // the launch event lists its products in reverse: the consumer must still lock in id order
+        var launch = Consume.Async<Consumers.LaunchStageChangedConsumer>(t, Bloom.Launch.Contracts.LaunchMessages.StageChanged,
+            new Bloom.Launch.Contracts.LaunchStageChangedV1(Guid.NewGuid(), "announced", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddDays(30),
+                [.. ids.Reverse().Select(i => new Bloom.Launch.Contracts.LaunchProductV1(i, 2))], [.. skus.Select(s => new Bloom.Launch.Contracts.LaunchSkuV1(s.Id, s.ProductId))]));
+        var rename = UpdateAsync(t, category.Id.ToString(), "Renamed", category.Slug, "1");
+
+        await launch;
+        await (await rename).OkJsonAsync();
     }
 
     [Fact]

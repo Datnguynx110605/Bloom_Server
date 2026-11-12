@@ -59,6 +59,34 @@ public class LifecycleTests(Containers containers)
         await (await ActAsync(t, product.Id, "archive", "1")).ExpectErrorAsync(409, "CONCURRENCY_CONFLICT");
     }
 
+    [Fact]
+    public async Task Plan_lifecycle_deletes_eligible_device_pages_and_bumps_the_listings_version()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var category = await Seed.CategoryAsync(t);
+        var device = await Seed.PhoneAsync(t, category.Id);
+        var unrelated = await Seed.PhoneAsync(t, category.Id, "Unrelated");
+        var (plan, _) = await Seed.PlanAsync(t, category.Id, [device.Product.Id], status: "draft");
+        var version = 1L;
+        async Task StepAsync(string action, long planVersion)
+        {
+            await t.Redis.StringSetAsync($"product:{device.Product.Id}", "x");
+            await t.Redis.StringSetAsync($"product:{unrelated.Product.Id}", "x");
+            await t.Redis.StringSetAsync("catalog:version", version);
+
+            await (await ActAsync(t, plan.Id, action, planVersion)).OkJsonAsync();
+
+            Assert.False(await t.Redis.KeyExistsAsync($"product:{device.Product.Id}"), action);
+            Assert.True(await t.Redis.KeyExistsAsync($"product:{unrelated.Product.Id}"), action);
+            Assert.Equal(version + 1, (long)await t.Redis.StringGetAsync("catalog:version"));
+            version++;
+        }
+
+        await StepAsync("publish", 1);
+        await StepAsync("archive", 2);
+        await StepAsync("reactivate", 3);
+    }
+
     [Theory]
     [InlineData("draft", "archive")]
     [InlineData("draft", "reactivate")]
