@@ -19,7 +19,7 @@ namespace Bloom.Fulfillment.Services;
 /// <summary>05-fulfillment §3 component <c>Warehouse API</c>, packing (§6.2). Role first (plan R7), then validation (R10), then state (R9). Scans call inventory first, outside any transaction (spec §7).</summary>
 public sealed partial class WarehouseService(
     FulfillmentDbContext db, ConcurrentUpdates updates, InventoryCalls inventory, Audit audit, OutboxWriter outbox, FulfillmentMetrics metrics, TimeProvider clock,
-    IdempotencyGuard guard, RefundEngine refunds, Failures failures) : FulfillmentWarehouse.FulfillmentWarehouseBase
+    IdempotencyGuard guard, RefundEngine refunds, Failures failures, Handover handover) : FulfillmentWarehouse.FulfillmentWarehouseBase
 {
     public override async Task<ListPackTasksResponse> ListPackTasks(ListPackTasksRequest request, ServerCallContext context)
     {

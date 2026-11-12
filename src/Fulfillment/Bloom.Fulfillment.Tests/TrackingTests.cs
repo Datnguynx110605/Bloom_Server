@@ -111,6 +111,33 @@ public class TrackingTests(Containers containers)
     }
 
     [Fact]
+    public Task D32_transit_scan_on_label_ready_hands_over_first() => HandsOverFirstAsync("TRANSIT", ShipmentStatuses.InTransit);
+
+    [Fact]
+    public Task D32_delivered_scan_on_label_ready_hands_over_first() => HandsOverFirstAsync("DELIVERED", ShipmentStatuses.Delivered);
+
+    private async Task HandsOverFirstAsync(string scan, string expected)
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var ready = Seed.Ready();
+        await Seed.ReadyAsync(t, ready);
+        var (taskId, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB", "SNA");
+        var tracking = (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!;
+        t.Clock.Advance(TimeSpan.FromHours(3));
+
+        await EventAsync(t, tracking, scan);
+
+        var shipment = await Seed.ShipmentAsync(t, shipmentId);
+        Assert.Equal(expected, shipment.Status);
+        Assert.Equal(t.Clock.GetUtcNow(), shipment.HandedOverAt!.Value, TimeSpan.FromMilliseconds(1));
+        await using (var db = t.NewDb()) Assert.Equal(TaskStatuses.HandedOver, (await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, Ct)).Status);
+        var shipped = Assert.Single(await Outbox.PayloadsAsync<ShipmentShippedV1>(t, FulfillmentMessages.ShipmentShipped));
+        Assert.Equal((ready.OrderId, tracking), (shipped.OrderId, shipped.TrackingNumber));
+        Assert.Equal(["SNB", "SNA"], Assert.Single(shipped.Lines).Serials);
+        Assert.Equal(scan == "DELIVERED" ? 1 : 0, (await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered)).Count);
+    }
+
+    [Fact]
     public async Task F07_forged_webhook_applies_the_refetched_status()
     {
         await using var t = await TestFulfillment.StartAsync(containers);

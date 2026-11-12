@@ -57,6 +57,7 @@ public static class FulfillmentApp
         builder.Services.AddScoped<Audit>();
         builder.Services.AddScoped<InventoryCalls>();
         builder.Services.AddScoped<Failures>();
+        builder.Services.AddScoped<Handover>();
         builder.Services.AddScoped<RefundEngine>();
         builder.Services.AddGrpcClient<InventoryStock.InventoryStockClient>(o => o.Address = new Uri(options.Inventory));
         builder.Services.AddHttpClient<IShippo, ShippoClient>(c =>

@@ -42,14 +42,7 @@ public sealed partial class WarehouseService
         var now = clock.GetUtcNow();
         var task = shipment.PackTaskId is { } taskId ? await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, ct) : null;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var won = task is null || await db.Database.ExecuteSqlAsync($"""
-            UPDATE pack_tasks SET status = {TaskStatuses.HandedOver}, version = version + 1, updated_at = {now}
-            WHERE id = {task.Id} AND status = {TaskStatuses.Packed}
-            """, ct) == 1;
-        won = won && await db.Database.ExecuteSqlAsync($"""
-            UPDATE shipments SET status = {ShipmentStatuses.HandedOver}, handed_over_at = {now}, version = version + 1
-            WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelReady}
-            """, ct) == 1;
+        var won = await handover.ApplyAsync(shipment, task, now, ct);
         if (!won)
         {
             await tx.RollbackAsync(ct);
@@ -62,13 +55,6 @@ public sealed partial class WarehouseService
             };
         }
 
-        if (task is not null)
-        {
-            var lines = await db.PackTaskLines.AsNoTracking().Where(l => l.TaskId == task.Id && l.Kind == LineKinds.Product).OrderBy(l => l.LineNo).ToListAsync(ct);
-            var serials = (await ScannedAsync(task.Id, ct)).ToLookup(s => s.LineNo, s => s.Serial);
-            outbox.PublishEvent(FulfillmentMessages.ShipmentShipped, new ShipmentShippedV1(
-                task.OrderId, task.RefId, lines.Select(l => new ShippedLineV1(l.SkuId, l.Quantity, serials[l.LineNo].ToList())).ToList(), shipment.TrackingNumber!));
-        }
         audit.Record(caller.UserId, caller.Role!, "fulfillment.hand-over", "shipment", shipment.Id.ToString(), new { orderId = shipment.OrderId, trackingNumber = shipment.TrackingNumber });
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);

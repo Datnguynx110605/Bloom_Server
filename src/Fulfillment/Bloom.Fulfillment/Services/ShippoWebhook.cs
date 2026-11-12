@@ -36,7 +36,7 @@ public static class ShippoWebhook
     }
 
     private static async Task<IResult> HandleAsync(
-        string secret, HttpRequest request, FulfillmentOptions options, FulfillmentMetrics metrics, IShippo shippo, FulfillmentDbContext db, Failures failures,
+        string secret, HttpRequest request, FulfillmentOptions options, FulfillmentMetrics metrics, IShippo shippo, FulfillmentDbContext db, Failures failures, Handover handover,
         OutboxWriter outbox, TimeProvider clock, ILoggerFactory loggers, CancellationToken ct)
     {
         if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(options.Shippo.WebhookSecret)))
@@ -70,7 +70,7 @@ public static class ShippoWebhook
         try
         {
             var status = await shippo.GetTrackingStatusAsync(tracking, ct); // FR-04
-            var changed = await ApplyAsync(shipmentId.Value, status, db, failures, outbox, clock.GetUtcNow(), logger, ct);
+            var changed = await ApplyAsync(shipmentId.Value, status, db, failures, handover, outbox, clock.GetUtcNow(), logger, ct);
             metrics.Webhook(changed ? "applied" : "unchanged");
             return Results.Ok();
         }
@@ -104,9 +104,12 @@ public static class ShippoWebhook
 
     /// <summary>Locks the shipment, then applies the re-fetched status. Returns whether the shipment's status changed.</summary>
     private static async Task<bool> ApplyAsync(
-        Guid id, string tracking, FulfillmentDbContext db, Failures failures, OutboxWriter outbox, DateTimeOffset now, ILogger logger, CancellationToken ct)
+        Guid id, string tracking, FulfillmentDbContext db, Failures failures, Handover handover, OutboxWriter outbox, DateTimeOffset now, ILogger logger, CancellationToken ct)
     {
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        // D32 may hand the task over, so the task's lock comes first (lock order: pack_tasks → shipments, as HandOver and CancelPackTask take them)
+        var labelTaskId = await db.Shipments.AsNoTracking().Where(x => x.Id == id && x.Direction == Directions.Outbound && x.Status == ShipmentStatuses.LabelReady).Select(x => x.PackTaskId).SingleOrDefaultAsync(ct);
+        if (labelTaskId is { } lockedTask) await db.Database.ExecuteSqlAsync($"SELECT 1 FROM pack_tasks WHERE id = {lockedTask} FOR UPDATE", ct);
         var s = (await db.Shipments.FromSql($"SELECT * FROM shipments WHERE id = {id} FOR UPDATE").AsNoTracking().ToListAsync(ct)).Single(); // first lock of the order
         if (Terminal.Contains(s.Status))
         {
@@ -115,6 +118,15 @@ public static class ShippoWebhook
         }
 
         var to = Target(s, tracking);
+        if (s.Direction == Directions.Outbound && s.Status == ShipmentStatuses.LabelReady && to is ShipmentStatuses.InTransit or ShipmentStatuses.Delivered) // D32: a carrier scan implies the handover
+        {
+            var task = s.PackTaskId is { } taskId ? await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, ct) : null;
+            if (!await handover.ApplyAsync(s, task, now, ct))
+            {
+                logger.LogWarning("Shippo reported {Tracking} on label_ready shipment {ShipmentId} but its task is not packed; ignored", tracking, s.Id);
+                return false;
+            }
+        }
         if (s.Status == ShipmentStatuses.PossiblyLost && to is ShipmentStatuses.InTransit or ShipmentStatuses.Delivered) await failures.DismissAsync(s.Id, ct); // late news (§8)
         var settle = to == ShipmentStatuses.PossiblyLost ? null : to; // Failures.FlagAsync moves that one
         var deliveredAt = to == ShipmentStatuses.Delivered ? (DateTimeOffset?)now : null;
@@ -150,8 +162,8 @@ public static class ShippoWebhook
     // Return shipments follow the label and the carrier (label_ready → in_transit → delivered); their request is the warehouse's to receive, so only TRANSIT moves it.
     private static string? Target(Shipment s, string tracking) => (s.Direction, tracking) switch
     {
-        (Directions.Outbound, "TRANSIT") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.PossiblyLost => ShipmentStatuses.InTransit,
-        (Directions.Outbound, "DELIVERED") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit or ShipmentStatuses.PossiblyLost => ShipmentStatuses.Delivered,
+        (Directions.Outbound, "TRANSIT") when s.Status is ShipmentStatuses.LabelReady or ShipmentStatuses.HandedOver or ShipmentStatuses.PossiblyLost => ShipmentStatuses.InTransit,
+        (Directions.Outbound, "DELIVERED") when s.Status is ShipmentStatuses.LabelReady or ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit or ShipmentStatuses.PossiblyLost => ShipmentStatuses.Delivered,
         (Directions.Outbound, "RETURNED") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit or ShipmentStatuses.PossiblyLost => ShipmentStatuses.ReturnedToSender,
         (Directions.Outbound, "FAILURE") when s.Status is ShipmentStatuses.HandedOver or ShipmentStatuses.InTransit => ShipmentStatuses.PossiblyLost,
         (Directions.Return, "TRANSIT") when s.Status == ShipmentStatuses.LabelReady => ShipmentStatuses.InTransit,
