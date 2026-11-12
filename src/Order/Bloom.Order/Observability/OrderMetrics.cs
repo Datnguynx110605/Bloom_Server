@@ -10,7 +10,7 @@ public sealed class OrderMetrics
     private static readonly HashSet<string> Results =
     [
         "ok", "sold_out", "limit_exceeded", "coupon_not_found", "coupon_inactive", "coupon_not_started", "coupon_expired", "coupon_min_spend",
-        "coupon_not_applicable", "coupon_limit_reached",
+        "coupon_not_applicable", "coupon_limit_reached", "order_total_too_low",
     ];
 
     private readonly Histogram<double> _checkoutStart;
@@ -37,7 +37,7 @@ public sealed class OrderMetrics
     /// <param name="kind"><c>regular</c> or <c>launch</c>.</param>
     public void CheckoutStarted(string kind, double seconds) => _checkoutStart.Record(seconds, new KeyValuePair<string, object?>("kind", kind));
 
-    /// <param name="result"><c>ok</c> or the reason of the failure: <c>SOLD_OUT</c>, <c>LIMIT_EXCEEDED</c>, a coupon refusal (<c>COUPON_MIN_SPEND</c> becomes <c>coupon_min_spend</c>); anything else is <c>failed</c>.</param>
+    /// <param name="result"><c>ok</c> or the reason of the failure: <c>SOLD_OUT</c>, <c>LIMIT_EXCEEDED</c>, a coupon refusal (<c>COUPON_MIN_SPEND</c> becomes <c>coupon_min_spend</c>), <c>ORDER_TOTAL_TOO_LOW</c>; anything else is <c>failed</c>.</param>
     public void Checkout(string kind, string result)
     {
         var r = result.ToLowerInvariant();

@@ -24,6 +24,7 @@ public static class OrderErrors
     public const string AlreadyShipped = "ALREADY_SHIPPED";
     public const string CouponCodeTaken = "COUPON_CODE_TAKEN";
     public const string CheckoutClosed = "CHECKOUT_CLOSED";
+    public const string OrderTotalTooLow = "ORDER_TOTAL_TOO_LOW";
     public const string NotFoundReason = "NOT_FOUND";
     public const string ValidationFailed = "VALIDATION_FAILED";
 
@@ -40,6 +41,7 @@ public static class OrderErrors
         [AlreadyShipped] = StatusCode.FailedPrecondition,
         [CouponCodeTaken] = StatusCode.AlreadyExists,
         [CheckoutClosed] = StatusCode.FailedPrecondition,
+        [OrderTotalTooLow] = StatusCode.FailedPrecondition,
         [NotFoundReason] = StatusCode.NotFound,
         [ValidationFailed] = StatusCode.InvalidArgument,
         [CouponNotFound] = StatusCode.FailedPrecondition,
