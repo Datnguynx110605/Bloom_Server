@@ -69,8 +69,8 @@ public static class Seed
     public static Task PaidAsync(TestInventory t, Guid orderId, Guid? launchId, params (Guid Sku, int Quantity)[] lines) =>
         PaidAsync(t, Paid(orderId, launchId, DateTimeOffset.UtcNow, lines));
 
-    public static Task ReleaseAsync(TestInventory t, Guid orderId) =>
-        Consume.Async<ReleaseReservationConsumer>(t, InventoryMessages.ReleaseReservation, new ReleaseReservationV1(orderId));
+    public static Task ReleaseAsync(TestInventory t, Guid orderId, Guid? reshipId = null) =>
+        Consume.Async<ReleaseReservationConsumer>(t, InventoryMessages.ReleaseReservation, new ReleaseReservationV1(orderId, reshipId));
 
     /// <summary>Rows of <c>released_orders</c> for the order (0 or 1).</summary>
     public static async Task<int> TombstonesAsync(TestInventory t, Guid orderId)

@@ -212,4 +212,27 @@ public class ReleaseTests(Containers containers)
 
         Assert.Equal(1, await Seed.TombstonesAsync(t, orderId));
     }
+
+    [Fact]
+    public async Task D18_release_by_reship_id_releases_only_that_reship()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var orderId = Guid.CreateVersion7();
+        await Seed.ReserveAsync(t, orderId, (sku, 1));
+        await Seed.PaidAsync(t, orderId, null, (sku, 1));
+        var reship = Guid.CreateVersion7();
+        await t.Stock.CommitForReshipAsync(new() { ReshipId = reship.ToString(), OrderId = orderId.ToString(), Lines = { Seed.Line(sku, 2) } }, cancellationToken: Ct);
+
+        await Seed.ReleaseAsync(t, orderId, reship);
+
+        var allocations = await Seed.AllocationsAsync(t, orderId);
+        Assert.Equal(AllocationStatuses.Released, allocations.Single(a => a.RefId == reship).Status);
+        Assert.Equal(AllocationStatuses.Committed, allocations.Single(a => a.RefId == orderId).Status);
+        Assert.Equal(0, await Seed.TombstonesAsync(t, orderId));
+        Assert.Equal([orderId], await ReleasedAsync(t));
+        var item = (await Seed.ItemAsync(t, sku))!;
+        Assert.Equal((4, 1), (item.OnHand, item.Committed));
+    }
 }
