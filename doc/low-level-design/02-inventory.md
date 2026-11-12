@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-12 |
 | **Product rules** | [03-inventory](../product-design/03-inventory.md) (INV-R01 … R20), BI-02, BI-06, BI-07, LCH-R19, R20 |
 | **HLD** | [high-level-design.md §5, §8.5](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-013 |
 | **Decision records** | [LLD-ADR-014](adr/LLD-ADR-014-release-tombstone.md) |
