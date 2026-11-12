@@ -17,7 +17,7 @@ namespace Bloom.Inventory.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -136,6 +136,24 @@ namespace Bloom.Inventory.Data.Migrations
 
                             t.HasCheckConstraint("ck_stock_ledger_ref_type", "ref_type IN ('order', 'reship', 'receipt', 'adjustment')");
                         });
+                });
+
+            modelBuilder.Entity("Bloom.Inventory.Data.ReleasedOrder", b =>
+                {
+                    b.Property<Guid>("OrderId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<DateTimeOffset>("ReleasedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("released_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("OrderId");
+
+                    b.ToTable("released_orders", (string)null);
                 });
 
             modelBuilder.Entity("Bloom.Inventory.Data.SerialUnit", b =>

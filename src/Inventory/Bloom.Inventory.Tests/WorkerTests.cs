@@ -240,4 +240,23 @@ public class WorkerTests(Containers containers)
         Assert.Single(worker.Services.GetServices<IHostedService>().OfType<StockMonitor>());
         Assert.Empty(api.Services.GetServices<IHostedService>().OfType<StockMonitor>());
     }
+
+    [Fact]
+    public async Task D16_purger_deletes_only_older_than_30_days()
+    {
+        var (api, worker) = await StartAsync();
+        await using var _ = api;
+        await using var __ = worker;
+        var (old, recent) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        await using (var db = api.NewDb())
+            await db.Database.ExecuteSqlAsync($"""
+                INSERT INTO released_orders (order_id, released_at) VALUES ({old}, now() - interval '31 days'), ({recent}, now() - interval '29 days')
+                """, Ct);
+
+        await worker.Services.GetServices<IHostedService>().OfType<TombstonePurger>().Single().RunOnceAsync(Ct);
+
+        Assert.Equal(0, await Seed.TombstonesAsync(api, old));
+        Assert.Equal(1, await Seed.TombstonesAsync(api, recent));
+        Assert.Empty(api.Services.GetServices<IHostedService>().OfType<TombstonePurger>());
+    }
 }

@@ -182,4 +182,34 @@ public class ReleaseTests(Containers containers)
             Assert.Equal((130, 0), (item.OnHand, item.Reserved));
         }
     }
+
+    [Fact]
+    public async Task D16_release_without_allocations_still_tombstones()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var orderId = Guid.CreateVersion7();
+
+        await Seed.ReleaseAsync(t, orderId); // never reserved, never paid
+
+        Assert.Equal(1, await Seed.TombstonesAsync(t, orderId));
+        Assert.Equal([orderId], await ReleasedAsync(t));
+        await Seed.PaidAsync(t, orderId, Guid.CreateVersion7(), (sku, 1)); // a later pre-order paid creates nothing
+        Assert.Empty(await Seed.AllocationsAsync(t, orderId));
+        await Rpc.FailsAsync(t.Stock.ReserveStockAsync(new() { OrderId = orderId.ToString(), Lines = { Seed.Line(sku, 1) } }, cancellationToken: Ct), "ORDER_RELEASED");
+        Assert.Equal(0, (await Seed.ItemAsync(t, sku))!.Reserved);
+    }
+
+    [Fact]
+    public async Task D16_duplicate_release_is_idempotent()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var orderId = Guid.CreateVersion7();
+
+        await Seed.ReleaseAsync(t, orderId);
+        await Seed.ReleaseAsync(t, orderId);
+
+        Assert.Equal(1, await Seed.TombstonesAsync(t, orderId));
+    }
 }

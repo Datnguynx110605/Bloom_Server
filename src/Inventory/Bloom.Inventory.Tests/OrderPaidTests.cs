@@ -208,4 +208,24 @@ public class OrderPaidTests(Containers containers)
             }
         }
     }
+
+    [Fact]
+    public async Task D16_release_then_paid_creates_no_allocations_and_warns()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var (preorder, regular) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        await Seed.ReleaseAsync(t, preorder);
+        await Seed.ReleaseAsync(t, regular);
+
+        await Seed.PaidAsync(t, preorder, Guid.CreateVersion7(), (sku, 1));
+        await Seed.PaidAsync(t, regular, null, (sku, 1));
+
+        Assert.Empty(await Seed.AllocationsAsync(t, preorder));
+        Assert.Empty(await Seed.AllocationsAsync(t, regular));
+        Assert.Contains(t.Logs.Entries, e => e.Contains(preorder.ToString()) && e.Contains("released"));
+        Assert.Contains(t.Logs.Entries, e => e.Contains(regular.ToString()) && e.Contains("released"));
+        Assert.Single(await Seed.LedgerAsync(t, sku)); // only the receipt
+    }
 }

@@ -67,6 +67,7 @@ public static class InventoryApp
         {
             bloom.AddWorker(); // worker only (plan R6)
             builder.Services.AddHostedService<StockMonitor>();
+            builder.Services.AddHostedService<TombstonePurger>();
         }
 
         var app = builder.Build();

@@ -9,6 +9,7 @@ public sealed partial class InventoryDbContext(DbContextOptions<InventoryDbConte
 {
     public DbSet<StockItem> StockItems => Set<StockItem>();
     public DbSet<StockAllocation> StockAllocations => Set<StockAllocation>();
+    public DbSet<ReleasedOrder> ReleasedOrders => Set<ReleasedOrder>();
     public DbSet<SerialUnit> SerialUnits => Set<SerialUnit>();
     public DbSet<GoodsReceipt> GoodsReceipts => Set<GoodsReceipt>();
     public DbSet<GoodsReceiptLine> GoodsReceiptLines => Set<GoodsReceiptLine>();
@@ -44,6 +45,13 @@ public sealed partial class InventoryDbContext(DbContextOptions<InventoryDbConte
             e.HasIndex(x => new { x.SkuId, x.PaidAt, x.OrderId }).HasFilter("status = 'backordered'").HasDatabaseName("ix_stock_allocations_fifo");
             e.HasIndex(x => x.CreatedAt).HasFilter("status = 'reserved'").HasDatabaseName("ix_stock_allocations_stuck");
             e.HasIndex(x => x.OrderId).HasDatabaseName("ix_stock_allocations_order");
+        });
+
+        mb.Entity<ReleasedOrder>(e =>
+        {
+            e.ToTable("released_orders");
+            e.HasKey(x => x.OrderId);
+            e.Property(x => x.ReleasedAt).HasDefaultValueSql("now()");
         });
 
         mb.Entity<SerialUnit>(e =>

@@ -52,6 +52,7 @@ public class ShellTests(Containers containers)
         { "SERIAL_NOT_AVAILABLE", StatusCode.FailedPrecondition }, { "NOT_FOUND", StatusCode.NotFound },
         { "SERIAL_COUNT_EXCEEDED", StatusCode.FailedPrecondition }, { "VALIDATION_FAILED", StatusCode.InvalidArgument },
         { "NOT_COMMITTED", StatusCode.FailedPrecondition }, { "CATALOG_UNAVAILABLE", StatusCode.Unavailable },
+        { "ORDER_RELEASED", StatusCode.FailedPrecondition },
     };
 
     private static Status Detail(RpcException e) => e.GetRpcStatus()!;

@@ -143,6 +143,21 @@ public class StockApiTests(Containers containers)
     }
 
     [Fact]
+    public async Task D17_reserve_for_released_order_returns_ORDER_RELEASED()
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+        var sku = Seed.Sku(t);
+        await Seed.ReceiveAsync(t, sku, 5);
+        var order = Guid.CreateVersion7();
+        await Seed.ReleaseAsync(t, order);
+
+        await Rpc.FailsAsync(t.Stock.ReserveStockAsync(Reserve(order, Seed.Line(sku, 1)), cancellationToken: Ct), "ORDER_RELEASED");
+
+        Assert.Equal(0, (await Seed.ItemAsync(t, sku))!.Reserved);
+        Assert.Empty(await AllocationsAsync(t, order));
+    }
+
+    [Fact]
     public async Task Same_order_with_other_lines_is_RESERVATION_CONFLICT()
     {
         await using var t = await TestInventory.StartAsync(containers);

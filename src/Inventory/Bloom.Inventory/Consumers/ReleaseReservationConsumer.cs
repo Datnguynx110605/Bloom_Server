@@ -66,6 +66,7 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
         }
 
         foreach (var skuId in freed) await allocator.RunAsync(skuId, ct); // freed units serve waiting pre-orders first
+        await db.Database.ExecuteSqlAsync($"INSERT INTO released_orders (order_id) VALUES ({orderId}) ON CONFLICT DO NOTHING", ct);
         outbox.PublishEvent(InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));
     }
 

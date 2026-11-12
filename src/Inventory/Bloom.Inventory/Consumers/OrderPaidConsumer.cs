@@ -9,15 +9,20 @@ namespace Bloom.Inventory.Consumers;
 /// <summary>
 /// <c>order.paid.v1</c> (02-inventory §6.2, plan R17). A regular order (<c>launchId</c> null) turns its <c>reserved</c> allocations into
 /// <c>committed</c> ones; a pre-order (<c>launchId</c> set) queues one <c>backordered</c> allocation per SKU and runs the allocator (§6.4).
-/// Runs in <c>ConsumerHost</c>'s transaction (plan R10); SKU rows are locked in ascending order before any allocation is touched (plan R9).
+/// An order in <c>released_orders</c> gets nothing (LLD-ADR-014). Runs in <c>ConsumerHost</c>'s transaction (plan R10); SKU rows are locked in ascending order before any allocation is touched (plan R9).
 /// </summary>
-public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, TimeProvider clock) : IMessageHandler
+public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, TimeProvider clock, ILogger<OrderPaidConsumer> logger) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("order", OrderMessages.Paid)];
 
     public async Task HandleAsync(Envelope envelope, CancellationToken ct)
     {
         var paid = envelope.GetPayload<OrderPaidV1>();
+        if (await db.ReleasedOrders.AnyAsync(r => r.OrderId == paid.OrderId, ct))
+        {
+            logger.LogWarning("Order {OrderId} paid after its reservation was released; no allocations created (LLD-ADR-014)", paid.OrderId);
+            return;
+        }
         if (paid.LaunchId is null) await CommitReservedAsync(paid.OrderId, ct);
         else await BackorderAsync(paid, ct);
     }

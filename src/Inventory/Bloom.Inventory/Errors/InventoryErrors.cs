@@ -17,6 +17,7 @@ public static class InventoryErrors
     public const string ReceiptInvalidReason = "RECEIPT_INVALID";
     public const string AdjustmentExceedsAvailable = "ADJUSTMENT_EXCEEDS_AVAILABLE";
     public const string SerialAssigned = "SERIAL_ASSIGNED";
+    public const string OrderReleased = "ORDER_RELEASED";
     public const string NotFound = "NOT_FOUND";
     public const string ValidationFailed = "VALIDATION_FAILED";
     public const string CatalogUnavailableReason = "CATALOG_UNAVAILABLE";
@@ -30,6 +31,7 @@ public static class InventoryErrors
         [NotCommitted] = StatusCode.FailedPrecondition,
         [AdjustmentExceedsAvailable] = StatusCode.FailedPrecondition,
         [SerialAssigned] = StatusCode.FailedPrecondition,
+        [OrderReleased] = StatusCode.FailedPrecondition,
         [ReservationConflict] = StatusCode.InvalidArgument,
         [ReceiptInvalidReason] = StatusCode.InvalidArgument,
         [ValidationFailed] = StatusCode.InvalidArgument,

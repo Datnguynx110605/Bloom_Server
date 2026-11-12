@@ -111,6 +111,13 @@ public class StockAllocation
     public DateTimeOffset UpdatedAt { get; set; }
 }
 
+/// <summary>A release tombstone (02-inventory §4.5, LLD-ADR-014); <c>released_at</c> defaults to the database <c>now()</c>.</summary>
+public class ReleasedOrder
+{
+    public Guid OrderId { get; set; }
+    public DateTimeOffset ReleasedAt { get; set; }
+}
+
 public class SerialUnit
 {
     public required string Serial { get; set; }

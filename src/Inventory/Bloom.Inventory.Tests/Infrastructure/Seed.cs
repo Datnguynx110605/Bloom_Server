@@ -72,6 +72,13 @@ public static class Seed
     public static Task ReleaseAsync(TestInventory t, Guid orderId) =>
         Consume.Async<ReleaseReservationConsumer>(t, InventoryMessages.ReleaseReservation, new ReleaseReservationV1(orderId));
 
+    /// <summary>Rows of <c>released_orders</c> for the order (0 or 1).</summary>
+    public static async Task<int> TombstonesAsync(TestInventory t, Guid orderId)
+    {
+        await using var db = t.NewDb();
+        return await db.ReleasedOrders.AsNoTracking().CountAsync(r => r.OrderId == orderId, TestContext.Current.CancellationToken);
+    }
+
     public static Task ShipAsync(TestInventory t, Guid orderId, Guid refId, params (Guid Sku, int Quantity)[] lines) =>
         Consume.Async<ShipmentShippedConsumer>(t, FulfillmentMessages.ShipmentShipped,
             new ShipmentShippedV1(orderId, refId, lines.Select(l => new ShippedLineV1(l.Sku, l.Quantity, [])).ToList(), "TRK1"));

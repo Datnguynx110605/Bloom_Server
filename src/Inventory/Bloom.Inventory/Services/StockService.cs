@@ -18,6 +18,8 @@ public sealed class StockService(InventoryDbContext db, Ledger ledger, Inventory
     {
         var orderId = Inputs.Id(request.OrderId, "order_id");
         var lines = ParseLines(request.Lines);
+        if (await db.ReleasedOrders.AnyAsync(r => r.OrderId == orderId, context.CancellationToken)) // LLD-ADR-014: a released order never holds stock again
+            throw InventoryErrors.Error(InventoryErrors.OrderReleased, "The order was released.");
         var started = Stopwatch.GetTimestamp();
         try
         {
