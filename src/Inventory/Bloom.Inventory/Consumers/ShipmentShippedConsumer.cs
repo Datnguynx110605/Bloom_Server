@@ -2,6 +2,7 @@ using Bloom.Fulfillment.Contracts;
 using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Consumers;
@@ -11,7 +12,7 @@ namespace Bloom.Inventory.Consumers;
 /// serials too. Works on inventory's own allocations and serials; the message's <c>serials[]</c> change nothing. A serialized allocation with fewer assigned
 /// serials than its quantity is a permanent failure before any write (I-12). Runs in <c>ConsumerHost</c>'s transaction (plan R10); SKU rows are locked first (plan R9).
 /// </summary>
-public sealed class ShipmentShippedConsumer(InventoryDbContext db, StockLocks locks, Ledger ledger, TimeProvider clock) : IMessageHandler
+public sealed class ShipmentShippedConsumer(InventoryDbContext db, StockLocks locks, Ledger ledger) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("fulfillment", FulfillmentMessages.ShipmentShipped)];
 
@@ -31,7 +32,7 @@ public sealed class ShipmentShippedConsumer(InventoryDbContext db, StockLocks lo
             if (items[a.SkuId].Serialized && assigned.GetValueOrDefault(a.SkuId) < a.Quantity)
                 throw new PermanentFailureException($"Shipment {refId} ships {a.Quantity} of serialized SKU {a.SkuId} with {assigned.GetValueOrDefault(a.SkuId)} serials assigned.");
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         foreach (var a in committed)
         {
             if (await db.Database.ExecuteSqlAsync($"""
@@ -48,7 +49,7 @@ public sealed class ShipmentShippedConsumer(InventoryDbContext db, StockLocks lo
                 UPDATE serial_units SET status = {SerialStatuses.Shipped}, version = version + 1, updated_at = {now}
                 WHERE ref_id = {a.RefId} AND sku_id = {a.SkuId} AND status = {SerialStatuses.Assigned}
                 """, ct);
-            ledger.Add(a.SkuId, EntryTypes.Shipped, new(Committed: -q), RefTypes.Of(a.Kind), a.RefId);
+            ledger.Add(a.SkuId, EntryTypes.Shipped, new(Committed: -q), RefTypes.Of(a.Kind), a.RefId, now);
         }
     }
 }

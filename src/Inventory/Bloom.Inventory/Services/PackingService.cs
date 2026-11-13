@@ -10,7 +10,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Inventory.Services;
 
 /// <summary>02-inventory §3 component <c>Packing API</c> (§5.1, §6.6): fulfillment assigns serials to a committed allocation while packing. Plan R16; each call runs its own transaction (R10) and writes no ledger rows.</summary>
-public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audit audit, TimeProvider clock) : InventoryPacking.InventoryPackingBase
+public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audit audit) : InventoryPacking.InventoryPackingBase
 {
     public override async Task<Empty> AssignSerial(AssignSerialRequest request, ServerCallContext context)
     {
@@ -94,9 +94,8 @@ public sealed class PackingService(InventoryDbContext db, StockLocks locks, Audi
     /// <summary>The guarded update of plan R16; 0 rows (another SKU, another status) is <c>SERIAL_NOT_AVAILABLE</c>.</summary>
     private async Task SetAsync(string serial, Guid skuId, string from, string to, Guid? refId, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
         var changed = await db.Database.ExecuteSqlAsync($"""
-            UPDATE serial_units SET status = {to}, ref_id = {refId}, version = version + 1, updated_at = {now}
+            UPDATE serial_units SET status = {to}, ref_id = {refId}, version = version + 1, updated_at = now()
             WHERE serial = {serial} AND sku_id = {skuId} AND status = {from}
             """, ct);
         if (changed == 0) throw NotAvailable();

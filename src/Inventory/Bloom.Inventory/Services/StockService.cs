@@ -4,6 +4,7 @@ using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Inventory.Errors;
 using Bloom.Inventory.Observability;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Google.Rpc;
 using Grpc.Core;
@@ -12,7 +13,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Inventory.Services;
 
 /// <summary>02-inventory §3 component <c>Stock API</c> (§5.1): <c>order</c> and <c>fulfillment</c> call it over plain gRPC; it has no HTTP route (spec §6). Each call runs its own transaction (plan R10).</summary>
-public sealed class StockService(InventoryDbContext db, StockLocks locks, Ledger ledger, InventoryMetrics metrics, TimeProvider clock) : InventoryStock.InventoryStockBase
+public sealed class StockService(InventoryDbContext db, StockLocks locks, Ledger ledger, InventoryMetrics metrics) : InventoryStock.InventoryStockBase
 {
     /// <summary>§6.1 plus plan R21: <c>regular</c> / <c>reserved</c> allocations, ledger <c>reserved</c>. Records <c>reserve_total</c> / <c>reserve_seconds</c> for the two outcomes the metric knows.</summary>
     public override async Task<Empty> ReserveStock(ReserveStockRequest request, ServerCallContext context)
@@ -89,7 +90,7 @@ public sealed class StockService(InventoryDbContext db, StockLocks locks, Ledger
                 throw InventoryErrors.Error(InventoryErrors.ReservationConflict, "This id was already used with different lines.");
             }
 
-            var now = clock.GetUtcNow();
+            var now = await db.Database.NowAsync(ct);
             RpcException? shortage = null;
             foreach (var (skuId, q) in sorted)
             {
@@ -121,8 +122,8 @@ public sealed class StockService(InventoryDbContext db, StockLocks locks, Ledger
                 {
                     RefId = refId, SkuId = skuId, OrderId = orderId, Kind = kind, Quantity = q, Status = status, CreatedAt = now, UpdatedAt = now,
                 });
-                if (kind == AllocationKinds.Reship) ledger.Add(skuId, EntryTypes.Committed, new(OnHand: -q, Committed: q), RefTypes.Reship, refId);
-                else ledger.Add(skuId, EntryTypes.Reserved, new(Reserved: q), RefTypes.Order, refId);
+                if (kind == AllocationKinds.Reship) ledger.Add(skuId, EntryTypes.Committed, new(OnHand: -q, Committed: q), RefTypes.Reship, refId, now);
+                else ledger.Add(skuId, EntryTypes.Reserved, new(Reserved: q), RefTypes.Order, refId, now);
             }
             try
             {
