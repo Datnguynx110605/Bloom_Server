@@ -1,5 +1,6 @@
 using Bloom.Catalog.Contracts;
 using Bloom.Catalog.Data;
+using Bloom.Shared.Persistence;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -109,6 +110,13 @@ public sealed class TestCatalog : IAsyncDisposable
 
     /// <summary>A test-side context on the same database.</summary>
     public CatalogDbContext NewDb() => NewDb(ConnectionString);
+
+    /// <summary>The database's <c>now()</c>: the clock stored timestamps and time checks use, which the fake clock does not drive.</summary>
+    public async Task<DateTimeOffset> DbNowAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.NowAsync(TestContext.Current.CancellationToken);
+    }
 
     private static CatalogDbContext NewDb(string connectionString) =>
         new(new DbContextOptionsBuilder<CatalogDbContext>().UseNpgsql(connectionString).Options);

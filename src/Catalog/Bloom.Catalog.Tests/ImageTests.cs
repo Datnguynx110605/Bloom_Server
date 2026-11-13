@@ -196,6 +196,13 @@ public class ImageTests(Containers containers)
         }, actions); // failed and unchanged calls wrote nothing
     }
 
+    // The cleanup cutoff is the database clock, so the row's age is set against the database's now().
+    private static async Task AgeAsync(TestCatalog t, string imageId, TimeSpan age)
+    {
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlAsync($"UPDATE product_images SET created_at = now() - {age} WHERE id = {Guid.Parse(imageId)}", TestContext.Current.CancellationToken);
+    }
+
     [Fact]
     public async Task Unconfirmed_upload_is_cleaned_after_24_hours()
     {
@@ -206,11 +213,11 @@ public class ImageTests(Containers containers)
         var (pending, pendingKey) = await UploadAsync(t, product.Id);
         var job = ActivatorUtilities.CreateInstance<ImageCleanupJob>(t.Services);
 
-        t.Clock.Advance(TimeSpan.FromHours(23));
+        await AgeAsync(t, pending, TimeSpan.FromHours(23));
         Assert.Equal(0, await job.RunOnceAsync(TestContext.Current.CancellationToken));
         Assert.True(await ObjectExistsAsync(t, pendingKey));
 
-        t.Clock.Advance(TimeSpan.FromHours(1) + TimeSpan.FromSeconds(1));
+        await AgeAsync(t, pending, TimeSpan.FromHours(24) + TimeSpan.FromSeconds(1));
         Assert.Equal(1, await job.RunOnceAsync(TestContext.Current.CancellationToken));
 
         Assert.False(await ObjectExistsAsync(t, pendingKey));
