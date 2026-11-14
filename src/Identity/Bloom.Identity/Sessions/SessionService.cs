@@ -93,7 +93,7 @@ public sealed class SessionService(
 
     /// <summary>Locks the account row and returns the transaction's now(); null when the row does not exist.</summary>
     private async Task<DateTimeOffset?> LockAccountAsync(Guid accountId) =>
-        (await db.Database.SqlQuery<DateTimeOffset>($"SELECT now() AS \"Value\" FROM accounts WHERE id = {accountId} FOR UPDATE").ToListAsync()).Cast<DateTimeOffset?>().SingleOrDefault();
+        await db.Database.SqlQuery<DateTimeOffset?>($"SELECT now() AS \"Value\" FROM accounts WHERE id = {accountId} FOR UPDATE").SingleOrDefaultAsync();
 
     /// <summary>Revokes every refresh token of the account in the caller's transaction; the caller saves.</summary>
     public async Task RevokeAllAsync(Account account, string trigger)
