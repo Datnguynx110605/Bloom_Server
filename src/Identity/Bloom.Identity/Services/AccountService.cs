@@ -12,6 +12,7 @@ using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
 using Bloom.Shared.Concurrency;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +24,7 @@ namespace Bloom.Identity.Services;
 /// <summary>LLD 06-identity §3 component <c>Account</c>: the signed-in caller's own account.</summary>
 public sealed class AccountService(
     IdentityDbContext db, CodeService codes, Credentials credentials, PasswordPolicy passwordPolicy, PasswordHasher passwordHasher,
-    SessionService sessions, OutboxWriter outbox, TimeProvider time, GoogleTokenVerifier google, ConcurrentUpdates updates, OrderCheck orders, IdentityMetrics metrics) : V1.Account.AccountBase
+    SessionService sessions, OutboxWriter outbox, GoogleTokenVerifier google, ConcurrentUpdates updates, OrderCheck orders, IdentityMetrics metrics) : V1.Account.AccountBase
 {
     private const int MaxAddresses = 10;
 
@@ -45,7 +46,7 @@ public sealed class AccountService(
 
     public override async Task<Empty> ChangePassword(ChangePasswordRequest request, ServerCallContext context)
     {
-        var caller = TrustedCaller.From(context).RequireRecentAuth(time); // re-auth, new password, then the current one (plan I17)
+        var caller = TrustedCaller.From(context).RequireRecentAuth(await db.Database.NowAsync(context.CancellationToken)); // re-auth, new password, then the current one (plan I17)
         var next = passwordPolicy.Validate(request.NewPassword);
         var account = await LoadAsync(caller, context);
         await credentials.CheckAccountPasswordAsync(account, request.CurrentPassword);
@@ -60,7 +61,7 @@ public sealed class AccountService(
 
     public override async Task<Empty> ChangeEmail(ChangeEmailRequest request, ServerCallContext context)
     {
-        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(time);
+        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(await db.Database.NowAsync(context.CancellationToken));
         var (email, _) = Inputs.Email(request.NewEmail, "new_email");
         if (await db.Accounts.AnyAsync(a => a.EmailNormalized == email, context.CancellationToken))
             throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
@@ -71,7 +72,7 @@ public sealed class AccountService(
 
     public override async Task<Empty> ConfirmEmailChange(ConfirmEmailChangeRequest request, ServerCallContext context)
     {
-        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(time);
+        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(await db.Database.NowAsync(context.CancellationToken));
         var code = await codes.VerifyAsync(CodePurposes.ChangeEmail, request.Code, null, caller.UserId);
         var account = await LoadAsync(caller, context);
 
@@ -96,7 +97,7 @@ public sealed class AccountService(
 
     public override async Task<Empty> UnlinkGoogle(Empty request, ServerCallContext context)
     {
-        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(time);
+        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(await db.Database.NowAsync(context.CancellationToken));
         var account = await LoadAsync(caller, context);
         if (account.PasswordHash is null)
             throw IdentityErrors.Error(IdentityErrors.PasswordRequired, "Set a password before unlinking Google.");
@@ -175,7 +176,7 @@ public sealed class AccountService(
 
     public override async Task<Empty> DeleteAccount(Empty request, ServerCallContext context)
     {
-        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(time);
+        var caller = TrustedCaller.From(context).RequireCustomer().RequireRecentAuth(await db.Database.NowAsync(context.CancellationToken));
         var account = await LoadAsync(caller, context);
         if (account.Status == AccountStatuses.Deleted) throw IdentityErrors.Error(IdentityErrors.NotFound, "No such account.");
 

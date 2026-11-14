@@ -5,6 +5,7 @@ using System.Text.Json;
 using Bloom.Identity.Contracts;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -63,7 +64,7 @@ public class SessionTests(Containers containers)
             Assert.Equal(account.Id.ToString(), p.GetProperty("sub").GetString());
             Assert.Equal(type, p.GetProperty("typ").GetString());
             Assert.Equal(900, p.GetProperty("exp").GetInt64() - p.GetProperty("iat").GetInt64());
-            Assert.Equal(t.Clock.GetUtcNow().ToUnixTimeSeconds(), p.GetProperty("iat").GetInt64());
+            Assert.InRange(p.GetProperty("iat").GetInt64(), before.ToUnixTimeSeconds(), after.ToUnixTimeSeconds()); // the database's now()
             Assert.InRange(p.GetProperty("auth_time").GetInt64(), before.ToUnixTimeSeconds(), after.ToUnixTimeSeconds());
             Assert.Equal((await RowAsync(t, session.RefreshToken)).FamilyId.ToString(), p.GetProperty("sid").GetString());
             if (type == "staff") Assert.Equal("warehouse", p.GetProperty("role").GetString());
@@ -145,7 +146,7 @@ public class SessionTests(Containers containers)
         Assert.Equal(old.FamilyId, current.FamilyId);
         var payload = Payload(await AccessTokenAsync(response));
         Assert.Equal(authTime, payload.GetProperty("auth_time").GetInt64());
-        Assert.Equal(t.Clock.GetUtcNow().ToUnixTimeSeconds(), payload.GetProperty("iat").GetInt64());
+        Assert.InRange(payload.GetProperty("iat").GetInt64(), before.ToUnixTimeSeconds(), after.ToUnixTimeSeconds());
         Assert.Equal(1, metrics.Sum("refresh_total", ("result", "rotated")));
     }
 
@@ -293,6 +294,7 @@ public class SessionTests(Containers containers)
         await using var rotating = t.NewDb();
         await using var tx = await rotating.Database.BeginTransactionAsync(Ct);
         await rotating.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE", Ct);
+        var rotationIat = await rotating.Database.NowAsync(Ct); // the iat of the access token this rotation would issue: its transaction's now()
         await rotating.Database.ExecuteSqlInterpolatedAsync(
             $"UPDATE refresh_tokens SET status = 'rotated', used_at = now() WHERE token_hash = {hash}", Ct);
         await rotating.Database.ExecuteSqlInterpolatedAsync($"""
@@ -309,12 +311,17 @@ public class SessionTests(Containers containers)
                 $"SELECT wait_event_type AS \"Value\" FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").ToListAsync(Ct)).Count > 0;
         },
         10, "sign-out-everywhere waiting on the rotation");
+        var committingAt = (await rotating.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").ToListAsync(Ct)).Single();
         await tx.CommitAsync(Ct);
 
         Assert.Equal(HttpStatusCode.OK, (await signOut).StatusCode);
         var rows = await RowsAsync(t, account.Id);
         Assert.Equal(2, rows.Count);
         Assert.All(rows, r => Assert.Equal(RefreshStatuses.Revoked, r.Status));
+        var validAfter = (await t.AccountAsync(account.Id)).TokensValidAfter!.Value;
+        Assert.True(rotationIat < validAfter, "the rotation's access token must count as revoked at the gateway (iat < tokens_valid_after)");
+        Assert.True(committingAt < validAfter, "the stamp is taken after the lock wait, not at the start of the revoking transaction");
+        Assert.Equal(validAfter.ToUnixTimeMilliseconds(), Assert.Single(await Outbox.EnvelopesAsync(t, "identity.tokens-revoked.v1")).GetPayload<TokensRevokedV1>().IssuedBefore);
     }
 
     [Fact]

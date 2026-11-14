@@ -80,6 +80,18 @@ public class AccountTests(Containers containers)
     }
 
     [Fact]
+    public async Task Recent_auth_window_follows_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var account = await Seed.CustomerAsync(t);
+        t.Clock.Advance(TimeSpan.FromDays(1)); // the app clock is a day ahead; the database is not
+        var now = await t.DbNowAsync();
+
+        await (await ChangeEmailAsync(t, TestCaller.Customer(account.Id, now.AddMinutes(-6)), NewEmail())).ExpectErrorAsync(400, "REAUTH_REQUIRED");
+        Assert.Equal(HttpStatusCode.OK, (await ChangeEmailAsync(t, TestCaller.Customer(account.Id, now.AddMinutes(-4)), NewEmail())).StatusCode);
+    }
+
+    [Fact]
     public async Task Change_password_revokes_all_sessions()
     {
         await using var t = await TestIdentity.StartAsync(containers);

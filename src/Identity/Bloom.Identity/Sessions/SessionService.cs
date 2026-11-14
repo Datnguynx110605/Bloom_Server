@@ -101,11 +101,14 @@ public sealed class SessionService(
         // Waits for a rotation in flight, so its new token is visible to the UPDATE (R41). The version is read under the lock: the caller's
         // copy may predate a concurrent revoke-all, and SaveChanges adds one to it (ID-2).
         account.Version = await db.Database.SqlQuery<long>($"SELECT version AS \"Value\" FROM accounts WHERE id = {account.Id} FOR UPDATE").SingleAsync();
-        var now = await db.Database.NowAsync();
         await db.RefreshTokens.Where(t => t.AccountId == account.Id && t.Status != RefreshStatuses.Revoked)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, RefreshStatuses.Revoked));
-        account.TokensValidAfter = now;
-        outbox.PublishEvent(IdentityMessages.TokensRevoked, new TokensRevokedV1(account.Id, now.ToUnixTimeMilliseconds()));
+        // clock_timestamp(), not the transaction's now(): this runs after the lock wait, so the stamp is later than the commit (and the access token's
+        // iat, the rotation transaction's now()) of any rotation we waited on (R41). The gateway compares iat with it, so it must not be earlier.
+        var validAfter = (await db.Database.SqlQuery<DateTimeOffset>(
+            $"UPDATE accounts SET tokens_valid_after = clock_timestamp() WHERE id = {account.Id} RETURNING tokens_valid_after AS \"Value\"").ToListAsync()).Single();
+        account.TokensValidAfter = validAfter;
+        outbox.PublishEvent(IdentityMessages.TokensRevoked, new TokensRevokedV1(account.Id, validAfter.ToUnixTimeMilliseconds()));
         metrics.Revocation(trigger);
     }
 
@@ -138,6 +141,6 @@ public sealed class SessionService(
             UserAgent = request?.Headers.UserAgent.ToString() is { Length: > 0 } ua ? ua : null,
             Ip = http.HttpContext?.Connection.RemoteIpAddress?.ToString(),
         });
-        return new IssuedSession(issuer.CreateAccessToken(account, familyId, authTime), raw, expires);
+        return new IssuedSession(issuer.CreateAccessToken(account, familyId, authTime, now), raw, expires);
     }
 }
