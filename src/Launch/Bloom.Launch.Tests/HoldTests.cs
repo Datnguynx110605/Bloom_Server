@@ -407,6 +407,31 @@ public class HoldTests(Containers containers)
     }
 
     [Fact]
+    public async Task D5_hold_waiting_behind_a_room_close_is_LAUNCH_NOT_OPEN()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t);
+        var account = Guid.NewGuid();
+
+        // A side transaction holds the launches row FOR UPDATE and closes the room; the hold stops at the step-3 statement.
+        await using var side = new NpgsqlConnection(t.ConnectionString);
+        await side.OpenAsync(Ct);
+        await using var sideTx = await side.BeginTransactionAsync(Ct);
+        await using (var close = new NpgsqlCommand("SELECT 1 FROM launches WHERE id = @l FOR UPDATE; UPDATE launches SET waiting_room_closed_at = now() WHERE id = @l", side, sideTx))
+        {
+            close.Parameters.AddWithValue("l", launch.Id);
+            await close.ExecuteNonQueryAsync(Ct);
+        }
+        var hold = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (launch.Skus[0], 1))), Ct);
+        await Poll.UntilAsync(() => WaiterAsync(t, "%FOR SHARE OF l%"), 15, "the hold waits on the launches row");
+
+        await sideTx.CommitAsync(Ct);
+
+        await Fails(hold, LaunchErrors.LaunchNotOpen); // read after the close committed, not with the snapshot of step 1
+        await NothingWrittenAsync(t, launch.Id, launch.Skus[0]);
+    }
+
+    [Fact]
     public async Task Concurrent_first_calls_of_one_order_with_other_passes_conflict()
     {
         await using var t = await StartAsync();

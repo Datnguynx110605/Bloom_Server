@@ -61,7 +61,9 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
 
                 // Step 3.
                 // Read inside the transaction, on every attempt: a close or release may have committed since step 1. FOR SHARE OF l locks the launches row only, first, before any product or SKU lock (D5, §7):
-                // a room close or stage change takes the row FOR UPDATE, so it waits for this hold and a hold waits for it. The requested SKUs and their products ride along in the same statement, unlocked.
+                // a room close or stage change takes the row FOR UPDATE, so it waits for this hold and a hold waits for it.
+                // The requested SKUs and their products ride along unlocked: they are read with the statement's snapshot, taken before any wait on the launches lock, which is safe because products, SKUs and limits
+                // are frozen from preorder_open (§6.7, LCH-R25) and a hold needs a pass, which only exists from preorder_open.
                 var skuIds = lines.Select(l => l.Sku).ToArray();
                 var read = await db.Database.SqlQuery<LaunchRead>(
                     $@"SELECT l.stage AS ""Stage"", l.waiting_room_closed_at AS ""WaitingRoomClosedAt"", s.sku_id AS ""SkuId"", s.product_id AS ""ProductId"", p.purchase_limit AS ""PurchaseLimit""
@@ -115,6 +117,9 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 var holdId = Guid.CreateVersion7();
                 try
                 {
+                    var lineSkus = lines.Select(l => l.Sku).ToArray();
+                    var lineProducts = lines.Select(l => found[l.Sku].ProductId).ToArray();
+                    var lineQtys = lines.Select(l => l.Qty).ToArray();
                     // One statement: the holds row and its lines. The unique order_id entry is raised by the holds insert, as before.
                     await db.Database.ExecuteSqlAsync(
                         $@"WITH h AS (
@@ -122,7 +127,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                                VALUES ({holdId}, {orderId}, {launchId}, {caller.UserId}, {claims.PassId}, {HoldStatuses.Held}, 0, now(), now()) RETURNING id)
                            INSERT INTO hold_lines (hold_id, sku_id, product_id, quantity)
                            SELECT h.id, x.sku_id, x.product_id, x.quantity
-                           FROM h, unnest({skuIds}::uuid[], {lines.Select(l => found[l.Sku].ProductId).ToArray()}::uuid[], {lines.Select(l => l.Qty).ToArray()}::integer[]) AS x(sku_id, product_id, quantity)", ct);
+                           FROM h, unnest({lineSkus}::uuid[], {lineProducts}::uuid[], {lineQtys}::integer[]) AS x(sku_id, product_id, quantity)", ct);
                 }
                 catch (PostgresException e) when (attempt == 0 && e.SqlState == PostgresErrorCodes.UniqueViolation && e.ConstraintName == "ux_holds_order_id")
                 {
