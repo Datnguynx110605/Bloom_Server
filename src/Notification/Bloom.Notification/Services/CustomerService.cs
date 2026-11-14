@@ -5,6 +5,7 @@ using Bloom.Notification.Data;
 using Bloom.Notification.Errors;
 using Bloom.Notification.Protos;
 using Bloom.Notification.Sockets;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -12,7 +13,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Notification.Services;
 
 /// <summary>09-notification §5.1 customer API (spec §6). Every call is the caller's own account only (N8: role check first, then N9 validation).</summary>
-public sealed class CustomerService(NotificationDbContext db, Tickets tickets, TimeProvider clock) : Notifications.NotificationsBase
+public sealed class CustomerService(NotificationDbContext db, Tickets tickets) : Notifications.NotificationsBase
 {
     private const int PageSize = 20;
     private const int TokenBytes = 24; // int64 µs since the epoch ‖ 16 id bytes
@@ -50,7 +51,7 @@ public sealed class CustomerService(NotificationDbContext db, Tickets tickets, T
         if (request.Ids.Count is < 1 or > 100) throw NotificationErrors.Validation("ids", "ids must hold 1 to 100 UUIDs.");
         var ids = request.Ids.Select(id => Guid.TryParseExact(id, "D", out var g) ? g : throw NotificationErrors.Validation("ids", "Every id must be a UUID.")).ToList();
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(context.CancellationToken);
         await db.Notifications.Where(n => n.AccountId == accountId && ids.Contains(n.Id) && n.ReadAt == null)
             .ExecuteUpdateAsync(s => s.SetProperty(n => n.ReadAt, now), context.CancellationToken);
         return new Empty();
@@ -59,7 +60,7 @@ public sealed class CustomerService(NotificationDbContext db, Tickets tickets, T
     public override async Task<Empty> MarkAllRead(MarkAllReadRequest request, ServerCallContext context)
     {
         var accountId = Caller.From(context).RequireCustomer().UserId;
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(context.CancellationToken);
         await db.Notifications.Where(n => n.AccountId == accountId && n.ReadAt == null)
             .ExecuteUpdateAsync(s => s.SetProperty(n => n.ReadAt, now), context.CancellationToken);
         return new Empty();

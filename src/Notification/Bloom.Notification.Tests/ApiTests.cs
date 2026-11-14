@@ -166,13 +166,14 @@ public class ApiTests(Containers containers)
         var own = await Seed.NotificationAsync(t, a, earlier);
         var alreadyRead = await Seed.NotificationAsync(t, a, earlier, readAt: earlier);
         var others = await Seed.NotificationAsync(t, b, earlier);
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         using var client = t.CustomerClient(a);
 
+        var before = await t.DbNowAsync();
         var response = await client.PostAsJsonAsync("/api/notifications/read", new { ids = new[] { own, alreadyRead, others, Guid.NewGuid() } }, Ct);
+        var after = await t.DbNowAsync();
 
         Assert.Equal("{}", (await JsonAsync(response)).GetRawText());
-        Assert.Equal(t.Clock.GetUtcNow(), await ReadAtAsync(t, own));
+        Assert.InRange((await ReadAtAsync(t, own))!.Value, before, after);
         Assert.Equal(earlier, await ReadAtAsync(t, alreadyRead));
         Assert.Null(await ReadAtAsync(t, others));
     }
@@ -210,14 +211,15 @@ public class ApiTests(Containers containers)
         var unread2 = await Seed.NotificationAsync(t, a, earlier);
         var alreadyRead = await Seed.NotificationAsync(t, a, earlier, readAt: earlier);
         var others = await Seed.NotificationAsync(t, b, earlier);
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         using var client = t.CustomerClient(a);
 
+        var before = await t.DbNowAsync();
         var response = await client.PostAsJsonAsync("/api/notifications/read-all", new { }, Ct);
+        var after = await t.DbNowAsync();
 
         Assert.Equal("{}", (await JsonAsync(response)).GetRawText());
-        Assert.Equal(t.Clock.GetUtcNow(), await ReadAtAsync(t, unread1));
-        Assert.Equal(t.Clock.GetUtcNow(), await ReadAtAsync(t, unread2));
+        Assert.InRange((await ReadAtAsync(t, unread1))!.Value, before, after);
+        Assert.InRange((await ReadAtAsync(t, unread2))!.Value, before, after);
         Assert.Equal(earlier, await ReadAtAsync(t, alreadyRead));
         Assert.Null(await ReadAtAsync(t, others));
     }

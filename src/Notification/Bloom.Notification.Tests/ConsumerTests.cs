@@ -281,11 +281,20 @@ public class ConsumerTests(Containers containers)
         Assert.Empty(await Seed.RowsAsync(t, account));
         Assert.Empty(await JobsAsync(t, source: id));
 
+        var before = await t.DbNowAsync();
         await Consume.Async(t, OrderMessages.Paid, Payload(OrderMessages.Paid, account), id);
+        var after = await t.DbNowAsync();
 
-        Assert.Equal("order.confirmed", (await Sockets.NextAsync(inbox)).Type);
+        var pushed = await Sockets.NextAsync(inbox);
+        Assert.Equal("order.confirmed", pushed.Type);
         await Task.Delay(300, Ct);
         Assert.False(inbox.Reader.TryRead(out _), "more than one push");
+        var stored = Assert.Single(await Seed.RowsAsync(t, account));
+        Assert.InRange(stored.CreatedAt, before, after);
+        Assert.Equal(stored.CreatedAt, pushed.CreatedAt, TimeSpan.FromMilliseconds(1)); // the push carries the stored time
+        var job = Assert.Single(await JobsAsync(t, source: id));
+        Assert.InRange(job.CreatedAt, before, after);
+        Assert.Equal(job.CreatedAt, job.NextAttemptAt); // due at once
     }
 
     [Fact]
