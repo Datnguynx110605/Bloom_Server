@@ -69,13 +69,15 @@ public class OutboxRelayTests(Containers containers)
     }
 
     /// <summary>The published body is the stored envelope with <c>OccurredAt</c> = the row's <c>created_at</c> (00-reliability §5.2).</summary>
-    private static void AssertSentIsStoredWithRowTime(OutboxMessage row, ReadOnlySpan<byte> body)
+    private static Envelope AssertSentIsStoredWithRowTime(OutboxMessage row, ReadOnlySpan<byte> body)
     {
         var stored = Envelope.Parse(Encoding.UTF8.GetBytes(row.Payload));
         var sent = Envelope.Parse(body);
         Assert.Equal(row.CreatedAt, sent.OccurredAt);
+        Assert.Equal(DateTimeKind.Utc, sent.OccurredAt.Kind); // DateTime equality ignores Kind
         Assert.Equal((stored.MessageId, stored.MessageType, stored.Kind, stored.Producer, stored.CorrelationId, stored.CausationId),
                      (sent.MessageId, sent.MessageType, sent.Kind, sent.Producer, sent.CorrelationId, sent.CausationId));
+        return sent;
     }
 
     [Fact]
@@ -97,8 +99,7 @@ public class OutboxRelayTests(Containers containers)
         var row = Assert.Single(await RowsAsync(s.Host));
         var got = await s.Rabbit.BasicGetAsync(s.Queue);
         Assert.NotNull(got);
-        AssertSentIsStoredWithRowTime(row, got.Body.Span);
-        var sent = Envelope.Parse(got.Body.Span);
+        var sent = AssertSentIsStoredWithRowTime(row, got.Body.Span);
         Assert.Equal("Zoë", sent.Payload.GetProperty("name").GetString());
         Assert.Equal(1, sent.Payload.GetProperty("nested").GetProperty("a").GetInt32());
     }
