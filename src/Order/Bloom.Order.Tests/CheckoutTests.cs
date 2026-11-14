@@ -129,6 +129,45 @@ public class CheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task OR01_checkout_start_seconds_leaves_out_the_payment_call()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (account, _) = await CartOfOneAsync(t);
+        t.Upstreams.Before = method => method == "CreatePayment" ? Task.Delay(TimeSpan.FromSeconds(1), Ct) : Task.CompletedTask;
+
+        var wall = System.Diagnostics.Stopwatch.StartNew();
+        await Seed.CheckoutAsync(t, account);
+        wall.Stop();
+
+        AssertLeavesOutPayment(metrics, wall);
+    }
+
+    [Fact]
+    public async Task OR01_checkout_start_seconds_leaves_out_a_failed_payment_call()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (account, _) = await CartOfOneAsync(t);
+        t.Upstreams.Before = method => method == "CreatePayment" ? Task.Delay(TimeSpan.FromSeconds(1), Ct) : Task.CompletedTask;
+        t.Upstreams.Fail("CreatePayment", StatusCode.Unavailable);
+
+        var wall = System.Diagnostics.Stopwatch.StartNew();
+        await UnavailableAsync(Seed.CheckoutAsync(t, account));
+        wall.Stop();
+
+        AssertLeavesOutPayment(metrics, wall);
+    }
+
+    /// <summary>The call took at least the 1 s payment delay, and the one recorded value is the rest of it: wall time minus the delay, with 0.1 s of slack.</summary>
+    private static void AssertLeavesOutPayment(MetricCapture metrics, System.Diagnostics.Stopwatch wall)
+    {
+        Assert.True(wall.Elapsed >= TimeSpan.FromSeconds(1), $"the call took {wall.Elapsed}");
+        var recorded = Assert.Single(metrics.Values("checkout_start_seconds", ("kind", "regular")));
+        Assert.True(recorded <= wall.Elapsed.TotalSeconds - 0.9, $"recorded {recorded} s, the call took {wall.Elapsed.TotalSeconds} s");
+    }
+
+    [Fact]
     public async Task O02_retry_with_the_same_key_after_success_replays()
     {
         await using var t = await TestOrder.StartAsync(containers);

@@ -27,7 +27,7 @@ doc/
 │   └── adr/                      PD-ADR-001 … 009
 ├── high-level-design/
 │   ├── high-level-design.md      architecture, services, data, interfaces, cross-cutting
-│   └── adr/                      HLD-ADR-001 … 020
+│   └── adr/                      HLD-ADR-001 … 021
 └── low-level-design/
     ├── README.md                 component index
     ├── 00-reliability.md         shared outbox / inbox / idempotency / concurrency

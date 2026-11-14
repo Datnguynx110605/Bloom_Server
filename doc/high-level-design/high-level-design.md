@@ -7,7 +7,7 @@
 | **Status** | Approved (2026-11-14) |
 | **Last updated** | 2026-11-14 |
 | **Product design** | [doc/product-design](../product-design/00-overview.md) |
-| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 020) |
+| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 021) |
 
 ## Summary
 
@@ -57,7 +57,7 @@ Bloom is a single-vendor US store selling Apple devices ([product overview](../p
 |---|---|---|
 | QA-01 | Availability | 99.9% monthly for checkout and catalog (≤ 43 min downtime/month) |
 | QA-02 | Latency: catalog reads | p95 < 150 ms at launch peak |
-| QA-03 | Latency: checkout start | p95 < 300 ms at launch peak |
+| QA-03 | Latency: checkout start | p95 < 300 ms at launch peak, excluding the payment call ([HLD-ADR-021](adr/HLD-ADR-021-checkout-latency-excludes-payment.md)) |
 | QA-04 | Latency: waiting-room status | p95 < 50 ms at launch peak |
 | QA-05 | Throughput | 200 checkouts/s and 20k status reads/s sustained during a launch |
 | QA-06 | Consistency | Zero violations of BI-01 … BI-07 |
@@ -402,6 +402,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | [HLD-ADR-018](adr/HLD-ADR-018-external-providers.md) | Stripe, Shippo, Resend behind interfaces |
 | [HLD-ADR-019](adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage |
 | [HLD-ADR-020](adr/HLD-ADR-020-health-endpoints.md) | Health endpoints: liveness everywhere, started-only readiness on API pods |
+| [HLD-ADR-021](adr/HLD-ADR-021-checkout-latency-excludes-payment.md) | Checkout start latency (QA-03) excludes the payment call |
 
 ## 11. Risks
 
