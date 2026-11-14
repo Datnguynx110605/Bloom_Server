@@ -302,14 +302,17 @@ public class DeliveryFailureTests(Containers containers)
         var reshipShipment = await db.Shipments.AsNoTracking().SingleAsync(s => s.PackTaskId == reship.Id, Ct);
         using (var handover = await t.SendAsync(HttpMethod.Post, $"{Admin}/handover", new { shipmentId = reshipShipment.Id }, Warehouse)) await handover.OkJsonAsync();
         var tracking = (await Seed.ShipmentAsync(t, reshipShipment.Id)).TrackingNumber!;
-        t.Clock.Advance(TimeSpan.FromDays(3));
+        await t.AgeAsync(TimeSpan.FromDays(3));
+        var beforeDelivery = await t.DbNowAsync();
         await Seed.TrackAsync(t, tracking, "DELIVERED");
+        var afterDelivery = await t.DbNowAsync();
 
         var delivered = Assert.Single(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
-        Assert.Equal((f.Order.OrderId, reshipId, t.Clock.GetUtcNow()), (delivered.OrderId, delivered.RefId, delivered.DeliveredAt));
+        Assert.Equal((f.Order.OrderId, reshipId), (delivered.OrderId, delivered.RefId));
+        Assert.InRange(delivered.DeliveredAt, beforeDelivery, afterDelivery);
         var active = Assert.Single(await Seed.CoveragesAsync(t, f.Order.OrderId));
-        Assert.Equal((CoverageStatuses.Active, fresh[0], t.Clock.GetUtcNow()), (active.Status, active.Serial, active.StartsAt));
-        Assert.Equal(t.Clock.GetUtcNow(), (await db.OrderAccounts.AsNoTracking().SingleAsync(Ct)).DeliveredAt);
+        Assert.Equal((CoverageStatuses.Active, fresh[0], delivered.DeliveredAt), (active.Status, active.Serial, active.StartsAt));
+        Assert.Equal(delivered.DeliveredAt, (await db.OrderAccounts.AsNoTracking().SingleAsync(Ct)).DeliveredAt);
         Assert.Equal(ShipmentStatuses.Lost, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
     }
 
@@ -436,7 +439,7 @@ public class DeliveryFailureTests(Containers containers)
         var idA = Ids.ReshipId(f.ShipmentId, null);
         Assert.Equal(idA, Assert.Single(await Outbox.PayloadsAsync<ReleaseReservationV1>(t, InventoryMessages.ReleaseReservation)).ReshipId); // D27 release for A
 
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
+        await t.AgeAsync(TimeSpan.FromMinutes(5));
         await Seed.TrackAsync(t, f.Tracking, "FAILURE"); // flagged again
         var dismissedAt = (await Seed.FailureAsync(t, f.ShipmentId))!.DismissedAt;
         Assert.NotNull(dismissedAt);
@@ -478,15 +481,18 @@ public class DeliveryFailureTests(Containers containers)
         var f = await PossiblyLostAsync(t, inTransit: true);
         Assert.Equal((ShipmentStatuses.PossiblyLost, ShipmentStatuses.InTransit), ((await Seed.ShipmentAsync(t, f.ShipmentId)).Status, (await Seed.FailureAsync(t, f.ShipmentId))!.PreviousStatus));
 
+        var before = await t.DbNowAsync();
         using (var response = await t.SendAsync(HttpMethod.Post, $"{Admin}/shipments/{f.ShipmentId}/dismiss", new { }, Support))
         {
             var body = await response.OkJsonAsync();
             Assert.Equal(("dismissed", "in_transit"), (body.GetProperty("status").GetString(), body.GetProperty("previousStatus").GetString()));
         }
+        var after = await t.DbNowAsync();
 
         Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, f.ShipmentId)).Status);
         var failure = (await Seed.FailureAsync(t, f.ShipmentId))!;
-        Assert.Equal((FailureStatuses.Dismissed, t.Clock.GetUtcNow()), (failure.Status, failure.DismissedAt));
+        Assert.Equal(FailureStatuses.Dismissed, failure.Status);
+        Assert.InRange(failure.DismissedAt!.Value, before, after);
         using (var again = await t.SendAsync(HttpMethod.Post, $"{Admin}/shipments/{f.ShipmentId}/dismiss", new { }, Support)) await again.ExpectErrorAsync(400, "INVALID_STATE");
         var audit = Assert.Single(await Outbox.AuditAsync(t), a => a.Action == "fulfillment.dismiss-possibly-lost");
         Assert.Equal(("fulfillment.dismiss-possibly-lost", f.ShipmentId.ToString()), (audit.Action, audit.TargetId));
@@ -501,7 +507,7 @@ public class DeliveryFailureTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var lost = await PossiblyLostAsync(t);
-        t.Clock.Advance(TimeSpan.FromMinutes(1));
+        await t.AgeAsync(TimeSpan.FromMinutes(1));
         var returned = await ReturnedAsync(t);
 
         async Task<JsonElement[]> ListAsync(string query, TestCaller? caller = null)

@@ -78,16 +78,18 @@ public class LabelTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var (_, shipmentId) = await PackedAsync(t);
         t.Shippo.TimeoutAfterStoringNextTransaction = true;
+        var before = await t.DbNowAsync();
 
         await Seed.RunLabelWorkerAsync(t);
+        var after = await t.DbNowAsync();
 
         var pending = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.LabelPending, pending.Status);
         Assert.Equal(1, pending.LabelAttempts);
-        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), pending.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(pending.NextAttemptAt, before.AddSeconds(1), after.AddSeconds(1));
         Assert.Single(t.Shippo.Transactions); // Shippo stored it although the call timed out
 
-        t.Clock.Advance(TimeSpan.FromSeconds(1));
+        await t.AgeAsync(TimeSpan.FromSeconds(1));
         await Seed.RunLabelWorkerAsync(t);
 
         var ready = await Seed.ShipmentAsync(t, shipmentId);
@@ -112,20 +114,21 @@ public class LabelTests(Containers containers)
         for (var n = 1; n <= 6; n++)
         {
             var calls = t.Shippo.Calls("");
+            var before = await t.DbNowAsync();
             await Seed.RunLabelWorkerAsync(t);
+            var after = await t.DbNowAsync();
 
             var shipment = await Seed.ShipmentAsync(t, shipmentId);
             Assert.Equal(ShipmentStatuses.LabelPending, shipment.Status);
             Assert.Equal(n, shipment.LabelAttempts);
-            Assert.Equal(t.Clock.GetUtcNow() + delays[n - 1], shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+            Assert.InRange(shipment.NextAttemptAt, before + delays[n - 1], after + delays[n - 1]);
             Assert.Equal(calls + 1, t.Shippo.Calls("")); // the failed lookup
             Assert.Equal(n >= 5 ? 1 : 0, metrics.Sum("labels_total", ("result", "failed")));
             Assert.Equal(n >= 5, ErrorLogged());
 
-            t.Clock.Advance(delays[n - 1] / 2); // not due yet: no call
-            await Seed.RunLabelWorkerAsync(t);
+            await Seed.RunLabelWorkerAsync(t); // not due yet: no call
             Assert.Equal(calls + 1, t.Shippo.Calls(""));
-            t.Clock.Advance(delays[n - 1] / 2);
+            await t.AgeAsync(delays[n - 1]);
         }
 
         await Seed.RunLabelWorkerAsync(t); // Shippo is back
@@ -216,17 +219,18 @@ public class LabelTests(Containers containers)
         var poisonedId = (await Seed.PackedAsync(t, poisoned, "SN3", "SN4")).ShipmentId;
         await using (var db = t.NewDb())
             await db.PackTasks.Where(p => p.OrderId == poisoned.OrderId).ExecuteUpdateAsync(p => p.SetProperty(x => x.ShipTo, "{}"), Ct); // an address that can't be read
-        t.Clock.Advance(TimeSpan.FromSeconds(1)); // the good row is due later: the poisoned one is served first
-        var good = Seed.Ready();
+        var good = Seed.Ready(); // packed after the poisoned one, so it is due later: the poisoned one is served first
         await Seed.ReadyAsync(t, good);
         var goodId = (await Seed.PackedAsync(t, good, "SN5", "SN6")).ShipmentId;
+        var before = await t.DbNowAsync();
 
         await Seed.RunLabelWorkerAsync(t);
+        var after = await t.DbNowAsync();
 
         var bad = await Seed.ShipmentAsync(t, poisonedId);
         Assert.Equal(ShipmentStatuses.LabelPending, bad.Status);
         Assert.Equal(1, bad.LabelAttempts);
-        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), bad.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(bad.NextAttemptAt, before.AddSeconds(1), after.AddSeconds(1));
         Assert.Equal(ShipmentStatuses.LabelReady, (await Seed.ShipmentAsync(t, goodId)).Status);
         Assert.Equal(ShipmentStatuses.Voided, (await Seed.ShipmentAsync(t, voidId)).Status);
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Warning]") && e.Contains(poisonedId.ToString()));
@@ -313,11 +317,13 @@ public class LabelTests(Containers containers)
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("injected database failure") && e.Contains("500")); // the bookkeeping failure and the Shippo failure behind it
 
         t.Shippo.FailNext(1);
+        var before = await t.DbNowAsync();
         await Seed.RunLabelWorkerAsync(t); // the next pass: the attempt is recorded and the row is back in line
+        var after = await t.DbNowAsync();
 
         shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal((ShipmentStatuses.LabelPending, 1), (shipment.Status, shipment.LabelAttempts));
-        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(shipment.NextAttemptAt, before.AddSeconds(1), after.AddSeconds(1));
     }
 
     [Fact]
@@ -326,8 +332,7 @@ public class LabelTests(Containers containers)
         var fail = new FailBookkeeping();
         await using var t = await StartWithAsync(containers, fail);
         var (_, poisonedId) = await PackedAsync(t);
-        t.Clock.Advance(TimeSpan.FromSeconds(1)); // the good row is due later: the poisoned one is served first
-        var good = Seed.Ready();
+        var good = Seed.Ready(); // packed after the poisoned one, so it is due later: the poisoned one is served first
         await Seed.ReadyAsync(t, good);
         var goodId = (await Seed.PackedAsync(t, good, "SN3", "SN4")).ShipmentId;
         t.Shippo.FailNext(1);
@@ -348,13 +353,14 @@ public class LabelTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (_, shipmentId) = await PackedAsync(t);
         t.Shippo.FailNext(1);
-        t.Shippo.OnRequest = () => t.Clock.Advance(TimeSpan.FromSeconds(10)); // the call takes 10 s
+        t.Shippo.OnRequest = () => Thread.Sleep(TimeSpan.FromSeconds(2)); // the call takes 2 s (the database clock cannot be advanced)
+        var before = await t.DbNowAsync();
 
         await Seed.RunLabelWorkerAsync(t);
 
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(1, shipment.LabelAttempts);
-        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(1), shipment.NextAttemptAt, TimeSpan.FromMilliseconds(1)); // after-call time + 1 s, not before-call time + 1 s
+        Assert.True(shipment.NextAttemptAt >= before.AddSeconds(2 + 1), $"{shipment.NextAttemptAt} is not after-call time + 1 s"); // not before-call time + 1 s
     }
 
     [Fact]

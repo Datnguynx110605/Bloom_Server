@@ -11,7 +11,7 @@ namespace Bloom.Fulfillment.Consumers;
 /// A task already on <c>ref_id = order_id</c> (a duplicate delivery, or the cancellation marker of F-02) wins: nothing else is written.
 /// Runs in <c>ConsumerHost</c>'s transaction (plan R8); the lines are saved with it.
 /// </summary>
-public sealed class ReadyToFulfillConsumer(FulfillmentDbContext db, TimeProvider clock) : IMessageHandler
+public sealed class ReadyToFulfillConsumer(FulfillmentDbContext db) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("order", OrderMessages.ReadyToFulfill)];
 
@@ -20,12 +20,11 @@ public sealed class ReadyToFulfillConsumer(FulfillmentDbContext db, TimeProvider
         var ready = envelope.GetPayload<OrderReadyToFulfillV1>();
         Validate(ready);
 
-        var now = clock.GetUtcNow();
         var taskId = Guid.CreateVersion7();
         var shipTo = JsonSerializer.Serialize(ready.ShipTo, JsonSerializerOptions.Web);
         if (await db.Database.ExecuteSqlAsync($"""
             INSERT INTO pack_tasks (id, ref_id, order_id, kind, status, cancelled_before_arrival, ship_to, shipping_option, version, created_at, updated_at)
-            VALUES ({taskId}, {ready.OrderId}, {ready.OrderId}, {TaskKinds.Order}, {TaskStatuses.Pending}, false, {shipTo}::jsonb, {ready.ShippingOption}, 0, {now}, {now})
+            VALUES ({taskId}, {ready.OrderId}, {ready.OrderId}, {TaskKinds.Order}, {TaskStatuses.Pending}, false, {shipTo}::jsonb, {ready.ShippingOption}, 0, now(), now())
             ON CONFLICT (ref_id) DO NOTHING
             """, ct) == 0)
             return;

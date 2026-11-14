@@ -403,7 +403,7 @@ public class RefundTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var (order, _, customer) = await DeliveredAsync(t);
-        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromSeconds(1));
+        await t.AgeAsync(TimeSpan.FromDays(14) + TimeSpan.FromSeconds(1));
 
         using var response = await t.SendAsync(HttpMethod.Post, "/api/returns", new { orderId = order.OrderId, units = new[] { new { lineNo = 2, quantity = 1 } } }, customer, Guid.NewGuid());
 
@@ -430,11 +430,13 @@ public class RefundTests(Containers containers)
         await Consume.Async<RefundCompletedConsumer>(t, PaymentMessages.RefundCompleted, new RefundCompletedV1(order.OrderId, unknown, 5, null));
         Assert.Null(Assert.Single(await SagasAsync(t, order.OrderId)).CompletedAt);
 
-        t.Clock.Advance(TimeSpan.FromMinutes(3));
+        await t.AgeAsync(TimeSpan.FromMinutes(3));
+        var before = await t.DbNowAsync();
         await Consume.Async<RefundCompletedConsumer>(t, PaymentMessages.RefundCompleted, new RefundCompletedV1(order.OrderId, refundId, 1001, null));
+        var after = await t.DbNowAsync();
         var done = Assert.Single(await SagasAsync(t, order.OrderId));
         Assert.Empty(done.PendingSteps);
-        Assert.Equal(t.Clock.GetUtcNow(), done.CompletedAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(done.CompletedAt!.Value, before, after);
     }
 
     /// <summary>What a delivery-failure refund would take now, with its transaction rolled back: the refundable amount left on the order.</summary>

@@ -29,13 +29,15 @@ public class ReadyToFulfillTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var ready = Seed.Ready(b => b.Express(1500));
+        var before = await t.DbNowAsync();
 
         await Seed.ReadyAsync(t, ready);
+        var after = await t.DbNowAsync();
 
         var task = await Seed.TaskAsync(t, ready.OrderId);
         Assert.NotNull(task);
         Assert.Equal((ready.OrderId, TaskKinds.Order, TaskStatuses.Pending, "express", false), (task.OrderId, task.Kind, task.Status, task.ShippingOption, task.CancelledBeforeArrival));
-        Assert.Equal(t.Clock.GetUtcNow(), task.CreatedAt);
+        Assert.InRange(task.CreatedAt, before, after);
         var shipTo = JsonSerializer.Deserialize<ShipToV1>(task.ShipTo!, JsonSerializerOptions.Web)!;
         Assert.Equal(ready.ShipTo.Lines, shipTo.Lines);
         Assert.Equal("Reno", shipTo.City);

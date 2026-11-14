@@ -4,6 +4,7 @@ using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Errors;
 using Bloom.Fulfillment.V1;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Shipment = Bloom.Fulfillment.Data.Shipment;
@@ -39,9 +40,9 @@ public sealed partial class WarehouseService
         if (shipment.Status == ShipmentStatuses.HandedOver) return Views.Shipment(shipment);
         if (shipment.Direction == Directions.Return) throw FulfillmentErrors.Error(FulfillmentErrors.InvalidState, "A return label is not handed over by the warehouse.");
 
-        var now = clock.GetUtcNow();
         var task = shipment.PackTaskId is { } taskId ? await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, ct) : null;
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         var won = await handover.ApplyAsync(shipment, task, now, now, ct);
         if (!won)
         {
