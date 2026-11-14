@@ -20,7 +20,7 @@ public class PurgeTests(Containers containers)
         var now = await t.DbNowAsync();
         await using (var db = t.NewDb())
         {
-            for (var i = 0; i < 2500; i++) db.Notifications.Add(Seed.Notification(t, account, now.AddDays(-91)));
+            for (var i = 0; i < 2500; i++) db.Notifications.Add(await Seed.Notification(t, account, now.AddDays(-91)));
             await db.SaveChangesAsync(Ct);
         }
         for (var i = 0; i < 3; i++) await Seed.NotificationAsync(t, account, now.AddDays(-89));

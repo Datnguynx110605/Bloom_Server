@@ -321,13 +321,13 @@ public class ConsumerTests(Containers containers)
         var b = Guid.NewGuid();
         await Seed.ContactAsync(t, b, "b@bloom.test", "Bo");
         await Seed.OrderRefAsync(t, Guid.NewGuid(), b, "BL-2002");
-        await Seed.NotificationAsync(t, a, t.Clock.GetUtcNow());
-        await Seed.NotificationAsync(t, b, t.Clock.GetUtcNow());
+        await Seed.NotificationAsync(t, a, await t.DbNowAsync());
+        await Seed.NotificationAsync(t, b, await t.DbNowAsync());
         Guid pendingA, sentA, pendingB;
         await using (var db = t.NewDb())
         {
-            EmailJobRow Job(Guid account, string status) => Seed.Job(t, status: status, createdAt: t.Clock.GetUtcNow(), accountId: account);
-            var jobs = new[] { Job(a, EmailStatuses.Pending), Job(a, EmailStatuses.Sent), Job(b, EmailStatuses.Pending) };
+            Task<EmailJobRow> Job(Guid account, string status) => Seed.Job(t, status: status, accountId: account);
+            var jobs = new[] { await Job(a, EmailStatuses.Pending), await Job(a, EmailStatuses.Sent), await Job(b, EmailStatuses.Pending) };
             (pendingA, sentA, pendingB) = (jobs[0].Id, jobs[1].Id, jobs[2].Id);
             db.EmailJobs.AddRange(jobs);
             await db.SaveChangesAsync(Ct);
@@ -354,7 +354,7 @@ public class ConsumerTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var account = await CustomerAsync(t);
-        await Seed.NotificationAsync(t, account, t.Clock.GetUtcNow());
+        await Seed.NotificationAsync(t, account, await t.DbNowAsync());
         await using var socket = await Sockets.ConnectAsync(t, await Sockets.TicketAsync(t, account));
 
         await Consume.Async(t, IdentityMessages.TokensRevoked, new TokensRevokedV1(account, 1));
