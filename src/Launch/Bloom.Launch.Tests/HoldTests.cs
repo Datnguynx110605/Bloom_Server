@@ -406,6 +406,40 @@ public class HoldTests(Containers containers)
         Assert.Equal((1, 1), await Holds.SkuAsync(t, sku)); // sold is seeded by hand, so no InvariantAsync
     }
 
+    [Fact]
+    public async Task Concurrent_first_calls_of_one_order_with_other_passes_conflict()
+    {
+        await using var t = await StartAsync();
+        var (first, second) = (await Seed.LaunchAsync(t), await Seed.LaunchAsync(t));
+        var (account, order) = (Guid.NewGuid(), Guid.NewGuid());
+
+        // A side connection holds the first launch's SKU row: call A stops at §6.5 step 7, after inserting its holds row for the order in step 6.
+        await using var side = new NpgsqlConnection(t.ConnectionString);
+        await side.OpenAsync(Ct);
+        await using var sideTx = await side.BeginTransactionAsync(Ct);
+        await using (var block = new NpgsqlCommand("SELECT 1 FROM launch_skus WHERE sku_id = @s FOR UPDATE", side, sideTx))
+        {
+            block.Parameters.AddWithValue("s", first.Skus[0]);
+            await block.ExecuteNonQueryAsync(Ct);
+        }
+        var a = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, first.Id, account), (first.Skus[0], 1))), Ct);
+        await Poll.UntilAsync(() => WaiterAsync(t, "%UPDATE launch_skus%"), 15, "call A waits on the SKU row");
+
+        // Call B: the same order on another launch with its own pass. It passes step 4 (another pass) and waits at the unique order_id entry of A's uncommitted holds row.
+        var b = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, second.Id, account), (second.Skus[0], 1))), Ct);
+        await Poll.UntilAsync(() => WaiterAsync(t, "%INSERT INTO holds%"), 15, "call B waits on A's order_id entry");
+
+        await sideTx.CommitAsync(Ct);
+
+        Assert.NotEmpty((await a).HoldId);
+        await Fails(b, LaunchErrors.HoldConflict); // R12: the unique violation restarts at step 2, which finds A's hold of another launch (D6)
+        Assert.Equal(1, await HoldsAsync(t, first.Id));
+        Assert.Equal(0, await HoldsAsync(t, second.Id));
+        Assert.Equal(0, await ConsumedAsync(t, second.Id)); // LR-03: B's pass is still unused
+        Assert.Equal((0, 0), await Holds.SkuAsync(t, second.Skus[0]));
+        await Holds.InvariantAsync(t, first.Id);
+    }
+
     /// <summary>True while a statement matching <paramref name="queryLike"/> waits for a lock.</summary>
     private static async Task<bool> WaiterAsync(TestLaunch t, string queryLike)
     {
