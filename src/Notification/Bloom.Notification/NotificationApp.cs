@@ -101,6 +101,7 @@ public static class NotificationApp
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
             app.MapGrpcService<CustomerService>(); // transcoded to /api/notifications (spec §6)
         }
+        app.MapBloomHealth(api); // HLD-ADR-020
         return app;
     }
 

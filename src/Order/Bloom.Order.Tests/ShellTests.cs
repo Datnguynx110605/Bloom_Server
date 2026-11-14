@@ -240,4 +240,16 @@ public class ShellTests(Containers containers)
         var info = await Rpc.FailsAsync(t.Rpc.Internal.HasUnsettledOrdersAsync(new() { AccountId = "x" }, cancellationToken: TestContext.Current.CancellationToken), "VALIDATION_FAILED");
         Assert.Equal("account_id", info.Metadata["field"]);
     }
+
+    [Fact]
+    public async Task Health_endpoints_answer_200_in_api_mode() // HLD-ADR-020
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+
+        foreach (var path in new[] { "/healthz", "/readyz" })
+        {
+            using var response = await t.Http.GetAsync(path, TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        }
+    }
 }
