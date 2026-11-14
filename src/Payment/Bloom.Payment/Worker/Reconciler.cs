@@ -2,6 +2,7 @@ using Bloom.Payment.Data;
 using Bloom.Payment.Domain;
 using Bloom.Payment.Observability;
 using Bloom.Payment.Stripe;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Payment.Worker;
@@ -36,13 +37,13 @@ public sealed class Reconciler(IServiceScopeFactory scopes, TimeProvider clock, 
 
     internal async Task RunOnceAsync(CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
         List<(Guid Id, string SessionId)> payments;
         List<(Guid Id, string StripeRefundId)> refunds;
         int open;
         await using (var scope = scopes.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
+            var now = await db.Database.NowAsync(ct);
             var paymentCutoff = now.AddMinutes(-15);
             var refundCutoff = now.AddMinutes(-10);
             payments = (await db.Payments.AsNoTracking().Where(p => p.Status == PaymentStatuses.Open && p.CreatedAt < paymentCutoff && p.StripeSessionId != null)

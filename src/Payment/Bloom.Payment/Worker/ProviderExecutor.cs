@@ -1,6 +1,7 @@
 using Bloom.Payment.Data;
 using Bloom.Payment.Domain;
 using Bloom.Payment.Stripe;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Payment.Worker;
@@ -50,11 +51,10 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var now = clock.GetUtcNow();
         var skip = tried.ToArray();
         var payment = (await db.Payments.FromSql($"""
             SELECT * FROM payments
-            WHERE status = {PaymentStatuses.Open} AND cancel_requested AND session_expires_at > {now} AND id <> ALL({skip})
+            WHERE status = {PaymentStatuses.Open} AND cancel_requested AND session_expires_at > now() AND id <> ALL({skip})
             ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
             """).AsNoTracking().ToListAsync(ct)).SingleOrDefault();
         if (payment is null) return false;
@@ -93,10 +93,9 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var now = clock.GetUtcNow();
         var refund = (await db.Refunds.FromSql($"""
             SELECT * FROM refunds
-            WHERE status = {RefundStatuses.Pending} AND next_attempt_at <= {now}
+            WHERE status = {RefundStatuses.Pending} AND next_attempt_at <= now()
             ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
             """).AsNoTracking().ToListAsync(ct)).SingleOrDefault();
         if (refund is null) return false;
@@ -122,18 +121,19 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
         {
             // Any other failure of this row is a failed attempt, so a poison row backs off and the next row is still served. The row lock is released first.
             await tx.RollbackAsync(CancellationToken.None);
-            await FailAsync(refund, now, e, ct);
+            await FailAsync(refund, e, ct);
         }
         return true;
     }
 
-    private async Task FailAsync(RefundRow refund, DateTimeOffset now, Exception e, CancellationToken ct)
+    private async Task FailAsync(RefundRow refund, Exception e, CancellationToken ct)
     {
         var n = refund.Attempts + 1;
-        var next = now + Backoff.Schedule[Math.Min(n, Backoff.Schedule.Length) - 1];
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
+        var next = now + Backoff.Schedule[Math.Min(n, Backoff.Schedule.Length) - 1];
         // 0 rows: a webhook moved the refund on while the lock was free, so Stripe has it and it must not fail here.
         var pending = await db.Database.ExecuteSqlAsync($"""
             UPDATE refunds SET attempts = {n}, next_attempt_at = {next}, updated_at = {now}

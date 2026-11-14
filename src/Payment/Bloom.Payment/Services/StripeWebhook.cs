@@ -69,10 +69,9 @@ public static class StripeWebhook
                 try
                 {
                     await using var tx = await db.Database.BeginTransactionAsync(ct);
-                    var now = clock.GetUtcNow();
                     var payload = System.Text.Encoding.UTF8.GetString(body.Span);
                     var stored = await db.Database.ExecuteSqlAsync($"""
-                        INSERT INTO provider_events (event_id, type, payload, received_at) VALUES ({eventId}, {type}, {payload}::jsonb, {now})
+                        INSERT INTO provider_events (event_id, type, payload, received_at) VALUES ({eventId}, {type}, {payload}::jsonb, now())
                         ON CONFLICT DO NOTHING
                         """, ct);
                     if (stored == 0)

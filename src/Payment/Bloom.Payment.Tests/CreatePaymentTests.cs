@@ -27,9 +27,10 @@ public class CreatePaymentTests(Containers containers)
     {
         await using var t = await TestPayment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
-        var start = t.Clock.GetUtcNow();
+        var start = await t.DbNowAsync();
 
         var (orderId, response, sessionId) = await Seed.CreateAsync(t, 1000);
+        var end = await t.DbNowAsync();
 
         var row = await t.PaymentByOrderAsync(orderId);
         Assert.Equal(PaymentStatuses.Open, row.Status);
@@ -39,7 +40,7 @@ public class CreatePaymentTests(Containers containers)
         Assert.Equal(row.CheckoutUrl, response.CheckoutUrl);
         Assert.Equal("usd", row.Currency);
         Assert.Null(row.LockedUntil);
-        Assert.Equal(start.AddMinutes(47).ToUnixTimeSeconds(), row.SessionExpiresAt!.Value.ToUnixTimeSeconds());
+        Assert.InRange(row.SessionExpiresAt!.Value.ToUnixTimeSeconds(), start.AddMinutes(47).ToUnixTimeSeconds(), end.AddMinutes(47).ToUnixTimeSeconds()); // 47 min on the database clock
         Assert.Equal(row.SessionExpiresAt, response.SessionExpiresAt.ToDateTimeOffset());
         var request = Assert.Single(Creates(t));
         Assert.Equal("Device × 1", request.Form.Single(p => p.Key == "line_items[0][price_data][product_data][name]").Value);
@@ -73,12 +74,11 @@ public class CreatePaymentTests(Containers containers)
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.ProviderUnavailable);
         Assert.Equal(PaymentStatuses.Creating, (await t.PaymentByOrderAsync(orderId)).Status);
 
-        var locked = t.Clock.GetUtcNow().AddSeconds(60); // a crash never released the claim
-        await t.SqlAsync($"UPDATE payments SET locked_until = {locked} WHERE order_id = {orderId}");
+        await t.SqlAsync($"UPDATE payments SET locked_until = now() + interval '60 seconds' WHERE order_id = {orderId}"); // a crash never released the claim
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.CreateInProgress);
         Assert.Equal(1, t.Stripe.Count(Sessions));
 
-        t.Clock.Advance(TimeSpan.FromSeconds(61));
+        await t.SqlAsync($"UPDATE payments SET locked_until = now() - interval '1 second' WHERE order_id = {orderId}"); // 60 s have passed
         var response = await Create(t, Seed.Request(orderId, 1000));
 
         var row = await t.PaymentByOrderAsync(orderId);
@@ -124,7 +124,7 @@ public class CreatePaymentTests(Containers containers)
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.ProviderUnavailable);
         var row = await t.PaymentByOrderAsync(orderId);
         Assert.Equal(PaymentStatuses.Creating, row.Status);
-        Assert.True(row.LockedUntil <= t.Clock.GetUtcNow()); // released, the next call resumes (owner item 2)
+        Assert.True(row.LockedUntil <= await t.DbNowAsync()); // released, the next call resumes (owner item 2)
 
         t.Stripe.Fail(Sessions, 400, "parameter_invalid_integer");
         await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 1000)), PaymentErrors.ProviderUnavailable);
@@ -166,7 +166,7 @@ public class CreatePaymentTests(Containers containers)
         foreach (var status in statuses)
         {
             var (orderId, _, _) = await Seed.CreateAsync(t, 1000);
-            var stale = t.Clock.GetUtcNow().AddSeconds(-1); // a stale `creating` row would be taken over: the amount is compared first (owner item 1)
+            var stale = (await t.DbNowAsync()).AddSeconds(-1); // a stale `creating` row would be taken over: the amount is compared first (owner item 1)
             await t.SqlAsync($"UPDATE payments SET status = {status}, locked_until = {(status == PaymentStatuses.Creating ? stale : (DateTimeOffset?)null)} WHERE order_id = {orderId}");
 
             await Rpc.FailsAsync(Create(t, Seed.Request(orderId, 2000)), PaymentErrors.ExistsDifferentAmount);
@@ -186,10 +186,9 @@ public class CreatePaymentTests(Containers containers)
         foreach (var status in new[] { PaymentStatuses.Expired, PaymentStatuses.Canceled, PaymentStatuses.Open })
         {
             var (orderId, response, _) = await Seed.CreateAsync(t, 1000);
-            await t.SqlAsync($"UPDATE payments SET status = {status} WHERE order_id = {orderId}");
+            await t.SqlAsync($"UPDATE payments SET status = {status}, session_expires_at = now() - interval '1 hour' WHERE order_id = {orderId}"); // the open row is past session_expires_at
             seeded.Add((orderId, response));
         }
-        t.Clock.Advance(TimeSpan.FromHours(2)); // the open row is now past session_expires_at
 
         foreach (var (orderId, first) in seeded)
         {
@@ -226,7 +225,7 @@ public class CreatePaymentTests(Containers containers)
         Assert.Equal(PaymentErrors.ProviderUnavailable, Rpc.Info(e).Reason);
         var released = await t.PaymentByOrderAsync(failedOrder);
         Assert.Equal(PaymentStatuses.Creating, released.Status);
-        Assert.True(released.LockedUntil <= t.Clock.GetUtcNow());
+        Assert.True(released.LockedUntil <= await t.DbNowAsync());
     }
 
     // P-9: the `completed` webhook won the race and Tx 2 never ran (a crash between Stripe and Tx 2), so the row is `succeeded` and may have no session or URL.
@@ -251,7 +250,7 @@ public class CreatePaymentTests(Containers containers)
     }
 
     private static InternalService Service(TestPayment t, IPaymentProvider provider) =>
-        new(t.NewDb(), provider, t.Clock, t.Services.GetRequiredService<PaymentMetrics>());
+        new(t.NewDb(), provider, t.Services.GetRequiredService<PaymentMetrics>());
 
     private sealed class Cancelling(CancellationTokenSource cts, Func<StripeSession> result) : IPaymentProvider
     {
