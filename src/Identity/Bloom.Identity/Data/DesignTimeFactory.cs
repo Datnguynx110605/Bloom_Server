@@ -7,5 +7,5 @@ namespace Bloom.Identity.Data;
 public sealed class DesignTimeFactory : IDesignTimeDbContextFactory<IdentityDbContext>
 {
     public IdentityDbContext CreateDbContext(string[] args) => new(
-        new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql("Host=design-time;Database=identity").Options, TimeProvider.System);
+        new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql("Host=design-time;Database=identity").Options);
 }

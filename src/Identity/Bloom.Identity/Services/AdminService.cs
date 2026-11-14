@@ -10,6 +10,7 @@ using Bloom.Identity.Sessions;
 using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -19,7 +20,7 @@ namespace Bloom.Identity.Services;
 
 /// <summary>LLD 06-identity §3 component <c>Admin</c>; every method needs an admin (staff, role admin).</summary>
 public sealed class AdminService(
-    IdentityDbContext db, AuditWriter audit, OutboxWriter outbox, SessionService sessions, TimeProvider time, IdentityOptions options,
+    IdentityDbContext db, AuditWriter audit, OutboxWriter outbox, SessionService sessions, IdentityOptions options,
     ILogger<AdminService> logger) : Admin.AdminBase
 {
     private static readonly TimeSpan InvitationLifetime = TimeSpan.FromHours(72);
@@ -33,8 +34,9 @@ public sealed class AdminService(
         if (await db.Accounts.AnyAsync(a => a.EmailNormalized == email, context.CancellationToken))
             throw IdentityErrors.Error(IdentityErrors.EmailTaken, "This email already has an account.");
 
-        AddInvitation(email, request.Role, caller.UserId);
-        audit.Add(caller, "identity.staff-invited", email, new { role = request.Role }); // no account yet: the target is the email (plan I26)
+        var now = await db.Database.NowAsync(context.CancellationToken);
+        AddInvitation(email, request.Role, caller.UserId, now);
+        audit.Add(caller, "identity.staff-invited", email, new { role = request.Role }, now); // no account yet: the target is the email (plan I26)
         await db.SaveChangesAsync(context.CancellationToken);
         return new Empty();
     }
@@ -75,7 +77,7 @@ public sealed class AdminService(
         var before = target.Role;
         target.Role = request.Role;
         await sessions.RevokeAllAsync(target, "staff_role_changed"); // new tokens must carry the new role
-        audit.Add(caller, "identity.staff-role-changed", target.Id.ToString(), new { before, after = request.Role });
+        audit.Add(caller, "identity.staff-role-changed", target.Id.ToString(), new { before, after = request.Role }, await db.Database.NowAsync(ct));
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return new Empty();
@@ -91,7 +93,7 @@ public sealed class AdminService(
 
         target.Status = AccountStatuses.Deactivated;
         await sessions.RevokeAllAsync(target, "staff_deactivated");
-        audit.Add(caller, "identity.staff-deactivated", target.Id.ToString(), new { before = AccountStatuses.Active, after = AccountStatuses.Deactivated });
+        audit.Add(caller, "identity.staff-deactivated", target.Id.ToString(), new { before = AccountStatuses.Active, after = AccountStatuses.Deactivated }, await db.Database.NowAsync(ct));
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return new Empty();
@@ -106,7 +108,7 @@ public sealed class AdminService(
         if (target.Status == AccountStatuses.Active) return new Empty();
 
         target.Status = AccountStatuses.Active;
-        audit.Add(caller, "identity.staff-reactivated", target.Id.ToString(), new { before = AccountStatuses.Deactivated, after = AccountStatuses.Active });
+        audit.Add(caller, "identity.staff-reactivated", target.Id.ToString(), new { before = AccountStatuses.Deactivated, after = AccountStatuses.Active }, await db.Database.NowAsync(ct));
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return new Empty();
@@ -121,8 +123,9 @@ public sealed class AdminService(
 
         target.TotpSecretEnc = null;
         await sessions.RevokeAllAsync(target, "staff_mfa_reset");
-        AddInvitation(target.EmailNormalized, target.Role!, caller.UserId);
-        audit.Add(caller, "identity.staff-mfa-reset", target.Id.ToString(), new { });
+        var now = await db.Database.NowAsync(ct);
+        AddInvitation(target.EmailNormalized, target.Role!, caller.UserId, now);
+        audit.Add(caller, "identity.staff-mfa-reset", target.Id.ToString(), new { }, now);
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return new Empty();
@@ -214,7 +217,7 @@ public sealed class AdminService(
     }
 
     /// <summary>Adds a 72 h invitation and its <c>staff-invited</c> message; the caller saves. The raw token leaves only inside the message's URL.</summary>
-    private void AddInvitation(string emailNormalized, string role, Guid invitedBy)
+    private void AddInvitation(string emailNormalized, string role, Guid invitedBy, DateTimeOffset now)
     {
         var token = Opaque.NewToken();
         db.StaffInvitations.Add(new StaffInvitation
@@ -224,7 +227,7 @@ public sealed class AdminService(
             Role = role,
             TokenHash = Opaque.Sha256(token),
             InvitedBy = invitedBy,
-            ExpiresAt = time.GetUtcNow() + InvitationLifetime,
+            ExpiresAt = now + InvitationLifetime,
         });
         outbox.PublishEvent(IdentityMessages.StaffInvited, new StaffInvitedV1(emailNormalized, role, $"{options.InviteBaseUrl}?token={token}"));
     }

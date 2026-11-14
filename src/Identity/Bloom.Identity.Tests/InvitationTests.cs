@@ -23,6 +23,13 @@ public class InvitationTests(Containers containers)
     private static Task<HttpResponseMessage> AcceptAsync(TestIdentity t, string token, string totpSecret, string totpCode, string name = "New Staff", string password = Seed.Password) =>
         t.SendAsync(HttpMethod.Post, "/api/auth/staff/invitations/accept", new { inviteToken = token, name, password, totpSecret, totpCode });
 
+    /// <summary>Moves the invitation's expiry to <paramref name="offset"/> from the database's now().</summary>
+    private static async Task ExpireAtAsync(TestIdentity t, string token, TimeSpan offset)
+    {
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE staff_invitations SET expires_at = now() + {offset} WHERE token_hash = {Opaque.Sha256(token)}", Ct);
+    }
+
     /// <summary>Invites as a fresh admin and returns the raw token from the published invite URL.</summary>
     private static async Task<(string Email, string Token)> InvitedAsync(TestIdentity t, string role = StaffRoles.Warehouse, string? email = null)
     {
@@ -40,7 +47,9 @@ public class InvitationTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var (admin, _) = await Seed.StaffAsync(t, StaffRoles.Admin);
 
+        var before = await t.DbNowAsync();
         var response = await InviteAsync(t, AdminCaller(t, admin), " New.Hire@Bloom.Example ", StaffRoles.CatalogManager);
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var envelope = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.StaffInvited));
@@ -56,11 +65,12 @@ public class InvitationTests(Containers containers)
         Assert.Equal("new.hire@bloom.example", invitation.EmailNormalized);
         Assert.Equal(StaffRoles.CatalogManager, invitation.Role);
         Assert.Equal(admin.Id, invitation.InvitedBy);
-        Assert.Equal(t.Clock.GetUtcNow().AddHours(72), invitation.ExpiresAt, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(invitation.ExpiresAt, before.AddHours(72), after.AddHours(72));
         Assert.Null(invitation.AcceptedAt);
 
         var audit = await db.AuditEntries.SingleAsync(Ct);
         Assert.Equal(admin.Id, audit.ActorId);
+        Assert.InRange(audit.OccurredAt, before, after);
         Assert.Equal(StaffRoles.Admin, audit.ActorRole);
         Assert.Equal("identity", audit.Service);
         Assert.Equal("identity.staff-invited", audit.Action);
@@ -118,7 +128,9 @@ public class InvitationTests(Containers containers)
         var (email, token) = await InvitedAsync(t, StaffRoles.Warehouse);
         var (text, secret) = TestTotp.NewSecret();
 
+        var before = await t.DbNowAsync();
         var response = await AcceptAsync(t, token, text, TestTotp.CodeAt(t, secret));
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
@@ -136,7 +148,7 @@ public class InvitationTests(Containers containers)
         Assert.Equal(email, account.EmailDisplay);
         Assert.NotNull(account.PasswordHash);
         Assert.Equal(secret, t.Services.GetRequiredKeyedService<SecretBox>("totp").Open(account.TotpSecretEnc!));
-        Assert.Equal(t.Clock.GetUtcNow(), (await db.StaffInvitations.SingleAsync(Ct)).AcceptedAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange((await db.StaffInvitations.SingleAsync(Ct)).AcceptedAt!.Value, before, after);
 
         // The enrolment code is spent; the next step's code signs in through the normal routes.
         var signIn = await t.SendAsync(HttpMethod.Post, "/api/auth/sign-in", new { email, password = Seed.Password });
@@ -156,7 +168,7 @@ public class InvitationTests(Containers containers)
         Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(t, used, text, TestTotp.CodeAt(t, secret))).StatusCode);
         await (await AcceptAsync(t, used, text, TestTotp.CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
         await (await AcceptAsync(t, Opaque.NewToken(), text, TestTotp.CodeAt(t, secret))).ExpectErrorAsync(400, "INVITATION_INVALID");
-        t.Clock.Advance(TimeSpan.FromHours(72) + TimeSpan.FromSeconds(1));
+        await ExpireAtAsync(t, expired, -TimeSpan.FromSeconds(1)); // the 72 hours have passed
         await (await AcceptAsync(t, expired, text, TestTotp.CodeAt(t, secret))).ExpectErrorAsync(400, "INVITATION_INVALID");
     }
 
@@ -245,9 +257,9 @@ public class InvitationTests(Containers containers)
         var (_, justBefore) = await InvitedAsync(t);
         var (_, atExpiry) = await InvitedAsync(t);
 
-        t.Clock.Advance(TimeSpan.FromHours(72) - TimeSpan.FromMilliseconds(1));
+        await ExpireAtAsync(t, justBefore, TimeSpan.FromMinutes(1)); // not yet 72 hours
+        await ExpireAtAsync(t, atExpiry, TimeSpan.Zero); // the 72 hours are up by the time the accept reads the clock
         Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(t, justBefore, text, TestTotp.CodeAt(t, secret))).StatusCode);
-        t.Clock.Advance(TimeSpan.FromMilliseconds(1));
 
         await (await AcceptAsync(t, atExpiry, text, TestTotp.CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
     }

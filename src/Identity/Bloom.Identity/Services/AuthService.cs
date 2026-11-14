@@ -11,6 +11,7 @@ using Bloom.Identity.Sessions;
 using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -21,7 +22,7 @@ namespace Bloom.Identity.Services;
 /// <summary>LLD 06-identity §3 component <c>Auth</c>.</summary>
 public sealed class AuthService(
     SessionService sessions, IdentityDbContext db, CodeService codes, RegistrationTokens registrationTokens,
-    PasswordPolicy passwordPolicy, PasswordHasher passwordHasher, OutboxWriter outbox, TimeProvider time,
+    PasswordPolicy passwordPolicy, PasswordHasher passwordHasher, OutboxWriter outbox,
     Credentials credentials, AuthStore authStore, IdentityMetrics metrics, GoogleTokenVerifier google) : Auth.AuthBase
 {
     public override async Task<Empty> StartSignUp(StartSignUpRequest request, ServerCallContext context)
@@ -48,7 +49,7 @@ public sealed class AuthService(
         var password = passwordPolicy.Validate(request.Password);
         var name = Inputs.Name(request.Name);
 
-        var now = time.GetUtcNow();
+        var now = await db.Database.NowAsync(context.CancellationToken);
         var account = new Account
         {
             Id = Guid.CreateVersion7(),
@@ -130,7 +131,7 @@ public sealed class AuthService(
 
         if (account is null)
         {
-            var now = time.GetUtcNow();
+            var now = await db.Database.NowAsync(context.CancellationToken);
             // I19: the name claim, else the email's local part, at most 100 scalars.
             var raw = string.IsNullOrWhiteSpace(identity.Name) ? display[..display.LastIndexOf('@')] : identity.Name.Trim();
             account = new Account

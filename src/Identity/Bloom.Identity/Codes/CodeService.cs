@@ -8,6 +8,7 @@ using Bloom.Identity.Errors;
 using Bloom.Identity.Observability;
 using Bloom.Identity.Redis;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -16,7 +17,7 @@ namespace Bloom.Identity.Codes;
 /// <summary>Verification codes (06-identity §6.5, plan I14, I15).</summary>
 public sealed class CodeService(
     IdentityDbContext db, AuthStore store, CodeHasher hasher, [FromKeyedServices("code")] SecretBox box,
-    OutboxWriter outbox, IdentityMetrics metrics, TimeProvider time)
+    OutboxWriter outbox, IdentityMetrics metrics)
 {
     private const int MaxAttempts = 5;
 
@@ -31,7 +32,7 @@ public sealed class CodeService(
     {
         await store.CheckCodeLimitsAsync(targetEmail, purpose);
 
-        var now = time.GetUtcNow();
+        var now = await db.Database.NowAsync();
         var previous = await db.VerificationCodes
             .Where(c => c.Purpose == purpose && c.ConsumedAt == null && (c.TargetEmail == targetEmail || (accountId != null && c.AccountId == accountId)))
             .ToListAsync();
@@ -63,7 +64,7 @@ public sealed class CodeService(
     /// <exception cref="Grpc.Core.RpcException"><c>CODE_INVALID</c></exception>
     public async Task<VerificationCode> VerifyAsync(string purpose, string code, string? targetEmail, Guid? accountId)
     {
-        var now = time.GetUtcNow();
+        var now = await db.Database.NowAsync();
         var row = await db.VerificationCodes
             .Where(c => c.Purpose == purpose && c.ConsumedAt == null && (accountId != null ? c.AccountId == accountId : c.TargetEmail == targetEmail))
             .OrderByDescending(c => c.CreatedAt)
