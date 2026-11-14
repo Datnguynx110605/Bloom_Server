@@ -290,7 +290,6 @@ public class SenderTests(Containers containers)
         t.Resend.Fail(500);
         var notYet = await Seed.JobAsync(t, next: (await t.DbNowAsync()).AddHours(1)); // an app-clock picker would find it due
         var due = await Seed.JobAsync(t);
-        await t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = now() - interval '1 minute' WHERE id = {due}");
 
         var before = await t.DbNowAsync();
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
