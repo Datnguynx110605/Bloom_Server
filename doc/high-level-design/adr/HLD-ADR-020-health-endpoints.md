@@ -13,7 +13,7 @@
 Kubernetes needs a liveness and a readiness endpoint per pod (HLD-ADR-014: API and worker deployments of each service). Only the gateway has them (07-api-gateway §6.6). Several designs already keep a service running through a dependency outage instead of taking it out of rotation: consumers pause during their own database outage (HLD-ADR-019), launch status never touches Postgres (LR-04), catalog reads Postgres when Redis is down, the gateway degrades without Redis.
 
 ## Decision drivers
-- A dependency blip must not pull every pod out of rotation at once (cascading failure).
+- A dependency blip must not pull every pod out of rotation at once (cascading failure, QA-01).
 - Keep the degraded behaviour already designed.
 - One shape for every service.
 - Minimal code.
@@ -60,9 +60,9 @@ Every domain service exposes `/healthz` (200 while the process runs) in API and 
 
 ## Consequences
 - ✅ Every pod has probe targets.
-- ✅ Shutdown drains API traffic.
+- ✅ Shutdown drains API traffic, with the manifests' preStop wait (below).
 - ❌ A stuck worker loop is caught by the existing alerts (outbox age, consumer lag, DLQ, stuck sagas, HLD §9.3), not by a restart.
-- ⚠️ The probes themselves are configured in the Kubernetes manifests (not yet written).
+- ⚠️ The probes are configured in the Kubernetes manifests (not yet written). On SIGTERM the host stops Kestrel first, so a terminating pod refuses new connections rather than answering 503: a full drain needs a preStop wait of a few seconds on API pods, terminationGracePeriodSeconds of at least that wait plus the 30 s shutdown timeout plus a margin, and Linkerd's wait-before-exit checked. Probes use HTTP/1.1 (not an h2c-only port), worker pods need a containerPort for /healthz, and Kestrel binds only after hosted services start, so use a startupProbe.
 
 ## Links
 - [HLD-ADR-014](HLD-ADR-014-deployment.md)

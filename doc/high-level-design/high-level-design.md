@@ -341,7 +341,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 
 - OpenTelemetry in every service for traces, metrics and logs. Trace context travels through gRPC metadata and RabbitMQ message headers, so one trace follows checkout → payment → outbox → consumer.
 - Grafana with Tempo (traces), Prometheus (metrics), Loki (logs) ([HLD-ADR-015](adr/HLD-ADR-015-observability.md)).
-- Key signals: SLO latency and error rate per route (QA-01 … QA-05), waiting-room size and admission rate, outbox backlog and age, consumer lag, DLQ count, sagas stuck past a deadline, payments pending without a webhook.
+- Key signals: SLO latency and error rate per route (QA-01 … QA-05; QA-03 is read from order's checkout_start_seconds, which leaves out the payment call, HLD-ADR-021), waiting-room size and admission rate, outbox backlog and age, consumer lag, DLQ count, sagas stuck past a deadline, payments pending without a webhook.
 - Alerts: any DLQ message; SLO burn; outbox age above threshold; stuck sagas.
 
 ### 9.4 Failure handling summary
