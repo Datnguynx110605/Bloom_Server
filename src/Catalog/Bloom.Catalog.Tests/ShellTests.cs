@@ -112,4 +112,16 @@ public class ShellTests(Containers containers)
         await using var db = t.NewDb();
         Assert.True(await db.Database.CanConnectAsync(TestContext.Current.CancellationToken));
     }
+
+    [Fact]
+    public async Task Health_endpoints_answer_200_in_api_mode() // HLD-ADR-020
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+
+        foreach (var path in new[] { "/healthz", "/readyz" })
+        {
+            using var response = await t.Http.GetAsync(path, TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        }
+    }
 }

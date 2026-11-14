@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-11-12 |
+| **Status** | Approved (2026-11-14) |
+| **Last updated** | 2026-11-14 |
 | **Product design** | [doc/product-design](../product-design/00-overview.md) |
-| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 019) |
+| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 020) |
 
 ## Summary
 
@@ -362,6 +362,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Component | Deployment |
 |---|---|
 | Each domain service | API deployment + worker deployment (same image, different entrypoint) |
+| Health endpoints | Every domain service: `/healthz` (process alive) in API and worker mode; `/readyz` (started, not shutting down) in API mode only. Neither checks dependencies: outages are handled by each service's degraded behaviour ([HLD-ADR-020](adr/HLD-ADR-020-health-endpoints.md)). The gateway's endpoints: [07-api-gateway §6.6](../low-level-design/07-api-gateway.md#66-health). |
 | api-gateway | Deployment, autoscaled horizontally |
 | launch API | Autoscaled horizontally (launch hot path) |
 | Workers | Scaled on RabbitMQ queue length by KEDA |
@@ -400,6 +401,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | [HLD-ADR-017](adr/HLD-ADR-017-postgres-full-text-search.md) | Catalog search on PostgreSQL full-text |
 | [HLD-ADR-018](adr/HLD-ADR-018-external-providers.md) | Stripe, Shippo, Resend behind interfaces |
 | [HLD-ADR-019](adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage |
+| [HLD-ADR-020](adr/HLD-ADR-020-health-endpoints.md) | Health endpoints: liveness everywhere, started-only readiness on API pods |
 
 ## 11. Risks
 

@@ -125,4 +125,16 @@ public class ShellTests(Containers containers)
         var user = await db.Database.SqlQuery<string>($"SELECT current_user AS \"Value\"").SingleAsync(TestContext.Current.CancellationToken);
         Assert.Equal("inventory_app", user);
     }
+
+    [Fact]
+    public async Task Health_endpoints_answer_200_in_api_mode() // HLD-ADR-020
+    {
+        await using var t = await TestInventory.StartAsync(containers);
+
+        foreach (var path in new[] { "/healthz", "/readyz" })
+        {
+            using var response = await t.Http.GetAsync(path, TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        }
+    }
 }

@@ -100,6 +100,7 @@ public static class IdentityApp
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
             app.MapGet("/.well-known/jwks.json", (SigningKeys keys) => Results.Text(keys.JwksJson, "application/json"));
         }
+        app.MapBloomHealth(api); // HLD-ADR-020
         return app;
     }
 }

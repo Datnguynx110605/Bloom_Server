@@ -74,6 +74,7 @@ public static class PaymentApp
             app.MapStripeWebhook(); // plain HTTP: the signature needs the raw body (04-payment §3)
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
+        app.MapBloomHealth(api); // HLD-ADR-020
         return app;
     }
 }

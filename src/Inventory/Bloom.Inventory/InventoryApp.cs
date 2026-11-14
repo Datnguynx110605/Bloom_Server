@@ -80,6 +80,7 @@ public static class InventoryApp
             app.MapGrpcService<PackingService>(); // internal, like StockService
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
+        app.MapBloomHealth(api); // HLD-ADR-020
         return app;
     }
 }

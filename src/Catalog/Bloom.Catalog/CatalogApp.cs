@@ -105,6 +105,7 @@ public static class CatalogApp
             app.MapGrpcService<InternalService>();
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
+        app.MapBloomHealth(api); // HLD-ADR-020
         return app;
     }
 }

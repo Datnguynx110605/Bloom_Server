@@ -6,9 +6,11 @@ using Bloom.Shared.Messaging;
 using Bloom.Shared.Observability;
 using Bloom.Shared.Retention;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Bloom.Shared;
 
@@ -80,6 +82,19 @@ public static partial class BloomServiceCollectionExtensions
     public static IEndpointRouteBuilder MapBloomDeadLetterAdmin(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGrpcService<DeadLetterAdminService>();
+        return endpoints;
+    }
+
+    /// <summary><c>GET /healthz</c> (process alive) in both modes. In API mode also <c>GET /readyz</c>: 200 once the host has started, 503 before that and from the moment shutdown begins.
+    /// No dependency is checked (HLD-ADR-020, HLD §9.5).</summary>
+    public static IEndpointRouteBuilder MapBloomHealth(this IEndpointRouteBuilder endpoints, bool api)
+    {
+        endpoints.MapGet("/healthz", () => Results.Ok());
+        if (api)
+            endpoints.MapGet("/readyz", (IHostApplicationLifetime lifetime) =>
+                lifetime.ApplicationStarted.IsCancellationRequested && !lifetime.ApplicationStopping.IsCancellationRequested
+                    ? Results.Ok()
+                    : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
         return endpoints;
     }
 }
