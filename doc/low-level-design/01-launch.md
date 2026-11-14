@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-11-12 |
+| **Status** | Approved (2026-11-14) |
+| **Last updated** | 2026-11-14 |
 | **Product rules** | [04-launch](../product-design/04-launch.md) (LCH-R01 … R28), BI-01, BI-03 |
 | **HLD** | [high-level-design.md §5, §8.1](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-012 |
 | **Decision records** | [LLD-ADR-012](adr/LLD-ADR-012-admission-paced-per-launch.md) |
@@ -264,11 +264,11 @@ The token is signed when the customer reads it (§6.3), not stored, so a worker 
 4. `INSERT INTO consumed_passes …`. Conflict → `PASS_ALREADY_USED`.
 5. For each product, **in ascending `product_id` order**: `INSERT INTO limit_usage … ON CONFLICT DO NOTHING`, then
    `UPDATE limit_usage SET held = held + @n WHERE launch_id = @L AND account_id = @A AND product_id = @P AND held + sold + @n <= @limit`. 0 rows → `ROLLBACK`, `LIMIT_EXCEEDED`.
-6. For each SKU, **in ascending `sku_id` order**: `UPDATE launch_skus SET held = held + @q WHERE launch_id = @L AND sku_id = @S AND held + sold + @q <= allocation`. 0 rows → `ROLLBACK`, `SOLD_OUT`.
-7. Insert `holds` (`held`) and `hold_lines`.
+6. Insert `holds` (`held`) and `hold_lines`.
+7. For each SKU, **in ascending `sku_id` order**: `UPDATE launch_skus SET held = held + @q WHERE launch_id = @L AND sku_id = @S AND held + sold + @q <= allocation`. 0 rows → `ROLLBACK`, `SOLD_OUT`.
 8. `COMMIT`. Then best effort: `ZREM wr:{L}:passes pid`, `DEL wr:{L}:pass:{A}`.
 
-A failed hold rolls back step 4, so the pass stays usable (LR-03). Fixed lock order (the launch row, then products, then SKUs, each ascending) prevents deadlocks between concurrent holds.
+A failed hold rolls back step 4, so the pass stays usable (LR-03). Fixed lock order (the launch row, then products, then SKUs, each ascending) prevents deadlocks between concurrent holds. The SKU updates come last, right before `COMMIT`: `launch_skus` rows are the hot rows at launch peak (R-02), so their locks are held for the shortest time.
 
 ### 6.6 Settlement
 
@@ -301,7 +301,7 @@ Every admin change uses optimistic locking (`version`), is audited (`identity.st
 
 | Risk | Protection |
 |---|---|
-| Overselling allocation | Guarded update (§6.5 step 6) + `CHECK` constraint |
+| Overselling allocation | Guarded update (§6.5 step 7) + `CHECK` constraint |
 | Exceeding the limit | Guarded update on `limit_usage` (§6.5 step 5) |
 | Pass reuse | Primary key on `consumed_passes.pass_id` in the hold transaction |
 | Two admission workers | Transaction-level advisory lock per launch, plus the tick key `wr:{L}:tick` (§6.4 step 7, [LLD-ADR-012](adr/LLD-ADR-012-admission-paced-per-launch.md)) |
