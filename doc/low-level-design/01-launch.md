@@ -27,7 +27,7 @@
 | LR-02 | `sold + held ≤ purchase_limit` for every (account, launch product), always. | BI-03, LCH-R11, R12 |
 | LR-03 | A pass enables exactly one successful hold; failed attempts don't consume it. | LCH-R22 |
 | LR-04 | Waiting-room status p95 < 50 ms at 20k req/s; never touches Postgres. | QA-04 |
-| LR-05 | Hold p95 within the checkout budget (checkout start p95 < 300 ms overall). | QA-03 |
+| LR-05 | Hold p95 within the checkout budget (checkout start p95 < 300 ms, payment call excluded, HLD-ADR-021). | QA-03 |
 | LR-06 | Admission never exceeds the configured rate, nor outstanding passes beyond units available. | HLD-ADR-012 |
 | LR-07 | `launch` never releases a hold on its own; only `order` does. | Owner decision |
 
