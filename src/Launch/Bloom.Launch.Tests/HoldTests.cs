@@ -183,6 +183,7 @@ public class HoldTests(Containers containers)
         var info = await Rpc.FailsAsync(Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), token, (launch.Skus[0], 1))), LaunchErrors.SoldOut);
         Assert.Equal(launch.Skus[0].ToString(), info.Metadata["skuId"]);
         Assert.Equal(0, await ConsumedAsync(t, launch.Id)); // §8: the pass is still unused
+        Assert.Equal(0, await HoldsAsync(t, launch.Id)); // the hold rows are inserted before the SKU updates (§6.5 step 6), so the rollback must take them too
 
         await Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), token, (launch.Skus[1], 1)));
 
@@ -373,7 +374,7 @@ public class HoldTests(Containers containers)
         var account = Guid.NewGuid();
         var sku = launch.Skus[0];
 
-        // A side connection holds the SKU row, so the hold stops at §6.5 step 6, after it took the launches row FOR SHARE in step 3.
+        // A side connection holds the SKU row, so the hold stops at §6.5 step 7, after inserting the hold rows (step 6) and after it took the launches row FOR SHARE in step 3.
         await using var side = new NpgsqlConnection(t.ConnectionString);
         await side.OpenAsync(Ct);
         await using var sideTx = await side.BeginTransactionAsync(Ct);

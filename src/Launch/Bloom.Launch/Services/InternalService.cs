@@ -100,7 +100,21 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                         ("productId", p.Product.ToString("D")), ("remaining", Math.Max(0, p.Limit - used).ToString()));
                 }
 
-                // Step 6.
+                // Step 6. The unique order_id makes a concurrent first call win: start again from step 2 (R12).
+                var holdId = Guid.CreateVersion7();
+                try
+                {
+                    await db.Database.ExecuteSqlAsync(
+                        $"INSERT INTO holds (id, order_id, launch_id, account_id, pass_id, status, version, created_at, updated_at) VALUES ({holdId}, {orderId}, {launchId}, {caller.UserId}, {claims.PassId}, {HoldStatuses.Held}, 0, now(), now())", ct);
+                    foreach (var l in lines)
+                        await db.Database.ExecuteSqlAsync($"INSERT INTO hold_lines (hold_id, sku_id, product_id, quantity) VALUES ({holdId}, {l.Sku}, {found[l.Sku].ProductId}, {l.Qty})", ct);
+                }
+                catch (PostgresException e) when (attempt == 0 && e.SqlState == PostgresErrorCodes.UniqueViolation && e.ConstraintName == "ux_holds_order_id")
+                {
+                    continue; // the transaction is rolled back on dispose
+                }
+
+                // Step 7. Last before COMMIT: the launch_skus rows are the hot rows at launch peak (R-02), so they stay locked for the shortest time.
                 var available = new List<(Guid Sku, long Left)>();
                 foreach (var l in lines)
                 {
@@ -114,21 +128,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                     }
                     available.Add((l.Sku, left[0]));
                 }
-
-                // Step 7. The unique order_id makes a concurrent first call win: start again from step 2 (R12).
-                var holdId = Guid.CreateVersion7();
-                try
-                {
-                    await db.Database.ExecuteSqlAsync(
-                        $"INSERT INTO holds (id, order_id, launch_id, account_id, pass_id, status, version, created_at, updated_at) VALUES ({holdId}, {orderId}, {launchId}, {caller.UserId}, {claims.PassId}, {HoldStatuses.Held}, 0, now(), now())", ct);
-                    foreach (var l in lines)
-                        await db.Database.ExecuteSqlAsync($"INSERT INTO hold_lines (hold_id, sku_id, product_id, quantity) VALUES ({holdId}, {l.Sku}, {found[l.Sku].ProductId}, {l.Qty})", ct);
-                    await tx.CommitAsync(ct);
-                }
-                catch (PostgresException e) when (attempt == 0 && e.SqlState == PostgresErrorCodes.UniqueViolation && e.ConstraintName == "ux_holds_order_id")
-                {
-                    continue; // the transaction is rolled back on dispose
-                }
+                await tx.CommitAsync(ct);
 
                 // Step 8, after commit.
                 metrics.Hold(launchId, "ok");
