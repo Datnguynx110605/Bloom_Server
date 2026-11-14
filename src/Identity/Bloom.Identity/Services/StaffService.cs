@@ -65,6 +65,9 @@ public sealed class StaffService(
         var id = Guid.CreateVersion7(); // assigned up front for the replay mark
         await VerifyFirstCodeAsync(secret, request.TotpCode, id);
 
+        // Claiming the invitation and creating the account commit together.
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        now = await db.Database.NowAsync(ct); // the transaction's now(): the claim and the stamps below use it (GC3)
         var account = new Account
         {
             Id = id,
@@ -79,8 +82,6 @@ public sealed class StaffService(
             CreatedAt = now,
             UpdatedAt = now,
         };
-        // Claiming the invitation and creating the account commit together.
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
         await ClaimInvitationAsync(invitation, now, ct);
         db.Accounts.Add(account);
         var session = await sessions.StartAsync(account);
@@ -93,13 +94,13 @@ public sealed class StaffService(
     private async Task<TokenResponse> ReenrolAsync(AcceptStaffInvitationRequest request, StaffInvitation invitation, Account account, ServerCallContext context)
     {
         var ct = context.CancellationToken;
-        var now = await db.Database.NowAsync(ct);
         var secret = ParseSecret(request.TotpSecret);
         await credentials.CheckAccountPasswordAsync(account, request.CurrentPassword); // may save a rehash, so before anything is staged
         if (account.Status != AccountStatuses.Active) throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "Wrong email or password.");
         await VerifyFirstCodeAsync(secret, request.TotpCode, account.Id);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         await ClaimInvitationAsync(invitation, now, ct);
         account.TotpSecretEnc = totpBox.Seal(secret);
         var session = await sessions.StartAsync(account);

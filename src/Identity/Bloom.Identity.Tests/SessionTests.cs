@@ -122,8 +122,9 @@ public class SessionTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var account = await Seed.CustomerAsync(t);
         var session = await Seed.SessionAsync(t, account);
+        await using (var db = t.NewDb()) // the sign-in was 20 minutes ago, so auth_time must differ from the new token's iat
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE refresh_tokens SET auth_time = now() - interval '20 minutes'", Ct);
         var authTime = (await RowAsync(t, session.RefreshToken)).AuthTime.ToUnixTimeSeconds();
-        t.Clock.Advance(TimeSpan.FromMinutes(20));
 
         var before = await t.DbNowAsync();
         var response = await RefreshAsync(t, session.RefreshToken);
@@ -204,7 +205,6 @@ public class SessionTests(Containers containers)
         await Seed.SessionAsync(t, account);
         var caller = TestCaller.Customer(account.Id, t.Clock.GetUtcNow());
         Assert.Equal(HttpStatusCode.OK, (await t.SendAsync(HttpMethod.Post, "/api/me/sign-out-everywhere", caller: caller)).StatusCode);
-        t.Clock.Advance(TimeSpan.FromMinutes(1));
         var current = await Seed.SessionAsync(t, account);
 
         var stale = await RefreshAsync(t, oldDevice.RefreshToken);
