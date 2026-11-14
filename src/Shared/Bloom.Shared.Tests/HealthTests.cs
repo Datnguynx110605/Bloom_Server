@@ -1,6 +1,8 @@
 using System.Net;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,8 +21,12 @@ public class HealthTests
         return app;
     }
 
-    private static async Task<HttpResponseMessage> GetAsync(WebApplication app, string path) =>
-        await app.GetTestClient().GetAsync(path, TestContext.Current.CancellationToken);
+    private static async Task<(HttpStatusCode Status, string Body)> GetAsync(WebApplication app, string path)
+    {
+        using var client = app.GetTestClient();
+        using var response = await client.GetAsync(path, TestContext.Current.CancellationToken);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
 
     [Theory, InlineData(true), InlineData(false)]
     public async Task Healthz_is_200_in_both_modes_and_empty(bool api)
@@ -28,22 +34,10 @@ public class HealthTests
         await using var app = Build(api);
         await app.StartAsync(TestContext.Current.CancellationToken);
 
-        using var response = await GetAsync(app, "/healthz");
+        var (status, body) = await GetAsync(app, "/healthz");
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task Healthz_stays_200_while_stopping()
-    {
-        await using var app = Build(api: true);
-        await app.StartAsync(TestContext.Current.CancellationToken);
-        app.Services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
-
-        using var response = await GetAsync(app, "/healthz");
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal("", body);
     }
 
     [Fact]
@@ -51,14 +45,26 @@ public class HealthTests
     {
         await using var app = Build(api: true);
         await app.StartAsync(TestContext.Current.CancellationToken);
-        using (var started = await GetAsync(app, "/readyz"))
-            Assert.Equal(HttpStatusCode.OK, started.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await GetAsync(app, "/readyz")).Status);
 
         // The host is started, not run: this cancels ApplicationStopping and nothing else, so the request below is deterministic.
         app.Services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
 
-        using var stopping = await GetAsync(app, "/readyz");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, stopping.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await GetAsync(app, "/readyz")).Status);
+        Assert.Equal(HttpStatusCode.OK, (await GetAsync(app, "/healthz")).Status); // liveness is unaffected by shutdown
+    }
+
+    [Fact]
+    public async Task Readyz_is_503_before_the_host_has_started()
+    {
+        await using var app = Build(api: true);
+        var readyz = ((IEndpointRouteBuilder)app).DataSources.SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
+            .Single(e => e.RoutePattern.RawText == "/readyz");
+        var context = new DefaultHttpContext { RequestServices = app.Services };
+
+        await readyz.RequestDelegate!(context);
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, context.Response.StatusCode);
     }
 
     [Fact]
@@ -67,8 +73,6 @@ public class HealthTests
         await using var app = Build(api: false);
         await app.StartAsync(TestContext.Current.CancellationToken);
 
-        using var response = await GetAsync(app, "/readyz");
-
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await GetAsync(app, "/readyz")).Status);
     }
 }
