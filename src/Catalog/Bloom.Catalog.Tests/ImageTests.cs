@@ -226,4 +226,20 @@ public class ImageTests(Containers containers)
         Assert.Equal([ready], (await db.ProductImages.ToListAsync(TestContext.Current.CancellationToken)).Select(i => i.Id.ToString()));
         Assert.DoesNotContain(pending, (await db.ProductImages.ToListAsync(TestContext.Current.CancellationToken)).Select(i => i.Id.ToString()));
     }
+
+    [Fact]
+    public async Task Cleanup_cutoff_follows_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestCatalog.StartAsync(containers);
+        var (product, _) = await Seed.ProductAsync(t, (await Seed.CategoryAsync(t)).Id);
+        var (pending, pendingKey) = await UploadAsync(t, product.Id); // created just now by the database clock
+        var job = ActivatorUtilities.CreateInstance<ImageCleanupJob>(t.Services);
+
+        t.Clock.Advance(TimeSpan.FromDays(2)); // the app clock is far ahead of the database: an app-clock cutoff would find the image stale
+
+        Assert.Equal(0, await job.RunOnceAsync(TestContext.Current.CancellationToken));
+        Assert.True(await ObjectExistsAsync(t, pendingKey));
+        await using var db = t.NewDb();
+        Assert.Contains(pending, (await db.ProductImages.ToListAsync(TestContext.Current.CancellationToken)).Select(i => i.Id.ToString()));
+    }
 }
