@@ -240,7 +240,7 @@ public class ConsumerTests(Containers containers)
         var first = Guid.NewGuid();
         await Consume.Async(t, OrderMessages.Paid, Payload(OrderMessages.Paid, account), first);
 
-        await Consume.Async(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "New@Bloom.test", "Ada"), occurredAt: t.Clock.GetUtcNow().UtcDateTime.AddMinutes(1));
+        await Consume.Async(t, IdentityMessages.ContactChanged, new ContactChangedV1(account, "New@Bloom.test", "Ada"), occurredAt: (await t.DbNowAsync()).UtcDateTime.AddMinutes(1));
         var second = Guid.NewGuid();
         await Consume.Async(t, FulfillmentMessages.ShipmentShipped, Payload(FulfillmentMessages.ShipmentShipped, account), second);
 
