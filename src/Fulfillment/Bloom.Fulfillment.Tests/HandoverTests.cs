@@ -190,11 +190,12 @@ public class HandoverTests(Containers containers)
 
     private static async Task<Guid> SeedShipmentAsync(TestFulfillment t, string direction, string tracking)
     {
+        var now = await t.DbNowAsync();
         await using var db = t.NewDb();
         var shipment = new Shipment
         {
             Id = Guid.NewGuid(), OrderId = Guid.NewGuid(), ReturnRequestId = Guid.NewGuid(), Direction = direction, Service = ShippingOptions.Standard,
-            Status = ShipmentStatuses.LabelReady, TrackingNumber = tracking, NextAttemptAt = t.Clock.GetUtcNow(), CreatedAt = t.Clock.GetUtcNow(),
+            Status = ShipmentStatuses.LabelReady, TrackingNumber = tracking, NextAttemptAt = now, CreatedAt = now,
         };
         db.Shipments.Add(shipment);
         await db.SaveChangesAsync(Ct);

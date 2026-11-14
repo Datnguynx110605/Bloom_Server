@@ -450,12 +450,13 @@ public class TrackingTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var id = Guid.NewGuid();
         var orderId = Guid.NewGuid();
+        var now = await t.DbNowAsync();
         await using (var db = t.NewDb())
         {
             db.Shipments.Add(new Shipment
             {
                 Id = id, OrderId = orderId, ReturnRequestId = Guid.NewGuid(), Direction = Directions.ShipBack, Service = ShippingOptions.Standard, Status = ShipmentStatuses.HandedOver,
-                TrackingNumber = "SB1", HandedOverAt = t.Clock.GetUtcNow(), NextAttemptAt = t.Clock.GetUtcNow(), CreatedAt = t.Clock.GetUtcNow(),
+                TrackingNumber = "SB1", HandedOverAt = now, NextAttemptAt = now, CreatedAt = now,
             });
             await db.SaveChangesAsync(Ct);
         }

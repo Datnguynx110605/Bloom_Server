@@ -169,6 +169,7 @@ public class ReadyToFulfillTests(Containers containers)
         await Seed.ReadyAsync(t, other);
         var otherId = (await Seed.TaskAsync(t, other.OrderId))!.Id;
         var ids = new Dictionary<string, Guid>();
+        var now = await t.DbNowAsync();
         await using (var db = t.NewDb())
         {
             foreach (var (status, owner) in new[] { ("label_pending", taskId), ("label_ready", taskId), ("handed_over", taskId), ("label_ready", otherId) })
@@ -178,7 +179,7 @@ public class ReadyToFulfillTests(Containers containers)
                 db.Shipments.Add(new Shipment
                 {
                     Id = id, PackTaskId = owner, OrderId = owner == taskId ? ready.OrderId : other.OrderId, Direction = Directions.Outbound, Service = ShippingOptions.Standard,
-                    Status = status, NextAttemptAt = t.Clock.GetUtcNow(), CreatedAt = t.Clock.GetUtcNow(),
+                    Status = status, NextAttemptAt = now, CreatedAt = now,
                 });
             }
             await db.SaveChangesAsync(Ct);
