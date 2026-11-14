@@ -247,21 +247,13 @@ public sealed class CheckoutService(
     /// </summary>
     private async Task<StartCheckoutResponse> PayAsync(Guid orderId, CancellationToken ct)
     {
-        // One round trip: the order, its past-the-deadline flag and its lines. DateTimeOffset.UtcNow translates to the database's now() (null deadline_at: false).
-        var read = await db.Orders.AsNoTracking().Where(o => o.Id == orderId)
-            .Select(o => new
-            {
-                Order = o,
-                Expired = o.DeadlineAt <= DateTimeOffset.UtcNow,
-                Lines = db.OrderLines.Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToList(),
-            }).SingleAsync(ct);
+        var read = await PaymentRead(db, orderId).SingleAsync(ct);
         var order = read.Order;
         if (order.Status == OrderStatuses.Cancelled || (order.Status == OrderStatuses.PendingPayment && read.Expired))
             throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
         if (order.Status != OrderStatuses.PendingPayment) return Response(order, "");
 
-        var lines = read.Lines;
-        var display = lines.Select(l => new DisplayLine { Name = $"{l.Name} × {l.Quantity}", AmountCents = l.PaidCents }).ToList();
+        var display = read.Lines.Select(l => new DisplayLine { Name = $"{l.Name} × {l.Quantity}", AmountCents = l.PaidCents }).ToList();
         if (order.ShippingCents > 0) display.Add(new DisplayLine { Name = "Express shipping", AmountCents = order.ShippingCents }); // they sum to the total (spec §7)
 
         CreatePaymentResponse payment;
@@ -280,6 +272,13 @@ public sealed class CheckoutService(
         await db.Orders.Where(o => o.Id == orderId && o.PaymentId == null).ExecuteUpdateAsync(s => s.SetProperty(o => o.PaymentId, paymentId), ct);
         return Response(order, payment.CheckoutUrl);
     }
+
+    internal sealed record PaymentReadRow(OrderRow Order, bool Expired, List<OrderLine> Lines);
+
+    /// <summary>One round trip: the order, its past-the-deadline flag and its lines. <c>DateTimeOffset.UtcNow</c> translates to the database's <c>now()</c> (R9; a null <c>deadline_at</c> is not expired).</summary>
+    internal static IQueryable<PaymentReadRow> PaymentRead(OrderDbContext db, Guid orderId) =>
+        db.Orders.AsNoTracking().Where(o => o.Id == orderId).Select(o => new PaymentReadRow(
+            o, o.DeadlineAt <= DateTimeOffset.UtcNow, db.OrderLines.Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToList()));
 
     private static StartCheckoutResponse Response(OrderRow order, string paymentUrl) => new()
     {

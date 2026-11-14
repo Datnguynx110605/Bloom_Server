@@ -4,6 +4,7 @@ using Bloom.Order.Api;
 using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Order.Domain;
+using Bloom.Order.Services;
 using Bloom.Payment.Contracts;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -827,5 +828,15 @@ public class CheckoutTests(Containers containers)
         await db.Database.ExecuteSqlAsync($"UPDATE coupons SET expires_at = NULL, starts_at = now() + interval '1 hour' WHERE id = {id}", Ct);
         Assert.Equal("COUPON_NOT_STARTED", await HoldReasonAsync());
         Assert.Equal(0, (await db.Coupons.AsNoTracking().SingleAsync(Ct)).UsesCount); // a refused hold leaves no count
+    }
+
+    [Fact]
+    public async Task The_payment_read_is_one_statement_that_compares_the_deadline_with_the_database_clock()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        await using var db = t.NewDb();
+        var sql = CheckoutService.PaymentRead(db, Guid.NewGuid()).ToQueryString();
+        Assert.Contains("o.deadline_at <= now()", sql); // a client-side time would be a parameter here (R9, D21)
+        Assert.Contains("order_lines", sql); // the lines come in the same statement
     }
 }

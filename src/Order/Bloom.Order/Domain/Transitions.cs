@@ -45,8 +45,8 @@ public sealed class Transitions(OrderDbContext db, OutboxWriter outbox)
 
     /// <summary>
     /// The guarded update and history row of <see cref="MoveAsync"/>, for a caller that already holds the row <c>FOR UPDATE</c> in the open transaction and has read the order's
-    /// <paramref name="from"/> status and the database <paramref name="now"/> under that lock. The lock is what keeps the history row's <c>from_status</c> exact: without it, use
-    /// <see cref="MoveAsync"/>. Returns false when the guarded update affects no row.
+    /// <paramref name="from"/> status and the database <paramref name="now"/> under that lock. The caller's lock is what guarantees the guarded move cannot fail and that
+    /// <paramref name="now"/> is the database time read under that same lock; without it, use <see cref="MoveAsync"/>. Returns false when the guarded update affects no row.
     /// </summary>
     public async Task<bool> MoveLockedAsync(Guid orderId, string from, string to, Actor actor, string? reason, DateTimeOffset now, Action<UpdateSettersBuilder<OrderRow>>? extra, CancellationToken ct)
     {
