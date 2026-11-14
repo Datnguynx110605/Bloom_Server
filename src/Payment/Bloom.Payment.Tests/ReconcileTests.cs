@@ -301,7 +301,7 @@ public class ReconcileTests(Containers containers)
         var (_, paymentId, _) = await Seed.PaidAsync(t);
         await using (var db = t.NewDb())
         {
-            var now = t.Clock.GetUtcNow();
+            var now = await t.DbNowAsync();
             db.Disputes.AddRange(new[] { "needs_response", "under_review", "won" }.Select((status, i) => new DisputeRow
             {
                 Id = Guid.NewGuid(), PaymentId = paymentId, StripeDisputeId = $"dp_{i}", Status = status, AmountCents = 100, Reason = "general", OpenedAt = now, UpdatedAt = now,
@@ -366,7 +366,7 @@ public class ReconcileTests(Containers containers)
         var ghost = Guid.NewGuid();
         await using (var db = t.NewDb())
         {
-            var now = t.Clock.GetUtcNow();
+            var now = NoonOf(t); // the nightly comparison reads a refund by its day, so pin it like PinBloomAsync
             db.Refunds.Add(new RefundRow
             {
                 Id = ghost, PaymentId = paymentId, OrderId = Guid.NewGuid(), AmountCents = 100, Reason = "return", Status = RefundStatuses.Succeeded,
@@ -404,7 +404,7 @@ public class ReconcileTests(Containers containers)
         var ghost = Guid.NewGuid();
         await using (var db = t.NewDb())
         {
-            var now = t.Clock.GetUtcNow();
+            var now = NoonOf(t); // the nightly comparison reads a refund by its day, so pin it like PinBloomAsync
             db.Refunds.Add(new RefundRow
             {
                 Id = ghost, PaymentId = paymentId, OrderId = Guid.NewGuid(), AmountCents = 100, Reason = "return", Status = RefundStatuses.Succeeded,

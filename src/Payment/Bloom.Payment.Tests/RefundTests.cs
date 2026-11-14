@@ -563,7 +563,6 @@ public class RefundTests(Containers containers)
         Assert.Equal(1, t.ErrorLogs);
         Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
 
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         await t.RunExecutorAsync(); // a later pass (or a restart) must not create again
 
         Assert.Single(Creates(t));
@@ -580,7 +579,6 @@ public class RefundTests(Containers containers)
         t.Stripe.Fail(Refunds, 404, "resource_missing");
 
         await t.RunExecutorAsync();
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         await t.RunExecutorAsync();
 
         var row = await t.RefundAsync(command.RefundId);
