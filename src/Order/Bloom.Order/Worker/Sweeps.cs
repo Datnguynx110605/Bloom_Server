@@ -69,7 +69,7 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Orde
             await using var tx = await db.Database.BeginTransactionAsync(ct);
             var skip = failed.ToArray();
             var batch = await db.Orders.FromSql($"""
-                SELECT * FROM orders WHERE status = {status} AND deadline_at < {clock.GetUtcNow()} AND id <> ALL({skip}) ORDER BY deadline_at LIMIT {BatchSize} FOR UPDATE SKIP LOCKED
+                SELECT * FROM orders WHERE status = {status} AND deadline_at < now() AND id <> ALL({skip}) ORDER BY deadline_at LIMIT {BatchSize} FOR UPDATE SKIP LOCKED
                 """).AsNoTracking().ToListAsync(ct);
             var done = 0;
             foreach (var order in batch)

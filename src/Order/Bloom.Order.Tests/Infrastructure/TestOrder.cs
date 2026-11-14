@@ -3,6 +3,7 @@ using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Order.Observability;
 using Bloom.Order.Worker;
+using Bloom.Shared.Persistence;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -127,6 +128,13 @@ public sealed class TestOrder : IAsyncDisposable
 
     /// <summary>The sweeps on the host's scopes, clock and metrics; tests drive them through <c>Run…Async</c> (plan R16), the api host does not run them.</summary>
     public Sweeps Sweeps() => new(Services.GetRequiredService<IServiceScopeFactory>(), Clock, Services.GetRequiredService<OrderMetrics>(), Services.GetRequiredService<ILogger<Sweeps>>());
+
+    /// <summary>The database's <c>now()</c>: the clock stored timestamps and time checks use, which the fake clock does not drive.</summary>
+    public async Task<DateTimeOffset> DbNowAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.NowAsync(TestContext.Current.CancellationToken);
+    }
 
     private static OrderDbContext NewDb(string connectionString) =>
         new(new DbContextOptionsBuilder<OrderDbContext>().UseNpgsql(connectionString).Options);

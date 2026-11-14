@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Order.Domain;
 
 /// <summary>Order sagas (plan R12, spec §7): the saga row and the commands it waits for go out in the caller's transaction (OR-02).</summary>
-public sealed class Sagas(OrderDbContext db, OutboxWriter outbox, TimeProvider clock)
+public sealed class Sagas(OrderDbContext db, OutboxWriter outbox)
 {
     /// <summary>
     /// Inserts the saga <paramref name="type"/> of the order (<c>ON CONFLICT DO NOTHING</c>) and sends the commands of R12 for the order's <paramref name="kind"/>.
@@ -19,7 +19,7 @@ public sealed class Sagas(OrderDbContext db, OutboxWriter outbox, TimeProvider c
     {
         var steps = StepsFor(type, kind);
         var inserted = await db.Database.ExecuteSqlAsync($"""
-            INSERT INTO order_sagas (order_id, type, pending_steps, started_at) VALUES ({orderId}, {type}, {steps}, {clock.GetUtcNow()})
+            INSERT INTO order_sagas (order_id, type, pending_steps, started_at) VALUES ({orderId}, {type}, {steps}, now())
             ON CONFLICT DO NOTHING
             """, ct);
         if (inserted == 0) return false;
@@ -47,7 +47,7 @@ public sealed class Sagas(OrderDbContext db, OutboxWriter outbox, TimeProvider c
         await db.Database.ExecuteSqlAsync($"""
             UPDATE order_sagas
             SET pending_steps = ARRAY(SELECT p FROM unnest(pending_steps) AS p WHERE p <> ALL({steps})),
-                completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM unnest(pending_steps) AS p WHERE p <> ALL({steps})) THEN {clock.GetUtcNow()} ELSE completed_at END
+                completed_at = CASE WHEN NOT EXISTS (SELECT 1 FROM unnest(pending_steps) AS p WHERE p <> ALL({steps})) THEN now() ELSE completed_at END
             WHERE order_id = {orderId} AND completed_at IS NULL AND pending_steps && {steps}
             """, ct);
 

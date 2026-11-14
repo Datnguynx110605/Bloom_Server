@@ -36,7 +36,7 @@ public class AccountTests(Containers containers)
     {
         await using var t = await TestOrder.StartAsync(containers);
         var (account, other) = (Guid.NewGuid(), Guid.NewGuid());
-        var first = await OrderAsync(t, account, OrderStatuses.Delivered, deliveredAt: t.Clock.GetUtcNow().AddDays(-30));
+        var first = await OrderAsync(t, account, OrderStatuses.Delivered, deliveredAt: (await t.DbNowAsync()).AddDays(-30));
         var second = await OrderAsync(t, account, OrderStatuses.Cancelled);
         var kept = await OrderAsync(t, other, OrderStatuses.Paid);
         var device = Seed.Device(t.Upstreams);
@@ -67,7 +67,7 @@ public class AccountTests(Containers containers)
     public async Task O21_delivery_10_days_ago_is_unsettled()
     {
         await using var t = await TestOrder.StartAsync(containers);
-        var now = t.Clock.GetUtcNow();
+        var now = await t.DbNowAsync();
         var (recent, old, edge) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         await OrderAsync(t, recent, OrderStatuses.Delivered, deliveredAt: now.AddDays(-10));
         await OrderAsync(t, old, OrderStatuses.Delivered, deliveredAt: now.AddDays(-15));

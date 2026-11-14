@@ -158,7 +158,7 @@ public class WorkerTests(Containers containers)
         await PayAsync(api, launchOrder);
         await CancelAsync(api, account, launchOrder); // launch cancellation: release-allocation-hold, release-reservation and refund
         var (_, expiring) = await PendingAsync(api);
-        api.Clock.Advance(TimeSpan.FromMinutes(16));
+        await Seed.AgeDeadlinesAsync(api, TimeSpan.FromMinutes(16));
         Assert.True(await api.Sweeps().RunExpiryAsync(Ct) >= 1); // expiry: release-reservation and cancel-payment
 
         Assert.Equal(launchOrder, (await NextAsync(channel, releaseHold, "release-allocation-hold on launch.commands")).GetPayload<ReleaseAllocationHoldV1>().OrderId);
@@ -206,7 +206,7 @@ public class WorkerTests(Containers containers)
         await PayAsync(api, paid);
         var (_, pending) = await PendingAsync(api);
         var (_, expired) = await PendingAsync(api);
-        var now = worker.Clock.GetUtcNow();
+        var now = await api.DbNowAsync(); // the monitor's cutoff is the database clock
         await using (var db = api.NewDb())
         {
             db.Set<OrderSaga>().Add(new OrderSaga { OrderId = expired, Type = SagaTypes.Expiry, PendingSteps = [SagaSteps.InventoryRelease], StartedAt = now.AddMinutes(-29) });
@@ -223,7 +223,7 @@ public class WorkerTests(Containers containers)
         Assert.DoesNotContain(worker.Logs.Entries, e => e.StartsWith("[Error]"));
 
         await using (var db = api.NewDb())
-            await db.Set<OrderSaga>().ExecuteUpdateAsync(s => s.SetProperty(x => x.StartedAt, now.AddMinutes(-31)), Ct); // the clock stays put: moving it would also tick the hosted loops
+            await db.Set<OrderSaga>().ExecuteUpdateAsync(s => s.SetProperty(x => x.StartedAt, now.AddMinutes(-31)), Ct); // the monitor reads the database clock
         await monitor.RunOnceAsync(Ct);
         Assert.Equal(1, metrics.Latest("sagas_stuck", ("type", "expiry")));
         Assert.Equal(1, metrics.Latest("sagas_running", ("type", "expiry")));

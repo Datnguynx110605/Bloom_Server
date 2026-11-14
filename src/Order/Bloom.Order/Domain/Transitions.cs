@@ -14,12 +14,13 @@ public sealed record Actor(string Type, Guid? Id)
 }
 
 /// <summary>The one place an order's status changes (plan R8, spec §7): a guarded update and its history row (ORD-R04) in the caller's transaction.</summary>
-public sealed class Transitions(OrderDbContext db, TimeProvider clock, OutboxWriter outbox)
+public sealed class Transitions(OrderDbContext db, OutboxWriter outbox)
 {
     internal sealed class Current
     {
         public string Status { get; set; } = "";
         public long Version { get; set; }
+        public DateTimeOffset Now { get; set; }
     }
 
     /// <summary>
@@ -34,12 +35,12 @@ public sealed class Transitions(OrderDbContext db, TimeProvider clock, OutboxWri
         if (db.Database.CurrentTransaction is null)
             throw new InvalidOperationException("A status change and its history row commit together: open a transaction first.");
 
-        var current = (await db.Database.SqlQuery<Current>($"SELECT status AS \"Status\", version AS \"Version\" FROM orders WHERE id = {orderId} FOR UPDATE").ToListAsync(ct)).SingleOrDefault();
+        var current = (await db.Database.SqlQuery<Current>($"SELECT status AS \"Status\", version AS \"Version\", now() AS \"Now\" FROM orders WHERE id = {orderId} FOR UPDATE").ToListAsync(ct)).SingleOrDefault();
         if (current is null || !from.Contains(current.Status)) return false;
         if (version is { } expected && expected != current.Version)
             throw OrderErrors.Conflict("order");
 
-        var now = clock.GetUtcNow();
+        var now = current.Now;
         var query = db.Orders.Where(o => o.Id == orderId && from.Contains(o.Status));
         if (version is { } v) query = query.Where(o => o.Version == v);
         var affected = await query.ExecuteUpdateAsync(s =>

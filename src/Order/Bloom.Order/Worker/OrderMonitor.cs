@@ -1,5 +1,6 @@
 using Bloom.Order.Data;
 using Bloom.Order.Observability;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Order.Worker;
@@ -31,9 +32,9 @@ public sealed class OrderMonitor(IServiceScopeFactory scopes, OrderMetrics metri
 
     internal async Task RunOnceAsync(CancellationToken ct)
     {
-        var cutoff = clock.GetUtcNow() - StuckAfter;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+        var cutoff = await db.Database.NowAsync(ct) - StuckAfter;
         // Every status and type is reported, so one that has just emptied drops to 0 instead of keeping its last sample.
         var orders = OrderStatuses.All.ToDictionary(s => s, _ => 0L);
         foreach (var g in await db.Orders.AsNoTracking().GroupBy(o => o.Status).Select(g => new { g.Key, Count = g.LongCount() }).ToListAsync(ct)) orders[g.Key] = g.Count;

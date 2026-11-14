@@ -4,6 +4,7 @@ using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Order.Domain;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -12,7 +13,7 @@ namespace Bloom.Order.Consumers;
 /// <summary>
 /// <c>inventory.stock-allocated.v1</c> (03-order §5.3, §6.5): <c>stock_allocated = true</c> on an <c>awaiting_stock</c> order, then the release check (OR-07). Any other status, or an unknown order: nothing.
 /// </summary>
-public sealed class StockAllocatedConsumer(OrderDbContext db, Transitions transitions, TimeProvider clock) : IMessageHandler
+public sealed class StockAllocatedConsumer(OrderDbContext db, Transitions transitions) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("inventory", InventoryMessages.StockAllocated)];
 
@@ -21,7 +22,7 @@ public sealed class StockAllocatedConsumer(OrderDbContext db, Transitions transi
         var allocated = envelope.GetPayload<StockAllocatedV1>();
         if (allocated.OrderId == Guid.Empty) throw new PermanentFailureException("inventory.stock-allocated.v1 needs an order id.");
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var flagged = await db.Orders.Where(o => o.Id == allocated.OrderId && o.Status == OrderStatuses.AwaitingStock && !o.StockAllocated)
             .ExecuteUpdateAsync(s => s.SetProperty(o => o.StockAllocated, true).SetProperty(o => o.Version, o => o.Version + 1).SetProperty(o => o.UpdatedAt, now), ct);
         if (flagged == 1) await transitions.PromoteIfReadyAsync(allocated.OrderId, ct);
@@ -58,11 +59,10 @@ public sealed class LaunchStageChangedConsumer(IServiceScopeFactory scopes) : IM
         var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
         var transitions = scope.ServiceProvider.GetRequiredService<Transitions>();
         var outbox = scope.ServiceProvider.GetRequiredService<OutboxWriter>();
-        var now = scope.ServiceProvider.GetRequiredService<TimeProvider>().GetUtcNow();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
 
         var batch = await db.Database.SqlQuery<Flagged>($"""
-            UPDATE orders SET launch_released = true, version = version + 1, updated_at = {now}
+            UPDATE orders SET launch_released = true, version = version + 1, updated_at = now()
             WHERE id IN (SELECT id FROM orders
                          WHERE kind = 'launch' AND launch_id = {launchId} AND status IN ('creating', 'pending_payment', 'awaiting_stock') AND NOT launch_released
                          ORDER BY id LIMIT {BatchSize} FOR UPDATE)

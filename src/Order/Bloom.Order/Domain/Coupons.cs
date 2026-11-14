@@ -1,12 +1,13 @@
 using Bloom.Order.Data;
 using Bloom.Order.Errors;
 using Bloom.Order.Observability;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Order.Domain;
 
 /// <summary>Coupon counters and uses (03-order §6.8, plan R13). Writes run in the caller's transaction.</summary>
-public sealed class Coupons(OrderDbContext db, TimeProvider clock, OrderMetrics metrics)
+public sealed class Coupons(OrderDbContext db, OrderMetrics metrics)
 {
     private const string Savepoint = "coupon_hold";
 
@@ -21,7 +22,7 @@ public sealed class Coupons(OrderDbContext db, TimeProvider clock, OrderMetrics 
     {
         var coupon = await db.Coupons.AsNoTracking().SingleOrDefaultAsync(c => c.CodeNormalized == codeNormalized, ct)
             ?? throw OrderErrors.Error(OrderErrors.CouponNotFound, "There is no coupon with that code.");
-        if (Refusal(coupon, clock.GetUtcNow()) is { } reason) throw OrderErrors.Error(reason, "The coupon cannot be used.");
+        if (Refusal(coupon, await db.Database.NowAsync(ct)) is { } reason) throw OrderErrors.Error(reason, "The coupon cannot be used.");
         if (coupon.TotalLimit <= coupon.UsesCount) throw LimitReached();
         if (coupon.PerCustomerLimit is { } limit
             && await db.CouponCustomerUsages.AsNoTracking().Where(u => u.CouponId == coupon.Id && u.AccountId == accountId).Select(u => u.UsesCount).SingleOrDefaultAsync(ct) >= limit)
@@ -38,19 +39,18 @@ public sealed class Coupons(OrderDbContext db, TimeProvider clock, OrderMetrics 
     public async Task HoldAsync(Guid couponId, Guid accountId, Guid orderId, CancellationToken ct)
     {
         var tx = db.Database.CurrentTransaction ?? throw new InvalidOperationException("The coupon hold needs an open transaction.");
-        var now = clock.GetUtcNow();
         await tx.CreateSavepointAsync(Savepoint, ct);
 
         var counted = await db.Database.ExecuteSqlAsync($"""
             UPDATE coupons SET uses_count = uses_count + 1
             WHERE id = {couponId} AND active AND (total_limit IS NULL OR uses_count + 1 <= total_limit)
-              AND (starts_at IS NULL OR starts_at <= {now}) AND (expires_at IS NULL OR expires_at > {now})
+              AND (starts_at IS NULL OR starts_at <= now()) AND (expires_at IS NULL OR expires_at > now())
             """, ct);
         string? refusal = null;
         if (counted == 0)
         {
             var coupon = await db.Coupons.AsNoTracking().SingleOrDefaultAsync(c => c.Id == couponId, ct);
-            refusal = coupon is null ? OrderErrors.CouponNotFound : Refusal(coupon, now) ?? OrderErrors.CouponLimitReached;
+            refusal = coupon is null ? OrderErrors.CouponNotFound : Refusal(coupon, await db.Database.NowAsync(ct)) ?? OrderErrors.CouponLimitReached;
         }
         else
         {
@@ -72,7 +72,7 @@ public sealed class Coupons(OrderDbContext db, TimeProvider clock, OrderMetrics 
         await tx.ReleaseSavepointAsync(Savepoint, ct);
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO coupon_uses (order_id, coupon_id, account_id, status, created_at, updated_at)
-            VALUES ({orderId}, {couponId}, {accountId}, {CouponUseStatuses.Held}, {now}, {now})
+            VALUES ({orderId}, {couponId}, {accountId}, {CouponUseStatuses.Held}, now(), now())
             """, ct);
         metrics.Coupon("held");
     }
@@ -83,9 +83,8 @@ public sealed class Coupons(OrderDbContext db, TimeProvider clock, OrderMetrics 
     /// </summary>
     public async Task<bool> MoveUseAsync(Guid orderId, string from, string to, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
         var use = (await db.Database.SqlQuery<UseRow>($"""
-            UPDATE coupon_uses SET status = {to}, updated_at = {now} WHERE order_id = {orderId} AND status = {from}
+            UPDATE coupon_uses SET status = {to}, updated_at = now() WHERE order_id = {orderId} AND status = {from}
             RETURNING coupon_id AS "CouponId", account_id AS "AccountId"
             """).ToListAsync(ct)).SingleOrDefault();
         if (use is null) return false;

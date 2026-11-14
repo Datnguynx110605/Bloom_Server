@@ -104,7 +104,7 @@ public class PaymentTests(Containers containers)
         await using var t = await TestOrder.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
         var (account, orderId, _, _) = await RegularOrderAsync(t);
-        t.Clock.Advance(TimeSpan.FromMinutes(15) + TimeSpan.FromSeconds(1));
+        await Seed.AgeDeadlinesAsync(t, TimeSpan.FromMinutes(15) + TimeSpan.FromSeconds(1));
         Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
 
         await SucceededAsync(t, orderId);
@@ -210,7 +210,8 @@ public class PaymentTests(Containers containers)
         for (var round = 0; round < 20; round++)
         {
             var (_, orderId, _, _) = await RegularOrderAsync(t);
-            t.Clock.SetUtcNow((await OrderAsync(t, orderId)).DeadlineAt!.Value.AddMilliseconds(1)); // just past the deadline
+            await using (var db = t.NewDb()) // just past the deadline, on the database clock the sweep reads
+                await db.Database.ExecuteSqlAsync($"UPDATE orders SET deadline_at = now() - interval '1 millisecond' WHERE id = {orderId}", Ct);
 
             var head = TimeSpan.FromMilliseconds(round % 5 * 4); // the sweep starts 0, 4, … 16 ms after the consumer, so each side gets to be first
             await Task.WhenAll(Task.Run(() => SucceededAsync(t, orderId), Ct), Task.Run(async () => { await Task.Delay(head, Ct); return await sweeps.RunExpiryAsync(Ct); }, Ct));

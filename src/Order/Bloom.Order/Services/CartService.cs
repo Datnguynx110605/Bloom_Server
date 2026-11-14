@@ -4,6 +4,7 @@ using Bloom.Order.Context;
 using Bloom.Order.Data;
 using Bloom.Order.Domain;
 using Bloom.Order.Errors;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using CartLine = Bloom.Order.Data.CartLine;
@@ -11,7 +12,7 @@ using CartLine = Bloom.Order.Data.CartLine;
 namespace Bloom.Order.Services;
 
 /// <summary>03-order §5.1 <c>Cart API</c>. The cart is the caller's own: the account id comes from the gateway headers, never from the request.</summary>
-public sealed class CartService(OrderDbContext db, Upstreams upstreams, TimeProvider clock) : OrderCart.OrderCartBase
+public sealed class CartService(OrderDbContext db, Upstreams upstreams) : OrderCart.OrderCartBase
 {
     public override async Task<Api.Cart> GetCart(GetCartRequest request, ServerCallContext context)
     {
@@ -95,11 +96,15 @@ public sealed class CartService(OrderDbContext db, Upstreams upstreams, TimeProv
     /// </summary>
     private async Task BumpVersionAsync(Guid accountId, long expected, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
-        var affected = expected == 0
-            ? await db.Database.ExecuteSqlAsync($"INSERT INTO carts (account_id, version, updated_at) VALUES ({accountId}, 1, {now}) ON CONFLICT (account_id) DO NOTHING", ct)
-            : await db.Carts.Where(c => c.AccountId == accountId && c.Version == expected)
+        int affected;
+        if (expected == 0)
+            affected = await db.Database.ExecuteSqlAsync($"INSERT INTO carts (account_id, version, updated_at) VALUES ({accountId}, 1, now()) ON CONFLICT (account_id) DO NOTHING", ct);
+        else
+        {
+            var now = await db.Database.NowAsync(ct);
+            affected = await db.Carts.Where(c => c.AccountId == accountId && c.Version == expected)
                 .ExecuteUpdateAsync(s => s.SetProperty(c => c.Version, c => c.Version + 1).SetProperty(c => c.UpdatedAt, now), ct);
+        }
         if (affected != 1) throw OrderErrors.Conflict("cart");
     }
 
