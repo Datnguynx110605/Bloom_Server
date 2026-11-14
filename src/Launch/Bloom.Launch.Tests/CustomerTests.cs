@@ -292,6 +292,19 @@ public class CustomerTests(Containers containers)
     }
 
     [Fact]
+    public async Task Status_when_not_queued_before_the_room_opens_is_not_open_with_polling()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, LaunchStages.Announced, launchIn: TimeSpan.FromMinutes(20));
+
+        var status = await Status(t, launch.Id, Guid.NewGuid());
+
+        Assert.Equal("not_open", status.State);
+        Assert.InRange(status.PollAfterSeconds, 4, 6);
+        Assert.Equal(0, status.Position);
+    }
+
+    [Fact]
     public async Task Pass_expires_unused_then_status_is_NOT_IN_QUEUE_and_rejoin_goes_to_the_back()
     {
         await using var t = await StartAsync();

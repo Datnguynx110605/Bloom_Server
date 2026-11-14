@@ -40,11 +40,11 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         if (room == RoomStates.NotOpen) throw LaunchErrors.Error(LaunchErrors.WaitingRoomNotOpen, "The waiting room is not open yet.");
         if (room == RoomStates.Closed) throw LaunchErrors.Error(LaunchErrors.WaitingRoomClosed, "The waiting room is closed.");
         if (room == RoomStates.SoldOut) return Polling(RoomStates.SoldOut);
-        if (Admitted(launch.Id, account, await redis.GetDatabase().StringGetAsync(RedisKeys.Pass(launch.Id, account))) is { } admitted) return admitted;
+        var db = redis.GetDatabase();
+        if (Admitted(launch.Id, account, await db.StringGetAsync(RedisKeys.Pass(launch.Id, account))) is { } admitted) return admitted;
 
         // Before launch time a random position in [0, 1); after it, 1 + seconds since launch time, so always behind them (LCH-R07).
         var score = now < launch.LaunchTime ? Random.Shared.NextDouble() : 1 + Math.Round((now - launch.LaunchTime).TotalMilliseconds) / 1000;
-        var db = redis.GetDatabase();
         await db.SortedSetAddAsync(RedisKeys.Queue(launch.Id), account.ToString("D"), score, When.NotExists);
         var pass = db.StringGetAsync(RedisKeys.Pass(launch.Id, account)); // issued together, after the ZADD, so the rank reflects it
         var rank = db.SortedSetRankAsync(RedisKeys.Queue(launch.Id), account.ToString("D"));
