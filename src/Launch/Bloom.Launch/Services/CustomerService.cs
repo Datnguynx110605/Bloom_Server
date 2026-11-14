@@ -40,12 +40,16 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         if (room == RoomStates.NotOpen) throw LaunchErrors.Error(LaunchErrors.WaitingRoomNotOpen, "The waiting room is not open yet.");
         if (room == RoomStates.Closed) throw LaunchErrors.Error(LaunchErrors.WaitingRoomClosed, "The waiting room is closed.");
         if (room == RoomStates.SoldOut) return Polling(RoomStates.SoldOut);
-        if (await AdmittedAsync(launch.Id, account) is { } admitted) return admitted;
+        var db = redis.GetDatabase();
+        if (Admitted(launch.Id, account, await db.StringGetAsync(RedisKeys.Pass(launch.Id, account))) is { } admitted) return admitted;
 
         // Before launch time a random position in [0, 1); after it, 1 + seconds since launch time, so always behind them (LCH-R07).
         var score = now < launch.LaunchTime ? Random.Shared.NextDouble() : 1 + Math.Round((now - launch.LaunchTime).TotalMilliseconds) / 1000;
-        await redis.GetDatabase().SortedSetAddAsync(RedisKeys.Queue(launch.Id), account.ToString("D"), score, When.NotExists);
-        return await StatusAsync(launch, account, room);
+        await db.SortedSetAddAsync(RedisKeys.Queue(launch.Id), account.ToString("D"), score, When.NotExists);
+        var pass = db.StringGetAsync(RedisKeys.Pass(launch.Id, account)); // issued together, after the ZADD, so the rank reflects it
+        var rank = db.SortedSetRankAsync(RedisKeys.Queue(launch.Id), account.ToString("D"));
+        await Task.WhenAll(pass, rank);
+        return Status(launch, account, room, await pass, await rank);
     });
 
     public override Task<WaitingRoomStatus> GetWaitingRoomStatus(WaitingRoomRequest request, ServerCallContext context) => Guarded(request.LaunchId, async () =>
@@ -54,8 +58,15 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         try
         {
             var account = Caller.From(context).RequireCustomer().UserId;
-            var launch = await FindAsync(request.LaunchId, context.CancellationToken);
-            return await StatusAsync(launch, account, launch.RoomState(time.GetUtcNow()));
+            var launchId = ParseId(request.LaunchId);
+            // §6.3 reads issued together: one round trip. WhenAll observes every task, so none is left faulted and unobserved.
+            var db = redis.GetDatabase();
+            var snapshot = cache.GetAsync(launchId, context.CancellationToken);
+            var pass = db.StringGetAsync(RedisKeys.Pass(launchId, account));
+            var rank = db.SortedSetRankAsync(RedisKeys.Queue(launchId), account.ToString("D"));
+            await Task.WhenAll(snapshot, pass, rank);
+            var launch = Visible(await snapshot);
+            return Status(launch, account, launch.RoomState(time.GetUtcNow()), await pass, await rank);
         }
         finally
         {
@@ -63,13 +74,12 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         }
     });
 
-    /// <summary>§6.3 in owner item 1's order: a live pass, then a closed room, then the queue position.</summary>
-    private async Task<WaitingRoomStatus> StatusAsync(LaunchSnapshot launch, Guid account, string room)
+    /// <summary>§6.3 in owner item 1's order: a live pass, then a closed room, then the queue position. Pure: the Redis reads are already done.</summary>
+    private WaitingRoomStatus Status(LaunchSnapshot launch, Guid account, string room, RedisValue pass, long? rank)
     {
-        if (await AdmittedAsync(launch.Id, account) is { } admitted) return admitted;
+        if (Admitted(launch.Id, account, pass) is { } admitted) return admitted;
         if (room == RoomStates.Closed) return new() { State = RoomStates.Closed };
-        if (await redis.GetDatabase().SortedSetRankAsync(RedisKeys.Queue(launch.Id), account.ToString("D")) is { } rank)
-            return Polling("queued", (int)rank + 1);
+        if (rank is { } position) return Polling("queued", (int)position + 1);
         return room switch
         {
             RoomStates.SoldOut => Polling(RoomStates.SoldOut),
@@ -79,9 +89,8 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
     }
 
     /// <summary><c>admitted</c> with a token signed from the stored <c>passId|expiresAtUnixMs</c>, or null when there is no pass.</summary>
-    private async Task<WaitingRoomStatus?> AdmittedAsync(Guid launch, Guid account)
+    private WaitingRoomStatus? Admitted(Guid launch, Guid account, RedisValue stored)
     {
-        var stored = await redis.GetDatabase().StringGetAsync(RedisKeys.Pass(launch, account));
         var parts = stored.IsNull ? [] : ((string)stored!).Split('|');
         if (parts.Length != 2 || !Guid.TryParse(parts[0], out var passId) || !long.TryParse(parts[1], out var expires)) return null;
         return new()
@@ -95,12 +104,13 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
     private static WaitingRoomStatus Polling(string state, int position = 0) =>
         new() { State = state, Position = position, PollAfterSeconds = Random.Shared.Next(4, 7) };
 
-    /// <summary>R8: an id that is not a UUID is an unknown launch; a draft is never visible.</summary>
-    private async Task<LaunchSnapshot> FindAsync(string id, CancellationToken ct)
-    {
-        var launch = Guid.TryParseExact(id, "D", out var launchId) ? await cache.GetAsync(launchId, ct) : null;
-        return launch is { Stage: not LaunchStages.Draft } ? launch : throw LaunchErrors.NotFound("The launch");
-    }
+    /// <summary>R8: an id that is not a UUID is an unknown launch, before any Redis read.</summary>
+    private static Guid ParseId(string id) => Guid.TryParseExact(id, "D", out var launchId) ? launchId : throw LaunchErrors.NotFound("The launch");
+
+    /// <summary>R8: a draft is never visible.</summary>
+    private static LaunchSnapshot Visible(LaunchSnapshot? launch) => launch is { Stage: not LaunchStages.Draft } ? launch : throw LaunchErrors.NotFound("The launch");
+
+    private async Task<LaunchSnapshot> FindAsync(string id, CancellationToken ct) => Visible(await cache.GetAsync(ParseId(id), ct));
 
     private async Task<T> Guarded<T>(string launch, Func<Task<T>> call)
     {
