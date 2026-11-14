@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-11-12 |
+| **Status** | Approved (2026-11-14) |
+| **Last updated** | 2026-11-14 |
 | **Product rules** | [05-checkout-payment](../product-design/05-checkout-payment.md) (CHK-R01 … R20), [06-orders-fulfillment](../product-design/06-orders-fulfillment.md) (ORD-R01 … R17), [08-promotions](../product-design/08-promotions.md) (PRM-R01 … R13), LCH-R13 … R16, R19, WAR-R01, ACC-R06, R13, BI-04, BI-05 |
-| **HLD** | [high-level-design.md §5, §8.1 – §8.3, §8.5](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-013 |
+| **HLD** | [high-level-design.md §5, §8.1 – §8.3, §8.5](../high-level-design/high-level-design.md), HLD-ADR-005, HLD-ADR-013, HLD-ADR-021 |
 | **Depends on** | [00-reliability.md](00-reliability.md), [01-launch.md](01-launch.md), [02-inventory.md](02-inventory.md) |
 
 ## 1. Problem and scope
@@ -22,7 +22,7 @@
 
 | ID | Requirement | Source |
 |---|---|---|
-| OR-01 | Checkout start p95 < 300 ms at launch peak, including catalog, launch/inventory and payment calls. | QA-03 |
+| OR-01 | Checkout start p95 < 300 ms at launch peak, including the catalog and launch/inventory calls; the payment call is excluded (HLD-ADR-021). | QA-03 |
 | OR-02 | No hold is ever orphaned: every hold belongs to an order record that exists before the hold is requested. | Owner decision |
 | OR-03 | Coupon uses (held + consumed) never exceed total or per-customer limits. | BI-04 |
 | OR-04 | An order is never both *Cancelled* and shipped. | Owner decision |
@@ -420,7 +420,7 @@ On `launch.stage-changed.v1` with `stage = released`: set `launch_released = tru
 
 | Metric | Labels | Purpose |
 |---|---|---|
-| `checkout_start_seconds` | `kind` | OR-01 |
+| `checkout_start_seconds` | `kind` | OR-01: time to answer `StartCheckout`, minus the `CreatePayment` call |
 | `checkout_total` | `kind`, `result` (`ok`, `sold_out`, `limit_exceeded`, `coupon_*`, `order_total_too_low`, `failed`) | Outcomes |
 | `orders_by_status` | `status` | Lifecycle |
 | `checkout_expired_total` | — | Abandonment |
