@@ -64,6 +64,7 @@ public sealed class StaffService(
 
         var id = Guid.CreateVersion7(); // assigned up front for the replay mark
         await VerifyFirstCodeAsync(secret, request.TotpCode, id);
+        var passwordHash = passwordHasher.Hash(password); // before the transaction: the hash is slow and must not hold the connection
 
         // Claiming the invitation and creating the account commit together.
         await using var tx = await db.Database.BeginTransactionAsync(ct);
@@ -74,7 +75,7 @@ public sealed class StaffService(
             Type = AccountTypes.Staff,
             EmailNormalized = invitation.EmailNormalized,
             EmailDisplay = invitation.EmailNormalized, // plan I33
-            PasswordHash = passwordHasher.Hash(password),
+            PasswordHash = passwordHash,
             Name = name,
             Role = invitation.Role,
             TotpSecretEnc = totpBox.Seal(secret),

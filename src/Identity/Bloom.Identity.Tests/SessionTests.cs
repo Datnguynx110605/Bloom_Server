@@ -253,6 +253,21 @@ public class SessionTests(Containers containers)
     }
 
     [Fact]
+    public async Task Refresh_of_a_token_whose_account_row_is_gone_is_REFRESH_INVALID_and_revokes_it()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var account = await Seed.CustomerAsync(t);
+        var session = await Seed.SessionAsync(t, account);
+        await using (var db = t.NewDb())
+            await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM accounts WHERE id = {account.Id}", Ct);
+
+        var response = await RefreshAsync(t, session.RefreshToken);
+
+        await response.ExpectErrorAsync(401, "REFRESH_INVALID");
+        Assert.Equal(RefreshStatuses.Revoked, (await RowAsync(t, session.RefreshToken)).Status);
+    }
+
+    [Fact]
     public async Task Missing_or_unknown_cookie_is_REFRESH_INVALID_and_no_store()
     {
         await using var t = await TestIdentity.StartAsync(containers);

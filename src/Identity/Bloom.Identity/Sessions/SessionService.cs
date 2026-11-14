@@ -42,7 +42,6 @@ public sealed class SessionService(
     private async Task<IssuedSession?> TryRotateAsync(byte[] hash)
     {
         await using var tx = await db.Database.BeginTransactionAsync();
-        var now = await db.Database.NowAsync();
         // Lock order everywhere: the account row, then its tokens (R41). Otherwise a revoke-all could miss the token this rotation inserts.
         var accountId = await db.RefreshTokens.Where(t => t.TokenHash == hash).Select(t => (Guid?)t.AccountId).SingleOrDefaultAsync();
         if (accountId is null)
@@ -50,7 +49,7 @@ public sealed class SessionService(
             metrics.Refresh("invalid");
             return null;
         }
-        await LockAccountAsync(accountId.Value);
+        var now = await LockAccountAsync(accountId.Value) ?? await db.Database.NowAsync(); // the transaction's now(), read with the lock; null when the account row is gone
         // The loser of a race waited on the account row above, so this read sees the winner's committed "rotated" and takes the reuse path.
         var token = (await db.RefreshTokens.FromSqlInterpolated($"SELECT * FROM refresh_tokens WHERE token_hash = {hash} FOR UPDATE").ToListAsync()).SingleOrDefault();
         if (token is null || token.ExpiresAt <= now)
@@ -92,8 +91,9 @@ public sealed class SessionService(
         return session;
     }
 
-    private Task LockAccountAsync(Guid accountId) =>
-        db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM accounts WHERE id = {accountId} FOR UPDATE");
+    /// <summary>Locks the account row and returns the transaction's now(); null when the row does not exist.</summary>
+    private async Task<DateTimeOffset?> LockAccountAsync(Guid accountId) =>
+        (await db.Database.SqlQuery<DateTimeOffset>($"SELECT now() AS \"Value\" FROM accounts WHERE id = {accountId} FOR UPDATE").ToListAsync()).Cast<DateTimeOffset?>().SingleOrDefault();
 
     /// <summary>Revokes every refresh token of the account in the caller's transaction; the caller saves.</summary>
     public async Task RevokeAllAsync(Account account, string trigger)
