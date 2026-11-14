@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Bloom.Notification.Data;
 using Bloom.Notification.Email;
+using Bloom.Shared.Persistence;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -144,6 +145,13 @@ public sealed class TestNotification : IAsyncDisposable
     {
         await using var db = NewDb();
         await db.Database.ExecuteSqlAsync(sql, TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>The database's <c>now()</c>: the clock stored timestamps and time checks use, which <see cref="Clock"/> does not drive.</summary>
+    public async Task<DateTimeOffset> DbNowAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.NowAsync(TestContext.Current.CancellationToken);
     }
 
     public int ErrorLogs => Logs.Entries.Count(e => e.StartsWith("[Error]", StringComparison.Ordinal));

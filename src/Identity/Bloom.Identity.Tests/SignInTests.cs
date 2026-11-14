@@ -48,14 +48,16 @@ public class SignInTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var account = await Seed.CustomerAsync(t);
 
+        var before = await t.DbNowAsync();
         var response = await SignInAsync(t, account.EmailNormalized, Seed.Password);
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(string.IsNullOrEmpty((await response.OkJsonAsync()).GetProperty("accessToken").GetString()));
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
         await using var db = t.NewDb();
         var stored = await db.Accounts.SingleAsync(a => a.Id == account.Id, Ct);
-        Assert.Equal(t.Clock.GetUtcNow(), stored.LastSignInAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(stored.LastSignInAt!.Value, before, after);
         Assert.Equal(1, metrics.Sum("signins_total", ("type", "customer"), ("method", "password"), ("result", "success")));
         Assert.Equal(1, metrics.Count("signin_seconds"));
     }
@@ -145,7 +147,9 @@ public class SignInTests(Containers containers)
         var (staff, secret) = await Seed.StaffAsync(t, StaffRoles.Warehouse);
         var challenge = await ChallengeAsync(t, staff);
 
+        var before = await t.DbNowAsync();
         var response = await MfaAsync(t, challenge, TestTotp.CodeAt(t, secret));
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
@@ -155,7 +159,7 @@ public class SignInTests(Containers containers)
         Assert.Equal(staff.Id.ToString(), jwt.Subject);
         await using var db = t.NewDb();
         var row = await db.RefreshTokens.SingleAsync(r => r.AccountId == staff.Id, Ct);
-        Assert.Equal(t.Clock.GetUtcNow(), row.AuthTime, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(row.AuthTime, before, after);
         Assert.Equal(row.AuthTime.AddHours(12), row.ExpiresAt);
         Assert.Equal(1, metrics.Sum("signins_total", ("type", "staff"), ("method", "mfa"), ("result", "success")));
         Assert.False(await Redis.KeyExistsAsync($"mfa:challenge:{challenge}")); // success deletes the challenge

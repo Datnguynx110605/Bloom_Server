@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Inventory.Domain;
 
 /// <summary>Strict-FIFO backorder allocator (02-inventory §6.4, plan R12). The caller holds the SKU's <c>stock_items</c> lock, in its own transaction.</summary>
-public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter outbox, InventoryMetrics metrics, TimeProvider clock)
+public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter outbox, InventoryMetrics metrics)
 {
     private const int OrderLockNamespace = 0x4F4C4B; // "OLK"
     private readonly HashSet<Guid> _announced = [];
@@ -18,10 +18,11 @@ public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter
     /// The release/reserve/paid order lock (<see cref="StockLocks.LockOrderAsync"/>, a single bigint: another key space from this two-int one) is taken before any SKU lock;
     /// nothing holding the allocator's two-int lock waits on the order lock, so there is no cycle.
     /// </summary>
-    public async Task RunAsync(IEnumerable<Guid> skuIds, CancellationToken ct)
+    /// <param name="now">The caller's database time (<c>NowAsync</c>, read inside the same transaction).</param>
+    public async Task RunAsync(IEnumerable<Guid> skuIds, DateTimeOffset now, CancellationToken ct)
     {
         var served = new HashSet<Guid>();
-        foreach (var skuId in skuIds.Distinct()) served.UnionWith(await ServeAsync(skuId, ct));
+        foreach (var skuId in skuIds.Distinct()) served.UnionWith(await ServeAsync(skuId, now, ct));
 
         foreach (var orderId in served.Order())
         {
@@ -36,12 +37,11 @@ public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter
     }
 
     /// <summary>Commits the SKU's <c>backordered</c> allocations oldest first, stopping at the first one the free units can't cover. No <c>stock_items</c> row: the first guarded update changes nothing, so nothing happens. Returns the orders served.</summary>
-    private async Task<List<Guid>> ServeAsync(Guid skuId, CancellationToken ct)
+    private async Task<List<Guid>> ServeAsync(Guid skuId, DateTimeOffset now, CancellationToken ct)
     {
         var waiting = await db.StockAllocations.AsNoTracking()
             .Where(a => a.SkuId == skuId && a.Status == AllocationStatuses.Backordered)
             .OrderBy(a => a.PaidAt).ThenBy(a => a.OrderId).ToListAsync(ct);
-        var now = clock.GetUtcNow();
         var served = new List<Guid>();
         foreach (var a in waiting)
         {
@@ -56,7 +56,7 @@ public sealed class Allocator(InventoryDbContext db, Ledger ledger, OutboxWriter
                 WHERE ref_id = {a.RefId} AND sku_id = {skuId} AND status = {AllocationStatuses.Backordered}
                 """, ct) == 0)
                 throw new InvalidOperationException($"Allocation {a.RefId}/{skuId} left 'backordered' while the SKU row was locked.");
-            ledger.Add(skuId, EntryTypes.BackorderAllocated, new(OnHand: -q, Committed: q), RefTypes.Of(a.Kind), a.RefId);
+            ledger.Add(skuId, EntryTypes.BackorderAllocated, new(OnHand: -q, Committed: q), RefTypes.Of(a.Kind), a.RefId, now);
             var waited = (now - a.PaidAt!.Value).TotalSeconds;
             db.AfterCommit.Add(() => { metrics.BackorderAllocated(waited); return Task.CompletedTask; });
             served.Add(a.OrderId);

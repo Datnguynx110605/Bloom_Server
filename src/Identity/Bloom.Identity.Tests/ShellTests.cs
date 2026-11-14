@@ -5,7 +5,6 @@ using Bloom.Shared.Errors;
 using Google.Rpc;
 using Grpc.Core;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Time.Testing;
 
 namespace Bloom.Identity.Tests;
 
@@ -97,14 +96,12 @@ public class ShellTests(Containers containers)
     [Fact]
     public void Recent_auth_boundary_is_five_minutes()
     {
-        // PostgreSQL keeps microseconds; Linux clocks have 100 ns ticks
-        var clock = new FakeTimeProvider(new DateTimeOffset(DateTime.UtcNow.Ticks / 10 * 10, TimeSpan.Zero));
-        var caller = new TrustedCaller(Guid.NewGuid(), "customer", null, clock.GetUtcNow() - TimeSpan.FromSeconds(300));
+        var now = new DateTimeOffset(2030, 1, 1, 12, 0, 0, TimeSpan.Zero); // the database's now(), as the caller of RequireRecentAuth reads it
+        var caller = new TrustedCaller(Guid.NewGuid(), "customer", null, now - TimeSpan.FromSeconds(300));
 
-        Assert.Same(caller, caller.RequireRecentAuth(clock));
+        Assert.Same(caller, caller.RequireRecentAuth(now));
 
-        clock.Advance(TimeSpan.FromSeconds(1)); // now 301 s
-        var e = Assert.Throws<RpcException>(() => caller.RequireRecentAuth(clock));
+        var e = Assert.Throws<RpcException>(() => caller.RequireRecentAuth(now + TimeSpan.FromSeconds(1))); // 301 s
         Assert.Equal("REAUTH_REQUIRED", Info(e).Reason);
     }
 

@@ -118,7 +118,7 @@ public class CancelTests(Containers containers)
         // Past the session's own expiry the executor no longer picks the payment (the reconciler takes over).
         var (lateOrder, _, lateSession) = await Seed.CreateAsync(t);
         await Send(t, lateOrder);
-        t.Clock.Advance(TimeSpan.FromMinutes(48));
+        await t.SqlAsync($"UPDATE payments SET session_expires_at = now() - interval '1 minute' WHERE order_id = {lateOrder}");
         await t.RunExecutorAsync();
         Assert.Equal(0, t.Stripe.Count(Expire(lateSession)));
         Assert.Equal(PaymentStatuses.Open, (await t.PaymentByOrderAsync(lateOrder)).Status);

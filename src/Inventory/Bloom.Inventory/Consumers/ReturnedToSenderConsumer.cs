@@ -2,6 +2,7 @@ using Bloom.Fulfillment.Contracts;
 using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Consumers;
@@ -11,7 +12,7 @@ namespace Bloom.Inventory.Consumers;
 /// runs, §6.4); <c>failed</c> units are <c>damaged</c>. A serial that isn't <c>shipped</c> for <c>refId</c>, or an unknown outcome, is permanent failure before any write.
 /// Runs in <c>ConsumerHost</c>'s transaction (plan R10); SKU rows are locked first (plan R9).
 /// </summary>
-public sealed class ReturnedToSenderConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, TimeProvider clock) : IMessageHandler
+public sealed class ReturnedToSenderConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger) : IMessageHandler
 {
     private const string Sealed = "sealed";
     private const string Failed = "failed";
@@ -34,7 +35,7 @@ public sealed class ReturnedToSenderConsumer(InventoryDbContext db, StockLocks l
         // The ledger's ref_type follows the allocation kind of refId (plan R11); an order id is the fallback.
         var kind = await db.StockAllocations.AsNoTracking().Where(a => a.RefId == refId).Select(a => a.Kind).FirstOrDefaultAsync(ct);
         var refType = RefTypes.Of(kind);
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
 
         foreach (var u in units.Where(u => u.Serial is not null)) // a damaged unit keeps its ref_id, already checked against refId
             await db.Database.ExecuteSqlAsync($"""
@@ -49,15 +50,15 @@ public sealed class ReturnedToSenderConsumer(InventoryDbContext db, StockLocks l
             if (outcome == Sealed)
             {
                 await db.Database.ExecuteSqlAsync($"UPDATE stock_items SET on_hand = on_hand + {q}, updated_at = {now} WHERE sku_id = {skuId}", ct);
-                ledger.Add(skuId, EntryTypes.RtsRestocked, new(OnHand: q), refType, refId);
+                ledger.Add(skuId, EntryTypes.RtsRestocked, new(OnHand: q), refType, refId, now);
             }
             else
             {
                 await db.Database.ExecuteSqlAsync($"UPDATE stock_items SET damaged = damaged + {q}, updated_at = {now} WHERE sku_id = {skuId}", ct);
-                ledger.Add(skuId, EntryTypes.RtsDamaged, new(Damaged: q), refType, refId);
+                ledger.Add(skuId, EntryTypes.RtsDamaged, new(Damaged: q), refType, refId, now);
             }
         }
 
-        await allocator.RunAsync(units.Where(u => u.Outcome == Sealed).Select(u => u.SkuId).Order(), ct);
+        await allocator.RunAsync(units.Where(u => u.Outcome == Sealed).Select(u => u.SkuId).Order(), now, ct);
     }
 }

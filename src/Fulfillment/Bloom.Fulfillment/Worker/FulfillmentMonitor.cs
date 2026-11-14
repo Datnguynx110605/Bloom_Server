@@ -1,5 +1,6 @@
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Observability;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Fulfillment.Worker;
@@ -31,9 +32,9 @@ public sealed class FulfillmentMonitor(IServiceScopeFactory scopes, FulfillmentM
 
     internal async Task RunOnceAsync(CancellationToken ct)
     {
-        var cutoff = clock.GetUtcNow() - StuckAfter;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
+        var cutoff = await db.Database.NowAsync(ct) - StuckAfter;
         // Every status is reported, so one that has just emptied drops to 0 instead of keeping its last sample.
         var packTasks = TaskStatuses.All.ToDictionary(s => s, _ => 0L);
         foreach (var g in await db.PackTasks.AsNoTracking().GroupBy(p => p.Status).Select(g => new { g.Key, Count = g.LongCount() }).ToListAsync(ct)) packTasks[g.Key] = g.Count;

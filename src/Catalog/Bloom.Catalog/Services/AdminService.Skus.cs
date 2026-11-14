@@ -3,6 +3,7 @@ using Bloom.Catalog.Data;
 using Bloom.Catalog.Errors;
 using Bloom.Catalog.Validation;
 using Bloom.Catalog.V1;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Query;
@@ -63,8 +64,9 @@ public sealed partial class AdminService
                 throw CatalogErrors.Validation("option_types", "While the product has SKUs, an option type can't be added or removed and a value a SKU uses can't be removed.");
         }
 
+        var now = await db.Database.NowAsync(ct);
         await concurrent.UpdateVersionedAsync("product", db.Products.Where(p => p.Id == id), request.Version,
-            s => s.SetProperty(p => p.UpdatedAt, clock.GetUtcNow()), CatalogErrors.NotFound, ct);
+            s => s.SetProperty(p => p.UpdatedAt, now), CatalogErrors.NotFound, ct);
 
         var keptTypes = wanted.Select(t => t.Id).ToHashSet();
         var keptValues = wanted.SelectMany(t => t.Values).Select(v => v.Id).ToHashSet();
@@ -171,8 +173,9 @@ public sealed partial class AdminService
         var current = await db.PlanEligibilities.Where(e => e.PlanProductId == planId).Select(e => e.EligibleProductId).ToListAsync(ct);
         if (current.Count == wanted.Count && !current.Except(wanted).Any()) return await LoadProductAsync(planId, ct); // no write, no audit (R13)
 
+        var now = await db.Database.NowAsync(ct);
         await concurrent.UpdateVersionedAsync("product", db.Products.Where(p => p.Id == planId), request.Version,
-            s => s.SetProperty(p => p.UpdatedAt, clock.GetUtcNow()), CatalogErrors.NotFound, ct);
+            s => s.SetProperty(p => p.UpdatedAt, now), CatalogErrors.NotFound, ct);
         var removed = current.Except(wanted).ToList();
         await db.PlanEligibilities.Where(e => e.PlanProductId == planId && removed.Contains(e.EligibleProductId)).ExecuteDeleteAsync(ct);
         db.PlanEligibilities.AddRange(wanted.Except(current).Select(d => new PlanEligibility { PlanProductId = planId, EligibleProductId = d }));

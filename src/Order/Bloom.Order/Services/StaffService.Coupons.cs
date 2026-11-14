@@ -4,6 +4,7 @@ using Bloom.Order.Data;
 using Bloom.Order.Domain;
 using Bloom.Order.Errors;
 using Bloom.Shared.Concurrency;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.Collections;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -14,7 +15,7 @@ using Coupon = Bloom.Order.Data.Coupon;
 namespace Bloom.Order.Services;
 
 /// <summary>03-order §5.1, staff API. Coupons: catalog manager and admin; checkout settings: admin (plan R7). Every write audits in its transaction (spec §7).</summary>
-public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates concurrent, Audit audit, TimeProvider clock, Cancellations cancellations) : OrderStaff.OrderStaffBase
+public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates concurrent, Audit audit, Cancellations cancellations) : OrderStaff.OrderStaffBase
 {
     private const string CodeIndex = "ux_coupons_code_normalized";
     private const string UsesCheck = "ck_coupons_uses_le_total_limit";
@@ -47,9 +48,9 @@ public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates co
         var f = Parse(request.Type, request.Value, request.Scope, request.ScopeItems, request.HasMinSpendCents ? request.MinSpendCents : null,
             request.StartsAt, request.ExpiresAt, request.HasTotalLimit ? request.TotalLimit : null, request.HasPerCustomerLimit ? request.PerCustomerLimit : null);
         var ct = context.CancellationToken;
-        var now = clock.GetUtcNow();
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         var row = new Coupon
         {
             Id = Guid.CreateVersion7(), CodeNormalized = normalized, CodeDisplay = display, Type = f.Type, Value = f.Value, Scope = f.Scope, MinSpendCents = f.MinSpendCents,
@@ -75,9 +76,9 @@ public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates co
         var f = Parse(request.Type, request.Value, request.Scope, request.ScopeItems, request.HasMinSpendCents ? request.MinSpendCents : null,
             request.StartsAt, request.ExpiresAt, request.HasTotalLimit ? request.TotalLimit : null, request.HasPerCustomerLimit ? request.PerCustomerLimit : null);
         var ct = context.CancellationToken;
-        var now = clock.GetUtcNow();
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         try
         {
             await concurrent.UpdateVersionedAsync("coupon", db.Coupons.Where(c => c.Id == id), request.Version,
@@ -104,9 +105,9 @@ public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates co
         var caller = Caller.From(context).RequireStaff(Caller.CouponEditors);
         var id = Inputs.Id(request.CouponId, "coupon_id");
         var ct = context.CancellationToken;
-        var now = clock.GetUtcNow();
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         await concurrent.UpdateVersionedAsync("coupon", db.Coupons.Where(c => c.Id == id), request.Version,
             s => s.SetProperty(c => c.Active, false).SetProperty(c => c.UpdatedAt, now), OrderErrors.NotFoundReason, ct);
         audit.Record(caller.UserId, caller.Role!, "order.deactivate-coupon", "coupon", id.ToString("D"));
@@ -126,9 +127,9 @@ public sealed partial class StaffService(OrderDbContext db, ConcurrentUpdates co
         var caller = Caller.From(context).RequireStaff(Caller.SettingsEditors);
         if (request.ExpressFeeCents < 0) throw OrderErrors.Validation("express_fee_cents", "express_fee_cents must not be negative.");
         var ct = context.CancellationToken;
-        var now = clock.GetUtcNow();
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         await concurrent.UpdateVersionedAsync("checkout settings", db.CheckoutSettings.Where(s => s.Id == 1), request.Version,
             s => s.SetProperty(x => x.ExpressFeeCents, request.ExpressFeeCents).SetProperty(x => x.UpdatedBy, caller.UserId).SetProperty(x => x.UpdatedAt, now),
             OrderErrors.NotFoundReason, ct);

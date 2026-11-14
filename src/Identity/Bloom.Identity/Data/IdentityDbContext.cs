@@ -7,7 +7,7 @@ using Npgsql;
 
 namespace Bloom.Identity.Data;
 
-public sealed partial class IdentityDbContext(DbContextOptions<IdentityDbContext> options, TimeProvider clock)
+public sealed partial class IdentityDbContext(DbContextOptions<IdentityDbContext> options)
     : DbContext(options), IDataProtectionKeyContext
 {
     public DbSet<Account> Accounts => Set<Account>();
@@ -86,15 +86,19 @@ public sealed partial class IdentityDbContext(DbContextOptions<IdentityDbContext
         }
     }
 
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
-        var now = clock.GetUtcNow();
-        foreach (var entry in ChangeTracker.Entries<Account>().Where(e => e.State == EntityState.Modified))
+        var modified = ChangeTracker.Entries<Account>().Where(e => e.State == EntityState.Modified).ToList();
+        if (modified.Count > 0)
         {
-            entry.Entity.Version++;
-            entry.Entity.UpdatedAt = now;
+            var now = await Database.NowAsync(cancellationToken);
+            foreach (var entry in modified)
+            {
+                entry.Entity.Version++;
+                entry.Entity.UpdatedAt = now;
+            }
         }
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     /// <summary>Saves; a unique-index violation becomes <paramref name="onUniqueViolation"/>.</summary>

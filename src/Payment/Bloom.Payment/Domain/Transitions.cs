@@ -11,25 +11,24 @@ namespace Bloom.Payment.Domain;
 /// Payment status changes shared by the webhook, the executor and the reconcilers (04-payment §6.5). Each is one guarded statement (plan R8) that runs in the caller's
 /// transaction and writes outbox rows to the caller's context: the caller saves and commits.
 /// </summary>
-public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimeProvider clock, PaymentMetrics metrics, ILogger<Transitions> logger)
+public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, PaymentMetrics metrics, ILogger<Transitions> logger)
 {
     /// <summary>Any status but <c>succeeded</c> → <c>succeeded</c>: money was taken, so an <c>expired</c> or <c>canceled</c> payment is recorded too. False when already <c>succeeded</c> or unknown.</summary>
     public async Task<bool> SucceedAsync(Guid paymentId, string paymentIntentId, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
         // The CTE locks the row and keeps its prior values; EF wraps the statement in a SELECT, which PostgreSQL only allows around a WITH.
         var moved = (await db.Database.SqlQuery<Succeeded>($"""
             WITH old AS (SELECT id, status, cancel_requested FROM payments WHERE id = {paymentId} FOR UPDATE),
             moved AS (
-                UPDATE payments p SET status = 'succeeded', stripe_payment_intent_id = {paymentIntentId}, succeeded_at = {now}, locked_until = NULL,
-                    version = p.version + 1, updated_at = {now}
+                UPDATE payments p SET status = 'succeeded', stripe_payment_intent_id = {paymentIntentId}, succeeded_at = now(), locked_until = NULL,
+                    version = p.version + 1, updated_at = now()
                 FROM old WHERE p.id = old.id AND p.status <> 'succeeded'
-                RETURNING old.status AS "PriorStatus", old.cancel_requested AS "PriorCancelRequested", p.order_id AS "OrderId", p.amount_cents AS "AmountCents")
-            SELECT "PriorStatus", "PriorCancelRequested", "OrderId", "AmountCents" FROM moved
+                RETURNING old.status AS "PriorStatus", old.cancel_requested AS "PriorCancelRequested", p.order_id AS "OrderId", p.amount_cents AS "AmountCents", p.succeeded_at AS "SucceededAt")
+            SELECT "PriorStatus", "PriorCancelRequested", "OrderId", "AmountCents", "SucceededAt" FROM moved
             """).ToListAsync(ct)).SingleOrDefault();
         if (moved is null) return false;
 
-        outbox.PublishEvent(PaymentMessages.Succeeded, new PaymentSucceededV1(moved.OrderId, paymentId, moved.AmountCents, now));
+        outbox.PublishEvent(PaymentMessages.Succeeded, new PaymentSucceededV1(moved.OrderId, paymentId, moved.AmountCents, moved.SucceededAt));
         var late = moved.PriorStatus is PaymentStatuses.Expired or PaymentStatuses.Canceled || moved.PriorCancelRequested;
         db.AfterCommit.Add(() => { metrics.Succeeded(late); return Task.CompletedTask; });
         return true;
@@ -43,9 +42,8 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
 
     private async Task<bool> LeaveOpenAsync(Guid paymentId, string to, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
         return await db.Database.ExecuteSqlAsync($"""
-            UPDATE payments SET status = {to}, version = version + 1, updated_at = {now}
+            UPDATE payments SET status = {to}, version = version + 1, updated_at = now()
             WHERE id = {paymentId} AND status = 'open'
             """, ct) == 1;
     }
@@ -93,11 +91,10 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
         }
         if (target == RefundStatuses.Submitted && refund.Status != RefundStatuses.Pending) return false;
 
-        var now = clock.GetUtcNow();
         var reason = target == RefundStatuses.Failed ? failureReason ?? stripeStatus : null;
         string[] from = target == RefundStatuses.Submitted ? [RefundStatuses.Pending] : [RefundStatuses.Pending, RefundStatuses.Submitted];
         if (await db.Database.ExecuteSqlAsync($"""
-            UPDATE refunds SET status = {target}, failure_reason = {reason}, updated_at = {now}
+            UPDATE refunds SET status = {target}, failure_reason = {reason}, updated_at = now()
             WHERE id = {refundId} AND status = ANY({from})
             """, ct) != 1)
             throw new InvalidOperationException($"Refund {refundId} left {refund.Status} while its row was locked."); // cannot happen
@@ -107,7 +104,7 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
         else if (target == RefundStatuses.Failed)
         {
             if (await db.Database.ExecuteSqlAsync($"""
-                UPDATE payments SET refunded_cents = refunded_cents - {refund.AmountCents}, version = version + 1, updated_at = {now}
+                UPDATE payments SET refunded_cents = refunded_cents - {refund.AmountCents}, version = version + 1, updated_at = now()
                 WHERE id = {refund.PaymentId}
                 """, ct) != 1)
                 throw new InvalidOperationException($"Payment {refund.PaymentId} of refund {refundId} is missing."); // the foreign key rules this out
@@ -125,5 +122,6 @@ public sealed class Transitions(PaymentDbContext db, OutboxWriter outbox, TimePr
         public bool PriorCancelRequested { get; set; }
         public Guid OrderId { get; set; }
         public long AmountCents { get; set; }
+        public DateTimeOffset SucceededAt { get; set; }
     }
 }

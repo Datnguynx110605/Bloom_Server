@@ -1,4 +1,5 @@
 using Bloom.Identity.Data;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Identity.Worker;
@@ -25,9 +26,9 @@ public sealed class CleanupJob(IServiceScopeFactory scopes, TimeProvider time, I
 
     internal async Task RunOnceAsync(CancellationToken ct)
     {
-        var cutoff = time.GetUtcNow().AddDays(-1);
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
+        var cutoff = (await db.Database.NowAsync(ct)).AddDays(-1);
         await db.VerificationCodes.Where(x => x.ExpiresAt < cutoff).ExecuteDeleteAsync(ct);
         await db.StaffInvitations.Where(x => x.ExpiresAt < cutoff).ExecuteDeleteAsync(ct);
         await db.RefreshTokens.Where(x => x.ExpiresAt < cutoff).ExecuteDeleteAsync(ct);

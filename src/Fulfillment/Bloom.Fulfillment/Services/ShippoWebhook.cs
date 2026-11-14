@@ -8,6 +8,7 @@ using Bloom.Fulfillment.Domain;
 using Bloom.Fulfillment.Observability;
 using Bloom.Fulfillment.Shippo;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Fulfillment.Services;
@@ -37,7 +38,7 @@ public static class ShippoWebhook
 
     private static async Task<IResult> HandleAsync(
         string secret, HttpRequest request, FulfillmentOptions options, FulfillmentMetrics metrics, IShippo shippo, FulfillmentDbContext db, Failures failures, Handover handover,
-        OutboxWriter outbox, TimeProvider clock, ILoggerFactory loggers, CancellationToken ct)
+        OutboxWriter outbox, ILoggerFactory loggers, CancellationToken ct)
     {
         if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(options.Shippo.WebhookSecret)))
         {
@@ -70,7 +71,7 @@ public static class ShippoWebhook
         try
         {
             var status = await shippo.GetTrackingStatusAsync(tracking, ct); // FR-04
-            var changed = await ApplyAsync(shipmentId.Value, status, db, failures, handover, outbox, metrics, clock.GetUtcNow(), logger, ct);
+            var changed = await ApplyAsync(shipmentId.Value, status, db, failures, handover, outbox, metrics, logger, ct);
             metrics.Webhook(changed ? "applied" : "unchanged");
             return Results.Ok();
         }
@@ -104,11 +105,12 @@ public static class ShippoWebhook
 
     /// <summary>Locks the shipment, then applies the re-fetched status. Returns whether the shipment's status changed.</summary>
     private static async Task<bool> ApplyAsync(
-        Guid id, ShippoTracking carrier, FulfillmentDbContext db, Failures failures, Handover handover, OutboxWriter outbox, FulfillmentMetrics metrics, DateTimeOffset now, ILogger logger, CancellationToken ct)
+        Guid id, ShippoTracking carrier, FulfillmentDbContext db, Failures failures, Handover handover, OutboxWriter outbox, FulfillmentMetrics metrics, ILogger logger, CancellationToken ct)
     {
         var tracking = carrier.Status;
         double? handoverSeconds = null; // R21, recorded once the transaction committed
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         // D32 may hand the task over, so the task's lock comes first (lock order: pack_tasks → shipments, as HandOver and CancelPackTask take them)
         var labelTaskId = await db.Shipments.AsNoTracking().Where(x => x.Id == id && x.Direction == Directions.Outbound && x.Status == ShipmentStatuses.LabelReady).Select(x => x.PackTaskId).SingleOrDefaultAsync(ct);
         if (labelTaskId is { } lockedTask) await db.Database.ExecuteSqlAsync($"SELECT 1 FROM pack_tasks WHERE id = {lockedTask} FOR UPDATE", ct);

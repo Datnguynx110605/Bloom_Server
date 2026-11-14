@@ -36,9 +36,8 @@ public sealed partial class WarehouseService
         var ct = context.CancellationToken;
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var now = clock.GetUtcNow();
         var updated = await db.Database.SqlQuery<Guid>($"""
-            UPDATE return_requests SET status = {ReturnStatuses.Received}, version = version + 1, updated_at = {now}
+            UPDATE return_requests SET status = {ReturnStatuses.Received}, version = version + 1, updated_at = now()
             WHERE id = {returnId} AND status IN ({ReturnStatuses.LabelIssued}, {ReturnStatuses.InTransit}, {ReturnStatuses.Expired})
             RETURNING order_id AS "Value"
             """).ToListAsync(ct);
@@ -87,9 +86,8 @@ public sealed partial class WarehouseService
             .Select(s => new { s.Serial, s.LineNo }).ToListAsync(ct)).Select(s => (s.Serial, s.LineNo)).ToHashSet();
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var now = clock.GetUtcNow();
         if (await db.Database.ExecuteSqlAsync($"""
-            UPDATE return_requests SET status = {ReturnStatuses.Inspected}, version = version + 1, updated_at = {now}
+            UPDATE return_requests SET status = {ReturnStatuses.Inspected}, version = version + 1, updated_at = now()
             WHERE id = {returnId} AND status = {ReturnStatuses.Received}
             """, ct) != 1)
             throw await WrongReturnStateAsync(db, returnId, "received", ct);

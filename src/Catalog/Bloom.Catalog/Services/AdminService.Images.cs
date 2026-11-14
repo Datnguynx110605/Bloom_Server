@@ -3,6 +3,7 @@ using Bloom.Catalog.Data;
 using Bloom.Catalog.Errors;
 using Bloom.Catalog.Validation;
 using Bloom.Catalog.V1;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -34,7 +35,7 @@ public sealed partial class AdminService
         if (skuId is { } sku && !await db.Skus.AnyAsync(s => s.Id == sku && s.ProductId == productId, ct)) throw CatalogErrors.NotFoundError("SKU");
         var row = new ProductImage
         {
-            Id = Guid.CreateVersion7(), ProductId = productId, SkuId = skuId, AltText = altText, CreatedAt = clock.GetUtcNow(),
+            Id = Guid.CreateVersion7(), ProductId = productId, SkuId = skuId, AltText = altText, CreatedAt = await db.Database.NowAsync(ct),
             StorageKey = $"products/{productId}/{Guid.NewGuid():D}.{extension}",
             Position = (await db.ProductImages.Where(i => i.ProductId == productId).MaxAsync(i => (int?)i.Position, ct) ?? 0) + 1,
         };

@@ -5,6 +5,7 @@ using Bloom.Fulfillment.Errors;
 using Bloom.Fulfillment.Observability;
 using Bloom.Payment.Contracts;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Fulfillment.Domain;
@@ -32,7 +33,7 @@ public static class RefundMath
 /// The refund steps both <c>DecideReturn</c> and a plan-only <c>RequestReturn</c> share (§6.4.1). Every call but <see cref="Send"/> assumes the caller is inside a transaction
 /// that took <see cref="LockOrderAsync"/> first (lock order: … → order_accounts → order_line_accounts, ascending <c>line_no</c> → warranty_coverages).
 /// </summary>
-public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, FulfillmentMetrics metrics, TimeProvider clock)
+public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, FulfillmentMetrics metrics)
 {
     /// <summary><c>SELECT … FOR UPDATE</c> on the order's account: it serializes the refunds of one order.</summary>
     public async Task<OrderAccount> LockOrderAsync(Guid orderId, CancellationToken ct) =>
@@ -76,14 +77,14 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
     /// The money tail both <c>DecideReturn</c> and a plan-only <c>RequestReturn</c> end with: the guarded line updates, the shipping, the cancelled coverages (WAR-R05, WAR-R06), the refund command
     /// and its saga, then <c>return-decided</c> (<paramref name="perLine"/> are the accepted units) and <c>return-closed</c>. Returns the refund id (null when the amount is 0) and the amount.
     /// </summary>
-    public async Task<(Guid? RefundId, long Total)> SettleReturnAsync(OrderAccount account, Guid returnId, IReadOnlyDictionary<int, (int Units, long Cents)> perLine, IReadOnlyList<Guid> cancelledCoverages, CancellationToken ct)
+    public async Task<(Guid? RefundId, long Total)> SettleReturnAsync(OrderAccount account, Guid returnId, IReadOnlyDictionary<int, (int Units, long Cents)> perLine, IReadOnlyList<Guid> cancelledCoverages, DateTimeOffset now, CancellationToken ct)
     {
         await ApplyAsync(account.OrderId, perLine, ct);
         var (shipping, shippingSet) = await ShippingIfCompleteAsync(account, ct);
         foreach (var id in cancelledCoverages) await CancelCoverageAsync(id, ct);
 
         var total = perLine.Values.Sum(v => v.Cents) + shipping;
-        var refundId = Send(account.OrderId, returnId, SagaTypes.ReturnRefund, "return", total, Lines(perLine), perLine, shippingSet);
+        var refundId = Send(account.OrderId, returnId, SagaTypes.ReturnRefund, "return", total, Lines(perLine), perLine, shippingSet, now);
         outbox.PublishEvent(FulfillmentMessages.ReturnDecided, new ReturnDecidedV1(
             account.OrderId, returnId, perLine.OrderBy(p => p.Key).Select(p => new AcceptedLineV1(p.Key, p.Value.Units)).ToList(), total));
         outbox.PublishEvent(FulfillmentMessages.ReturnClosed, new ReturnClosedV1(account.OrderId, returnId, "decided"));
@@ -111,7 +112,7 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
     public async Task ResolveFailureAsync(Guid orderId, Guid shipmentId, string kind, Guid decidedBy, string? rtsOutcomes, CancellationToken ct)
     {
         var (amount, lines, perLine, shippingSet) = await RefundRemainingAsync(await LockOrderAsync(orderId, ct), ct);
-        Send(orderId, shipmentId, SagaTypes.DeliveryFailure, "delivery_failure", amount, lines, perLine, shippingSet);
+        Send(orderId, shipmentId, SagaTypes.DeliveryFailure, "delivery_failure", amount, lines, perLine, shippingSet, await db.Database.NowAsync(ct)); // the caller's transaction's now()
         await db.Database.ExecuteSqlAsync($"""
             UPDATE warranty_coverages SET status = {CoverageStatuses.Cancelled}
             WHERE order_id = {orderId} AND status IN ({CoverageStatuses.Active}, {CoverageStatuses.PendingDelivery})
@@ -119,7 +120,7 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
         outbox.PublishEvent(FulfillmentMessages.DeliveryFailed, new DeliveryFailedV1(orderId, kind));
         if (await db.Database.ExecuteSqlAsync($"""
             UPDATE delivery_failures
-            SET status = {FailureStatuses.ResolvedRefund}, rts_outcomes = {rtsOutcomes}::jsonb, decided_by = {decidedBy}, updated_at = {clock.GetUtcNow()}
+            SET status = {FailureStatuses.ResolvedRefund}, rts_outcomes = {rtsOutcomes}::jsonb, decided_by = {decidedBy}, updated_at = now()
             WHERE shipment_id = {shipmentId} AND kind = {kind} AND status IN ({FailureStatuses.PossiblyLost}, {FailureStatuses.Confirmed})
             """, ct) != 1)
             throw new InvalidOperationException($"Failure of shipment {shipmentId} is not open; the caller must hold its lock.");
@@ -139,13 +140,13 @@ public sealed class RefundEngine(FulfillmentDbContext db, OutboxWriter outbox, F
     /// The refund command and its saga row (R19), staged in the caller's transaction. Amount 0 sends nothing and returns null (owner item 4).
     /// <c>refund_amount_cents_total{reason}</c> counts the command. The saga keeps the per-line units and amounts and whether this refund set <c>shipping_refunded</c>, to give them back if it fails (D35).
     /// </summary>
-    public Guid? Send(Guid orderId, Guid sagaRef, string sagaType, string reason, long amount, IReadOnlyList<RefundLineV1> lines, IReadOnlyDictionary<int, (int Units, long Cents)> perLine, bool shippingSet)
+    public Guid? Send(Guid orderId, Guid sagaRef, string sagaType, string reason, long amount, IReadOnlyList<RefundLineV1> lines, IReadOnlyDictionary<int, (int Units, long Cents)> perLine, bool shippingSet, DateTimeOffset now)
     {
         if (amount == 0) return null;
         var refundId = Guid.CreateVersion7();
         outbox.SendCommand("payment", PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, refundId, amount, reason, lines));
         db.FulfillmentSagas.Add(new FulfillmentSaga { RefId = sagaRef, Type = sagaType, PendingSteps = ["refund"], RefundId = refundId,
-            RefundLines = JsonSerializer.Serialize(perLine.OrderBy(p => p.Key).Select(p => new RefundedLine(p.Key, p.Value.Units, p.Value.Cents))), RefundedShipping = shippingSet, StartedAt = clock.GetUtcNow() });
+            RefundLines = JsonSerializer.Serialize(perLine.OrderBy(p => p.Key).Select(p => new RefundedLine(p.Key, p.Value.Units, p.Value.Cents))), RefundedShipping = shippingSet, StartedAt = now });
         metrics.Refund(reason, amount);
         return refundId;
     }

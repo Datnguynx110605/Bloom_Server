@@ -6,6 +6,7 @@ using Bloom.Inventory.Errors;
 using Bloom.Inventory.Observability;
 using Bloom.Inventory.V1;
 using Bloom.Shared.Idempotency;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -15,7 +16,7 @@ namespace Bloom.Inventory.Services;
 /// <summary>02-inventory §3 component <c>Warehouse API</c>: staff only, transcoded to JSON under <c>/api/admin/inventory</c>.</summary>
 public sealed partial class WarehouseService(
     InventoryDbContext db, IdempotencyGuard guard, StockLocks locks, Ledger ledger, Allocator allocator, Audit audit,
-    CatalogInternal.CatalogInternalClient catalog, InventoryMetrics metrics, TimeProvider clock) : InventoryWarehouse.InventoryWarehouseBase
+    CatalogInternal.CatalogInternalClient catalog, InventoryMetrics metrics) : InventoryWarehouse.InventoryWarehouseBase
 {
     private const int MaxNoteLength = 500;
     private static readonly TimeSpan CatalogDeadline = TimeSpan.FromSeconds(2);
@@ -60,7 +61,7 @@ public sealed partial class WarehouseService(
 
         return await guard.ExecuteAsync(request, context, async _ =>
         {
-            var now = clock.GetUtcNow();
+            var now = await db.Database.NowAsync(ct);
             var sorted = lines.OrderBy(l => l.SkuId).ToList();
             foreach (var line in sorted.Where(l => !known.ContainsKey(l.SkuId)))
                 await db.Database.ExecuteSqlAsync($"""
@@ -102,9 +103,9 @@ public sealed partial class WarehouseService(
             foreach (var line in sorted)
             {
                 await db.Database.ExecuteSqlAsync($"UPDATE stock_items SET on_hand = on_hand + {line.Quantity}, updated_at = {now} WHERE sku_id = {line.SkuId}", ct);
-                ledger.Add(line.SkuId, EntryTypes.Received, new(OnHand: line.Quantity), RefTypes.Receipt, receiptId);
+                ledger.Add(line.SkuId, EntryTypes.Received, new(OnHand: line.Quantity), RefTypes.Receipt, receiptId, now);
             }
-            await allocator.RunAsync(sorted.Select(l => l.SkuId), ct);
+            await allocator.RunAsync(sorted.Select(l => l.SkuId), now, ct);
 
             audit.Record(caller.UserId, caller.Role!, "inventory.goods-received", "receipt", receiptId.ToString(),
                 new { lines = sorted.Select(l => new { skuId = l.SkuId, quantity = l.Quantity }) });

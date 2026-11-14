@@ -1,6 +1,7 @@
 using Bloom.Fulfillment.Contracts;
 using Bloom.Fulfillment.Data;
 using Bloom.Fulfillment.Shippo;
+using Bloom.Shared.Persistence;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -125,6 +126,30 @@ public sealed class TestFulfillment : IAsyncDisposable
 
     /// <summary>A test-side context on the same database.</summary>
     public FulfillmentDbContext NewDb() => NewDb(ConnectionString);
+
+    /// <summary>The database's <c>now()</c>: the clock stored timestamps and time checks use, which <see cref="Clock"/> does not drive.</summary>
+    public async Task<DateTimeOffset> DbNowAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.NowAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>Moves every stored time back by <paramref name="span"/>, as if that much time had passed since the rows were written: the database clock cannot be advanced. A NULL stays NULL.</summary>
+    public async Task AgeAsync(TimeSpan span)
+    {
+        await using var db = NewDb();
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE pack_tasks SET created_at = created_at - {span}, updated_at = updated_at - {span};
+            UPDATE pack_task_serials SET scanned_at = scanned_at - {span};
+            UPDATE shipments SET created_at = created_at - {span}, next_attempt_at = next_attempt_at - {span}, last_tracking_at = last_tracking_at - {span},
+                handed_over_at = handed_over_at - {span}, delivered_at = delivered_at - {span};
+            UPDATE order_accounts SET delivered_at = delivered_at - {span};
+            UPDATE return_requests SET created_at = created_at - {span}, updated_at = updated_at - {span}, expires_at = expires_at - {span};
+            UPDATE delivery_failures SET created_at = created_at - {span}, updated_at = updated_at - {span}, dismissed_at = dismissed_at - {span};
+            UPDATE fulfillment_sagas SET started_at = started_at - {span}, completed_at = completed_at - {span};
+            UPDATE warranty_coverages SET starts_at = starts_at - {span}, ends_at = ends_at - {span};
+            """, TestContext.Current.CancellationToken);
+    }
 
     private static FulfillmentDbContext NewDb(string connectionString) =>
         new(new DbContextOptionsBuilder<FulfillmentDbContext>().UseNpgsql(connectionString).Options);

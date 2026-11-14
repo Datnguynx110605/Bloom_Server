@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Bloom.Identity.Data;
+using Bloom.Shared.Persistence;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -69,7 +70,7 @@ public sealed class TestIdentity : IAsyncDisposable
         });
         if (fresh)
         {
-            await using var db = NewDb(connectionString, clock);
+            await using var db = NewDb(connectionString);
             await db.Database.MigrateAsync();
         }
         await app.StartAsync();
@@ -84,7 +85,14 @@ public sealed class TestIdentity : IAsyncDisposable
     }
 
     /// <summary>A test-side context on the same database.</summary>
-    public IdentityDbContext NewDb() => NewDb(ConnectionString, Clock);
+    public IdentityDbContext NewDb() => NewDb(ConnectionString);
+
+    /// <summary>The database's <c>now()</c>: the clock stored timestamps and time checks use, which the fake clock does not drive.</summary>
+    public async Task<DateTimeOffset> DbNowAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.NowAsync(TestContext.Current.CancellationToken);
+    }
 
     /// <summary>The stored account, read on a fresh context.</summary>
     public async Task<Account> AccountAsync(Guid id)
@@ -93,8 +101,8 @@ public sealed class TestIdentity : IAsyncDisposable
         return await db.Accounts.AsNoTracking().SingleAsync(a => a.Id == id, TestContext.Current.CancellationToken);
     }
 
-    private static IdentityDbContext NewDb(string connectionString, TimeProvider clock) =>
-        new(new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql(connectionString).Options, clock);
+    private static IdentityDbContext NewDb(string connectionString) =>
+        new(new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql(connectionString).Options);
 
     public async ValueTask DisposeAsync()
     {

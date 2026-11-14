@@ -19,7 +19,7 @@ namespace Bloom.Catalog.Services;
 /// <summary>LLD 08-catalog §3 component <c>Admin API</c>, split by area into partial files.</summary>
 public sealed partial class AdminService(
     CatalogDbContext db, Audit audit, CacheInvalidation invalidation, ConcurrentUpdates concurrent,
-    ProductDerived derived, MarkdownRenderer markdown, TimeProvider clock, ImageStore imageStore, CatalogMetrics metrics) : CatalogAdmin.CatalogAdminBase
+    ProductDerived derived, MarkdownRenderer markdown, ImageStore imageStore, CatalogMetrics metrics) : CatalogAdmin.CatalogAdminBase
 {
     private const string SlugIndex = "ux_categories_slug";
 

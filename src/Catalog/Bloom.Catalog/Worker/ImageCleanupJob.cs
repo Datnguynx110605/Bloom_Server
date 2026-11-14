@@ -1,5 +1,6 @@
 using Bloom.Catalog.Data;
 using Bloom.Catalog.Storage;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Catalog.Worker;
@@ -27,9 +28,9 @@ public sealed class ImageCleanupJob(IServiceScopeFactory scopes, ImageStore stor
     /// <summary>Object first, then row; an object that can't be deleted keeps its row for the next run. Returns the rows deleted.</summary>
     internal async Task<int> RunOnceAsync(CancellationToken ct)
     {
-        var cutoff = time.GetUtcNow().AddHours(-24);
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var cutoff = (await db.Database.NowAsync(ct)).AddHours(-24);
         var stale = await db.ProductImages.AsNoTracking().Where(i => i.Status == ImageStatuses.Pending && i.CreatedAt < cutoff)
             .Select(i => new { i.Id, i.StorageKey }).ToListAsync(ct);
         var deleted = 0;

@@ -117,18 +117,20 @@ public class SchemaTests(Containers containers)
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
-        identity.Clock.Advance(TimeSpan.FromMinutes(5));
+        DateTimeOffset before, after;
         await using (var db = identity.NewDb())
         {
             var tracked = await db.Accounts.SingleAsync(TestContext.Current.CancellationToken);
             Assert.Equal(1, tracked.Version);
             tracked.Name = "Ann";
+            before = await identity.DbNowAsync();
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            after = await identity.DbNowAsync();
         }
 
         await using var read = identity.NewDb();
         var saved = await read.Accounts.SingleAsync(TestContext.Current.CancellationToken);
         Assert.Equal(2, saved.Version);
-        Assert.Equal(identity.Clock.GetUtcNow(), saved.UpdatedAt);
+        Assert.InRange(saved.UpdatedAt, before, after);
     }
 }

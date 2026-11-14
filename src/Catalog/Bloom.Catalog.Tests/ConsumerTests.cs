@@ -91,9 +91,7 @@ public class ConsumerTests(Containers containers)
         await StageAsync(t, released);
         var before = await ProductRowAsync(t, phone.Product.Id);
 
-        t.Clock.Advance(TimeSpan.FromMinutes(1)); // a write would now stamp a later updated_at
         await StageAsync(t, Launch(launchId, "announced", [phone.Product.Id], phone.Skus));
-        t.Clock.Advance(TimeSpan.FromMinutes(1));
         await StageAsync(t, released); // the same event twice
 
         var after = await ProductRowAsync(t, phone.Product.Id);
@@ -113,7 +111,6 @@ public class ConsumerTests(Containers containers)
         var archived = await Seed.PhoneAsync(t, category.Id, status: ProductStatuses.Archived);
         var live = await Seed.PhoneAsync(t, category.Id, "Live phone", ProductStatuses.Draft);
         var before = await ProductRowAsync(t, archived.Product.Id);
-        t.Clock.Advance(TimeSpan.FromMinutes(1)); // a write would now stamp a later updated_at
         var launchId = Guid.NewGuid();
 
         // one event over an archived and a draft product; no exception: the inbox records it as handled (no retry, no DLQ)

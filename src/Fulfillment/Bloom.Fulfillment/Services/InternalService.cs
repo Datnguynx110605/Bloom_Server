@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Fulfillment.Services;
 
 /// <summary>05-fulfillment §5.1 internal API (order calls it; no HTTP route).</summary>
-public sealed class InternalService(FulfillmentDbContext db, TimeProvider clock) : FulfillmentInternal.FulfillmentInternalBase
+public sealed class InternalService(FulfillmentDbContext db) : FulfillmentInternal.FulfillmentInternalBase
 {
     /// <summary>
     /// §6.1, plan R9, R15: guarded status updates in one transaction. Customer: <c>pending</c> → <c>cancelled</c>. Support: also <c>packing</c> and <c>packed</c>,
@@ -26,10 +26,9 @@ public sealed class InternalService(FulfillmentDbContext db, TimeProvider clock)
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         while (true)
         {
-            var now = clock.GetUtcNow();
             // Lock order: pack_tasks, then shipments.
             var cancelled = await db.Database.ExecuteSqlAsync($"""
-                UPDATE pack_tasks SET status = {TaskStatuses.Cancelled}, version = version + 1, updated_at = {now}
+                UPDATE pack_tasks SET status = {TaskStatuses.Cancelled}, version = version + 1, updated_at = now()
                 WHERE ref_id = {orderId} AND status = ANY({cancellable})
                 """, ct);
             if (cancelled == 1)
@@ -57,7 +56,7 @@ public sealed class InternalService(FulfillmentDbContext db, TimeProvider clock)
                 // A racing insert (the marker, or the arriving order) makes this a no-op; the next round sees it.
                 if (await db.Database.ExecuteSqlAsync($"""
                     INSERT INTO pack_tasks (id, ref_id, order_id, kind, status, cancelled_before_arrival, version, created_at, updated_at)
-                    VALUES ({Guid.CreateVersion7()}, {orderId}, {orderId}, {TaskKinds.Order}, {TaskStatuses.Cancelled}, true, 0, {now}, {now})
+                    VALUES ({Guid.CreateVersion7()}, {orderId}, {orderId}, {TaskKinds.Order}, {TaskStatuses.Cancelled}, true, 0, now(), now())
                     ON CONFLICT (ref_id) DO NOTHING
                     """, ct) == 1) break;
                 continue;

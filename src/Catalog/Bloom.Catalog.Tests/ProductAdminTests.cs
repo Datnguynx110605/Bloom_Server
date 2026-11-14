@@ -97,15 +97,16 @@ public class ProductAdminTests(Containers containers)
         await using var t = await TestCatalog.StartAsync(containers);
         var category = await Seed.CategoryAsync(t);
         var (product, _) = await Seed.ProductAsync(t, category.Id, status: "draft", name: "Old name");
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
+        var before = await t.DbNowAsync();
 
         var updated = await (await UpdateAsync(t, product.Id.ToString(),
             UpdateBody(category.Id, "New name", product.Slug, "1", md: product.DescriptionMd))).OkJsonAsync();
+        var after = await t.DbNowAsync();
 
         Assert.Equal("New name", updated.GetProperty("name").GetString());
         Assert.Equal("2", updated.GetProperty("version").GetString());
         Assert.Equal("draft", updated.GetProperty("status").GetString()); // lifecycle methods only
-        Assert.True((t.Clock.GetUtcNow() - updated.GetProperty("updatedAt").GetDateTimeOffset()).Duration() < TimeSpan.FromMilliseconds(1)); // Postgres keeps microseconds
+        Assert.InRange(updated.GetProperty("updatedAt").GetDateTimeOffset(), before, after); // the database clock
         var entry = Assert.Single(await Outbox.AuditAsync(t));
         Assert.Equal("catalog.product-updated", entry.Action);
         Assert.Equal(["after", "before"], entry.Details.EnumerateObject().Select(p => p.Name).Order());

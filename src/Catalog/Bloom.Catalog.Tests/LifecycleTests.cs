@@ -26,12 +26,14 @@ public class LifecycleTests(Containers containers)
         await (await ActAsync(t, inactive.Id, "publish", "1")).ExpectErrorAsync(400, "PUBLISH_INCOMPLETE");
         Assert.Empty(await Outbox.AuditAsync(t));
 
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
+        var before = await t.DbNowAsync();
         var published = await (await ActAsync(t, ready.Id, "publish", "1")).OkJsonAsync();
+        var after = await t.DbNowAsync();
 
         Assert.Equal("active", published.GetProperty("status").GetString());
         Assert.Equal("2", published.GetProperty("version").GetString());
-        Assert.True((t.Clock.GetUtcNow() - published.GetProperty("publishedAt").GetDateTimeOffset()).Duration() < TimeSpan.FromMilliseconds(1));
+        var publishedAt = published.GetProperty("publishedAt").GetDateTimeOffset();
+        Assert.InRange(publishedAt, before, after); // the database clock
     }
 
     [Fact]
@@ -40,10 +42,12 @@ public class LifecycleTests(Containers containers)
         await using var t = await TestCatalog.StartAsync(containers);
         var category = await Seed.CategoryAsync(t);
         var (product, _) = await Seed.ProductAsync(t, category.Id);
-        var publishedAt = t.Clock.GetUtcNow();
+        // Reactivating keeps published_at; an hour in the past on the database clock shows a rewrite.
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlAsync($"UPDATE products SET published_at = now() - interval '1 hour' WHERE id = {product.Id}", TestContext.Current.CancellationToken);
+        var publishedAt = await db.Products.Where(p => p.Id == product.Id).Select(p => p.PublishedAt!.Value).SingleAsync(TestContext.Current.CancellationToken);
         await t.Redis.StringSetAsync($"product:{product.Id}", "x");
         await t.Redis.StringSetAsync("catalog:version", "7");
-        t.Clock.Advance(TimeSpan.FromHours(1));
 
         var archived = await (await ActAsync(t, product.Id, "archive", "1")).OkJsonAsync();
         Assert.Equal("archived", archived.GetProperty("status").GetString());

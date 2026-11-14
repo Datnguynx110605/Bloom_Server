@@ -94,6 +94,15 @@ public static class Seed
     public static Task SucceededAsync(TestOrder t, Guid orderId, Guid? messageId = null) =>
         Consume.Async<PaymentSucceededConsumer>(t, PaymentMessages.Succeeded, new PaymentSucceededV1(orderId, FakeUpstreams.PaymentIdOf(orderId.ToString("D")), 0, t.Clock.GetUtcNow()), messageId);
 
+    /// <summary>
+    /// Lets <paramref name="by"/> pass for the sweeps: they compare <c>deadline_at</c> with the database clock, which the fake clock does not drive, so every order's deadline moves back instead.
+    /// </summary>
+    public static async Task AgeDeadlinesAsync(TestOrder t, TimeSpan by)
+    {
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlAsync($"UPDATE orders SET deadline_at = deadline_at - {by}", TestContext.Current.CancellationToken);
+    }
+
     public static async Task<OrderRow> OrderAsync(TestOrder t, Guid id)
     {
         await using var db = t.NewDb();

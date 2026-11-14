@@ -6,6 +6,7 @@ using Bloom.Fulfillment.Errors;
 using Bloom.Fulfillment.V1;
 using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using ReturnRequest = Bloom.Fulfillment.Data.ReturnRequest;
@@ -15,7 +16,7 @@ using Shipment = Bloom.Fulfillment.Data.Shipment;
 namespace Bloom.Fulfillment.Services;
 
 /// <summary>05-fulfillment §3 component <c>Customer API</c> (returns). The caller's id is the order's <c>account_id</c>; anything that is not theirs is <c>NOT_FOUND</c> (spec §6).</summary>
-public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard guard, OutboxWriter outbox, RefundEngine refunds, TimeProvider clock) : FulfillmentCustomer.FulfillmentCustomerBase
+public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard guard, OutboxWriter outbox, RefundEngine refunds) : FulfillmentCustomer.FulfillmentCustomerBase
 {
     private static readonly TimeSpan ReturnWindow = TimeSpan.FromDays(14); // RET-R01, RET-R15
     private static readonly string[] Open =
@@ -38,7 +39,7 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
     {
         var account = await refunds.LockOrderAsync(orderId, ct);
         if (account.AccountId != caller.UserId) throw FulfillmentErrors.NotFound("The order");
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         if (account.DeliveredAt is not { } delivered || now > delivered + ReturnWindow)
             throw FulfillmentErrors.Error(FulfillmentErrors.ReturnWindowClosed, "The return window of this order is closed.");
 
@@ -77,7 +78,7 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
                 units.Add(new ReturnUnit { ReturnId = returnId, UnitNo = units.Count + 1, LineNo = u.LineNo });
         db.ReturnUnits.AddRange(units);
         outbox.PublishEvent(FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(orderId, returnId));
-        if (planOnly) await DecidePlansAsync(account, returnId, lines, units, ct);
+        if (planOnly) await DecidePlansAsync(account, returnId, lines, units, now, ct);
         await db.SaveChangesAsync(ct); // the view below reads the rows; the guard commits
         return await Views.ReturnAsync(db, returnId, ct);
     }
@@ -87,7 +88,7 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
     /// Fills in the decision and money of the new units, then settles the refund (<see cref="RefundEngine.SettleReturnAsync"/>).
     /// Lock order after the order lock: order_line_accounts (ascending), then warranty_coverages.
     /// </summary>
-    private async Task DecidePlansAsync(OrderAccount account, Guid returnId, Dictionary<int, OrderLineAccount> lines, List<ReturnUnit> units, CancellationToken ct)
+    private async Task DecidePlansAsync(OrderAccount account, Guid returnId, Dictionary<int, OrderLineAccount> lines, List<ReturnUnit> units, DateTimeOffset now, CancellationToken ct)
     {
         var perLine = new Dictionary<int, (int Units, long Cents)>();
         foreach (var unit in units)
@@ -107,7 +108,7 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
                 orderby s.Seq descending
                 select c.Id).Take(count).ToListAsync(ct));
 
-        await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, ct);
+        await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, now, ct);
     }
 
     /// <summary>The caller's returns, newest first.</summary>
@@ -124,6 +125,6 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
     public override async Task<Coverage> GetCoverage(GetCoverageRequest request, ServerCallContext context)
     {
         var caller = Caller.From(context).RequireCustomer();
-        return await Views.CoverageAsync(db, clock, Inputs.Serial(request.Serial, "serial"), caller.UserId, context.CancellationToken);
+        return await Views.CoverageAsync(db, Inputs.Serial(request.Serial, "serial"), caller.UserId, context.CancellationToken);
     }
 }

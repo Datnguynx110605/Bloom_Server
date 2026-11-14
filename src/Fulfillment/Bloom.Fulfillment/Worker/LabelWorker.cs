@@ -5,6 +5,7 @@ using Bloom.Fulfillment.Observability;
 using Bloom.Fulfillment.Shippo;
 using Bloom.Order.Contracts;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Fulfillment.Worker;
@@ -52,11 +53,10 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
         var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
         var shippo = scope.ServiceProvider.GetRequiredService<IShippo>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var now = clock.GetUtcNow();
         var ids = tried.ToArray();
         var shipment = (await db.Shipments.FromSql($"""
             SELECT * FROM shipments
-            WHERE status = {ShipmentStatuses.LabelPending} AND next_attempt_at <= {now} AND id <> ALL({ids})
+            WHERE status = {ShipmentStatuses.LabelPending} AND next_attempt_at <= now() AND id <> ALL({ids})
             ORDER BY next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED
             """).AsNoTracking().ToListAsync(ct)).SingleOrDefault();
         if (shipment is null) return false;
@@ -73,7 +73,7 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
                     label_attempts = 0, version = version + 1
                 WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelPending}
                 """, ct);
-            if (shipment.Direction == Directions.Return) await IssueReturnLabelAsync(scope.ServiceProvider, db, shipment, label.LabelUrl, now, ct);
+            if (shipment.Direction == Directions.Return) await IssueReturnLabelAsync(scope.ServiceProvider, db, shipment, label.LabelUrl, ct);
             await tx.CommitAsync(ct);
             metrics.Label(found is not null ? "reused" : "bought");
         }
@@ -95,10 +95,10 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
     }
 
     /// <summary>R14: a return label also takes the request <c>requested → label_issued</c> (lock order: shipments → return_requests) and publishes <c>return-label-issued</c>.</summary>
-    private static async Task IssueReturnLabelAsync(IServiceProvider services, FulfillmentDbContext db, Shipment shipment, string labelUrl, DateTimeOffset now, CancellationToken ct)
+    private static async Task IssueReturnLabelAsync(IServiceProvider services, FulfillmentDbContext db, Shipment shipment, string labelUrl, CancellationToken ct)
     {
         if (await db.Database.ExecuteSqlAsync($"""
-            UPDATE return_requests SET status = {ReturnStatuses.LabelIssued}, version = version + 1, updated_at = {now}
+            UPDATE return_requests SET status = {ReturnStatuses.LabelIssued}, version = version + 1, updated_at = now()
             WHERE id = {shipment.ReturnRequestId} AND status = {ReturnStatuses.Requested}
             """, ct) != 1)
             throw new InvalidOperationException($"Return {shipment.ReturnRequestId} is not requested although its label was just bought; the expiry takes the shipment's lock first."); // cannot happen
@@ -123,16 +123,19 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
     private async Task FailAsync(Shipment shipment, Exception e, CancellationToken ct)
     {
         var n = shipment.LabelAttempts + 1;
-        var next = clock.GetUtcNow() + Backoff[Math.Min(n, Backoff.Length) - 1]; // from now, after the Shippo call (F-3)
+        var backoff = Backoff[Math.Min(n, Backoff.Length) - 1]; // from now, after the Shippo call (F-3)
+        DateTimeOffset? next; // null when the row had left label_pending (nothing was rescheduled)
         try
         {
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
             await using var tx = await db.Database.BeginTransactionAsync(ct);
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE shipments SET label_attempts = {n}, next_attempt_at = {next}, version = version + 1
+            var rows = await db.Database.SqlQuery<DateTimeOffset>($"""
+                UPDATE shipments SET label_attempts = {n}, next_attempt_at = now() + {backoff}, version = version + 1
                 WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelPending}
-                """, ct);
+                RETURNING next_attempt_at AS "Value"
+                """).ToListAsync(ct);
+            next = rows.Count == 1 ? rows[0] : null;
             await tx.CommitAsync(ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)

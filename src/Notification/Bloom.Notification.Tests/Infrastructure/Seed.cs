@@ -42,11 +42,11 @@ public static class Seed
         return row.Id;
     }
 
-    /// <summary>Inserts an email job (created now by the test clock) and returns its id.</summary>
+    /// <summary>Inserts an email job (created now by the database clock, so due at once, unless given) and returns its id.</summary>
     public static async Task<Guid> JobAsync(TestNotification t, string template = "order.confirmed", Dictionary<string, string>? data = null, string status = EmailStatuses.Pending,
         DateTimeOffset? next = null, string? to = null, DateTimeOffset? createdAt = null)
     {
-        var row = Job(t, template, status, createdAt ?? t.Clock.GetUtcNow(), next, to, data);
+        var row = Job(t, template, status, createdAt ?? await t.DbNowAsync(), next, to, data);
         await using var db = t.NewDb();
         db.EmailJobs.Add(row);
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);

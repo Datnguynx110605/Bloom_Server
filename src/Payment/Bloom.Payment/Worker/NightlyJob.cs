@@ -145,9 +145,8 @@ public sealed class NightlyJob(IServiceScopeFactory scopes, TimeProvider clock, 
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
-        var cutoff = clock.GetUtcNow().AddDays(-90);
         while (await db.Database.ExecuteSqlAsync($"""
-            DELETE FROM provider_events WHERE event_id IN (SELECT event_id FROM provider_events WHERE received_at < {cutoff} LIMIT {PurgeBatch})
+            DELETE FROM provider_events WHERE event_id IN (SELECT event_id FROM provider_events WHERE received_at < now() - interval '90 days' LIMIT {PurgeBatch})
             """, ct) >= PurgeBatch) { }
     }
 }

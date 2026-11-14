@@ -182,6 +182,12 @@ public class WorkerTests(Containers containers)
         await Poll.UntilAsync(async () => (await db.Set<OutboxMessage>().AsNoTracking().SingleAsync(m => m.Id == envelope.MessageId, Ct)).Status == "sent", 20, "outbox row sent");
     }
 
+    private static async Task AgeReservationAsync(TestInventory t, Guid orderId, TimeSpan age)
+    {
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlAsync($"UPDATE stock_allocations SET created_at = now() - {age} WHERE order_id = {orderId}", Ct);
+    }
+
     [Fact]
     public async Task Stock_monitor_reports_stuck_reservations_and_levels()
     {
@@ -190,7 +196,7 @@ public class WorkerTests(Containers containers)
         await using var __ = worker;
         using var metrics = new MetricCapture(worker.Services);
         var monitor = worker.Services.GetServices<IHostedService>().OfType<StockMonitor>().Single();
-        await monitor.StopAsync(Ct); // its own tick, fired by Clock.Advance, would overwrite the gauges after the RunOnceAsync below (IN-2)
+        await monitor.StopAsync(Ct); // its own tick would overwrite the gauges after the RunOnceAsync below (IN-2)
         api.Clock.SetUtcNow(worker.Clock.GetUtcNow()); // one business clock for both hosts
         var sku = Seed.Sku(api);
         await Seed.ReceiveAsync(api, sku, 5);
@@ -198,17 +204,36 @@ public class WorkerTests(Containers containers)
         await Seed.ReserveAsync(api, order, (sku, 2));
         await Seed.BackorderAsync(api, sku, 10, api.Clock.GetUtcNow());
 
-        worker.Clock.Advance(TimeSpan.FromMinutes(29));
+        await AgeReservationAsync(api, order, TimeSpan.FromMinutes(29)); // the cutoff is the database clock
         await monitor.RunOnceAsync(Ct);
         Assert.Equal(0, metrics.Latest("stuck_reservations"));
 
-        worker.Clock.Advance(TimeSpan.FromMinutes(2));
+        await AgeReservationAsync(api, order, TimeSpan.FromMinutes(31));
         await monitor.RunOnceAsync(Ct);
         Assert.Equal(1, metrics.Latest("stuck_reservations"));
         Assert.Equal(3, metrics.Latest("stock_available", ("sku", sku.ToString())));
         Assert.Equal(1, metrics.Latest("backorders_waiting", ("sku", sku.ToString())));
         await using var db = api.NewDb();
         Assert.Equal(AllocationStatuses.Reserved, (await db.StockAllocations.AsNoTracking().SingleAsync(a => a.RefId == order, Ct)).Status); // reported, never released (IR-05)
+    }
+
+    [Fact]
+    public async Task Stuck_reservation_cutoff_follows_the_database_clock_not_the_app_clock()
+    {
+        var (api, worker) = await StartAsync();
+        await using var _ = api;
+        await using var __ = worker;
+        using var metrics = new MetricCapture(worker.Services);
+        var monitor = worker.Services.GetServices<IHostedService>().OfType<StockMonitor>().Single();
+        await monitor.StopAsync(Ct); // its own tick would overwrite the gauge after the RunOnceAsync below (IN-2)
+        var sku = Seed.Sku(api);
+        await Seed.ReceiveAsync(api, sku, 5);
+        await Seed.ReserveAsync(api, Guid.CreateVersion7(), (sku, 2)); // reserved just now by the database clock
+
+        worker.Clock.Advance(TimeSpan.FromDays(1)); // the app clock is far ahead of the database: an app-clock cutoff would call the reservation stuck
+        await monitor.RunOnceAsync(Ct);
+
+        Assert.Equal(0, metrics.Latest("stuck_reservations"));
     }
 
     [Fact]

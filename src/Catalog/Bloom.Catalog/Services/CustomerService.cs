@@ -8,6 +8,7 @@ using Bloom.Catalog.Validation;
 using Bloom.Catalog.V1;
 using Bloom.Shared.Concurrency;
 using Bloom.Shared.Errors;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -18,7 +19,7 @@ namespace Bloom.Catalog.Services;
 
 /// <summary>LLD 08-catalog §3 component <c>Customer API</c> (§6.5): a customer's own review. Customer actions aren't audited (plan R13).</summary>
 public sealed class CustomerService(
-    CatalogDbContext db, CacheInvalidation invalidation, ConcurrentUpdates concurrent, CatalogMetrics metrics, TimeProvider clock) : CatalogCustomer.CatalogCustomerBase
+    CatalogDbContext db, CacheInvalidation invalidation, ConcurrentUpdates concurrent, CatalogMetrics metrics) : CatalogCustomer.CatalogCustomerBase
 {
     private const string AccountIndex = "ux_reviews_product_account";
 
@@ -61,7 +62,7 @@ public sealed class CustomerService(
     {
         if (!await db.ReviewEligibilities.AnyAsync(e => e.AccountId == caller.UserId && e.ProductId == productId, ct))
             throw CatalogErrors.Error(CatalogErrors.NotVerifiedBuyer, "Only a customer who received this product can review it.");
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var review = new ReviewRow
         {
             Id = Guid.CreateVersion7(), ProductId = productId, AccountId = caller.UserId, Rating = (short)rating, Text = text, CreatedAt = now, UpdatedAt = now,
@@ -82,7 +83,7 @@ public sealed class CustomerService(
     {
         var review = await LockMineAsync(productId, caller.UserId, ct);
         if (review.Version == version && review.Rating == rating && review.Text == text) return (review, null); // nothing to write (spec §4)
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         review.Version = await concurrent.UpdateVersionedAsync("review", db.Reviews.Where(r => r.Id == review.Id), version,
             s => s.SetProperty(r => r.Rating, (short)rating).SetProperty(r => r.Text, text).SetProperty(r => r.UpdatedAt, now), CatalogErrors.NotFound, ct);
         var delta = rating - review.Rating;

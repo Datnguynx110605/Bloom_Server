@@ -8,6 +8,7 @@ using Bloom.Fulfillment.V1;
 using Bloom.Shared.Concurrency;
 using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using PackTask = Bloom.Fulfillment.Data.PackTask;
@@ -18,7 +19,7 @@ namespace Bloom.Fulfillment.Services;
 
 /// <summary>05-fulfillment §3 component <c>Warehouse API</c>, packing (§6.2). Role first (plan R7), then validation (R10), then state (R9). Scans call inventory first, outside any transaction (spec §7).</summary>
 public sealed partial class WarehouseService(
-    FulfillmentDbContext db, ConcurrentUpdates updates, InventoryCalls inventory, Audit audit, OutboxWriter outbox, FulfillmentMetrics metrics, TimeProvider clock,
+    FulfillmentDbContext db, ConcurrentUpdates updates, InventoryCalls inventory, Audit audit, OutboxWriter outbox, FulfillmentMetrics metrics,
     IdempotencyGuard guard, RefundEngine refunds, Failures failures, Handover handover) : FulfillmentWarehouse.FulfillmentWarehouseBase
 {
     public override async Task<ListPackTasksResponse> ListPackTasks(ListPackTasksRequest request, ServerCallContext context)
@@ -42,7 +43,7 @@ public sealed partial class WarehouseService(
         await using var tx = await db.Database.BeginTransactionAsync(ct);
 
         var task = await TaskAsync(taskId, TaskStatuses.Pending, forUpdate: true, ct);
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         await updates.UpdateVersionedAsync("pack task", db.PackTasks.Where(p => p.Id == taskId && p.Status == TaskStatuses.Pending), request.Version,
             b => b.SetProperty(p => p.Status, TaskStatuses.Packing).SetProperty(p => p.UpdatedAt, now), FulfillmentErrors.NotFoundReason, ct);
         if (task.Kind == TaskKinds.Order) outbox.PublishEvent(FulfillmentMessages.PackingStarted, new PackingStartedV1(task.OrderId));
@@ -70,7 +71,7 @@ public sealed partial class WarehouseService(
         var scanned = await ScannedAsync(taskId, ct);
         if (!AlreadyScanned(scanned, line, serial))
         {
-            db.PackTaskSerials.Add(new PackTaskSerial { TaskId = taskId, Serial = serial, LineNo = line.LineNo, Seq = scanned.Select(s => s.Seq).DefaultIfEmpty().Max() + 1, ScannedAt = clock.GetUtcNow() });
+            db.PackTaskSerials.Add(new PackTaskSerial { TaskId = taskId, Serial = serial, LineNo = line.LineNo, Seq = scanned.Select(s => s.Seq).DefaultIfEmpty().Max() + 1, ScannedAt = await db.Database.NowAsync(ct) });
             audit.Record(caller.UserId, caller.Role!, "fulfillment.scan-serial", "pack_task", taskId.ToString(), new { lineNo = line.LineNo, serial });
             await db.SaveChangesAsync(ct);
         }
@@ -117,7 +118,7 @@ public sealed partial class WarehouseService(
         await TaskAsync(taskId, TaskStatuses.Packing, forUpdate: true, ct);
         if (!ReplaceDone(await ScannedAsync(taskId, ct), oldSerial, newSerial))
         {
-            await db.Database.ExecuteSqlAsync($"UPDATE pack_task_serials SET serial = {newSerial}, scanned_at = {clock.GetUtcNow()} WHERE task_id = {taskId} AND serial = {oldSerial}", ct);
+            await db.Database.ExecuteSqlAsync($"UPDATE pack_task_serials SET serial = {newSerial}, scanned_at = now() WHERE task_id = {taskId} AND serial = {oldSerial}", ct);
             audit.Record(caller.UserId, caller.Role!, "fulfillment.replace-serial", "pack_task", taskId.ToString(), new { oldSerial, newSerial });
             await db.SaveChangesAsync(ct);
         }
@@ -139,7 +140,7 @@ public sealed partial class WarehouseService(
         if (lines.Any(l => l is { Kind: LineKinds.Product, Serialized: true } && scanned.Count(s => s.LineNo == l.LineNo) < l.Quantity))
             throw FulfillmentErrors.Error(FulfillmentErrors.SerialsIncomplete, "Every serialized line needs all its serials.");
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         await updates.UpdateVersionedAsync("pack task", db.PackTasks.Where(p => p.Id == taskId && p.Status == TaskStatuses.Packing), request.Version,
             b => b.SetProperty(p => p.Status, TaskStatuses.Packed).SetProperty(p => p.UpdatedAt, now), FulfillmentErrors.NotFoundReason, ct);
         var shipment = new Shipment

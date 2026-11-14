@@ -5,6 +5,7 @@ using System.Text.Json;
 using Bloom.Identity.Contracts;
 using Bloom.Identity.Crypto;
 using Bloom.Identity.Data;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -51,7 +52,9 @@ public class SessionTests(Containers containers)
 
         foreach (var (account, type) in new[] { (customer, "customer"), (staff, "staff") })
         {
+            var before = await t.DbNowAsync();
             var session = await Seed.SessionAsync(t, account);
+            var after = await t.DbNowAsync();
             var p = Payload(session.AccessToken);
             var expected = new[] { "iss", "aud", "sub", "typ", "auth_time", "iat", "exp", "jti", "sid" }.Concat(type == "staff" ? ["role"] : []);
 
@@ -61,8 +64,8 @@ public class SessionTests(Containers containers)
             Assert.Equal(account.Id.ToString(), p.GetProperty("sub").GetString());
             Assert.Equal(type, p.GetProperty("typ").GetString());
             Assert.Equal(900, p.GetProperty("exp").GetInt64() - p.GetProperty("iat").GetInt64());
-            Assert.Equal(t.Clock.GetUtcNow().ToUnixTimeSeconds(), p.GetProperty("iat").GetInt64());
-            Assert.Equal(t.Clock.GetUtcNow().ToUnixTimeSeconds(), p.GetProperty("auth_time").GetInt64());
+            Assert.InRange(p.GetProperty("iat").GetInt64(), before.ToUnixTimeSeconds(), after.ToUnixTimeSeconds()); // the database's now()
+            Assert.InRange(p.GetProperty("auth_time").GetInt64(), before.ToUnixTimeSeconds(), after.ToUnixTimeSeconds());
             Assert.Equal((await RowAsync(t, session.RefreshToken)).FamilyId.ToString(), p.GetProperty("sid").GetString());
             if (type == "staff") Assert.Equal("warehouse", p.GetProperty("role").GetString());
         }
@@ -119,10 +122,13 @@ public class SessionTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var account = await Seed.CustomerAsync(t);
         var session = await Seed.SessionAsync(t, account);
-        var authTime = t.Clock.GetUtcNow().ToUnixTimeSeconds();
-        t.Clock.Advance(TimeSpan.FromMinutes(20));
+        await using (var db = t.NewDb()) // the sign-in was 20 minutes ago, so auth_time must differ from the new token's iat
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE refresh_tokens SET auth_time = now() - interval '20 minutes'", Ct);
+        var authTime = (await RowAsync(t, session.RefreshToken)).AuthTime.ToUnixTimeSeconds();
 
+        var before = await t.DbNowAsync();
         var response = await RefreshAsync(t, session.RefreshToken);
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         AssertNoStore(response);
@@ -136,12 +142,12 @@ public class SessionTests(Containers containers)
         var old = await RowAsync(t, session.RefreshToken);
         var current = await RowAsync(t, newToken);
         Assert.Equal(RefreshStatuses.Rotated, old.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), old.UsedAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(old.UsedAt!.Value, before, after);
         Assert.Equal(RefreshStatuses.Active, current.Status);
         Assert.Equal(old.FamilyId, current.FamilyId);
         var payload = Payload(await AccessTokenAsync(response));
         Assert.Equal(authTime, payload.GetProperty("auth_time").GetInt64());
-        Assert.Equal(t.Clock.GetUtcNow().ToUnixTimeSeconds(), payload.GetProperty("iat").GetInt64());
+        Assert.InRange(payload.GetProperty("iat").GetInt64(), before.ToUnixTimeSeconds(), after.ToUnixTimeSeconds());
         Assert.Equal(1, metrics.Sum("refresh_total", ("result", "rotated")));
     }
 
@@ -150,12 +156,15 @@ public class SessionTests(Containers containers)
     {
         await using var t = await TestIdentity.StartAsync(containers);
         var session = await Seed.SessionAsync(t, await Seed.CustomerAsync(t));
-        t.Clock.Advance(TimeSpan.FromDays(6));
+        await using (var db = t.NewDb()) // six of the seven days have passed
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE refresh_tokens SET expires_at = now() + interval '1 day'", Ct);
 
+        var before = await t.DbNowAsync();
         var response = await RefreshAsync(t, session.RefreshToken);
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal(t.Clock.GetUtcNow() + TimeSpan.FromDays(7), (await RowAsync(t, response.RefreshCookie()!)).ExpiresAt, TimeSpan.FromMilliseconds(1));
+        Assert.InRange((await RowAsync(t, response.RefreshCookie()!)).ExpiresAt, before + TimeSpan.FromDays(7), after + TimeSpan.FromDays(7));
     }
 
     [Fact]
@@ -167,20 +176,21 @@ public class SessionTests(Containers containers)
         var a = await Seed.SessionAsync(t, account);
         await Seed.SessionAsync(t, account);
         Assert.Equal(HttpStatusCode.OK, (await RefreshAsync(t, a.RefreshToken)).StatusCode);
-        t.Clock.Advance(TimeSpan.FromMinutes(1));
 
+        var before = await t.DbNowAsync();
         var replay = await RefreshAsync(t, a.RefreshToken);
+        var after = await t.DbNowAsync();
 
         await replay.ExpectErrorAsync(401, "REFRESH_INVALID");
         AssertNoStore(replay);
         Assert.All(await RowsAsync(t, account.Id), r => Assert.Equal(RefreshStatuses.Revoked, r.Status));
         await using var db = t.NewDb();
         var stored = await db.Accounts.SingleAsync(x => x.Id == account.Id, Ct);
-        Assert.Equal(t.Clock.GetUtcNow(), stored.TokensValidAfter!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(stored.TokensValidAfter!.Value, before, after);
         var envelope = Assert.Single(await Outbox.EnvelopesAsync(t, "identity.tokens-revoked.v1"));
         var payload = envelope.GetPayload<TokensRevokedV1>();
         Assert.Equal(account.Id, payload.AccountId);
-        Assert.Equal(t.Clock.GetUtcNow().ToUnixTimeMilliseconds(), payload.IssuedBefore);
+        Assert.InRange(payload.IssuedBefore, before.ToUnixTimeMilliseconds(), after.ToUnixTimeMilliseconds());
         Assert.Equal(1, metrics.Sum("refresh_total", ("result", "reuse")));
         Assert.Equal(1, metrics.Sum("revocations_total", ("trigger", "refresh_reuse")));
     }
@@ -195,7 +205,6 @@ public class SessionTests(Containers containers)
         await Seed.SessionAsync(t, account);
         var caller = TestCaller.Customer(account.Id, t.Clock.GetUtcNow());
         Assert.Equal(HttpStatusCode.OK, (await t.SendAsync(HttpMethod.Post, "/api/me/sign-out-everywhere", caller: caller)).StatusCode);
-        t.Clock.Advance(TimeSpan.FromMinutes(1));
         var current = await Seed.SessionAsync(t, account);
 
         var stale = await RefreshAsync(t, oldDevice.RefreshToken);
@@ -214,15 +223,33 @@ public class SessionTests(Containers containers)
     {
         await using var t = await TestIdentity.StartAsync(containers);
         var session = await Seed.SessionAsync(t, (await Seed.StaffAsync(t)).Account);
-        t.Clock.Advance(TimeSpan.FromHours(11) + TimeSpan.FromMinutes(59));
+        await using var db = t.NewDb(); // 11 h 59 min of the 12 h have passed
+        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE refresh_tokens SET expires_at = now() + interval '1 minute'", Ct);
+        var familyExpiry = (await RowAsync(t, session.RefreshToken)).ExpiresAt;
 
         var ok = await RefreshAsync(t, session.RefreshToken);
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
-        t.Clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Equal(familyExpiry, (await RowAsync(t, ok.RefreshCookie()!)).ExpiresAt); // the family's absolute expiry carries over
+        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE refresh_tokens SET expires_at = now() - interval '1 minute'", Ct); // and now it has passed
         var expired = await RefreshAsync(t, ok.RefreshCookie());
 
         await expired.ExpectErrorAsync(401, "REFRESH_INVALID");
         Assert.Empty(await Outbox.EnvelopesAsync(t, "identity.tokens-revoked.v1"));
+    }
+
+    [Fact]
+    public async Task Refresh_expiry_follows_the_database_clock_not_the_app_clock() // 00-reliability §10
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var session = await Seed.SessionAsync(t, await Seed.CustomerAsync(t));
+        t.Clock.Advance(TimeSpan.FromDays(30)); // past the 7 days on the app clock; the database has not moved
+
+        var before = await t.DbNowAsync();
+        var response = await RefreshAsync(t, session.RefreshToken);
+        var after = await t.DbNowAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.InRange((await RowAsync(t, response.RefreshCookie()!)).ExpiresAt, before + TimeSpan.FromDays(7), after + TimeSpan.FromDays(7));
     }
 
     [Fact]
@@ -267,8 +294,9 @@ public class SessionTests(Containers containers)
         await using var rotating = t.NewDb();
         await using var tx = await rotating.Database.BeginTransactionAsync(Ct);
         await rotating.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM accounts WHERE id = {account.Id} FOR UPDATE", Ct);
+        var rotationIat = await rotating.Database.NowAsync(Ct); // the iat of the access token this rotation would issue: its transaction's now()
         await rotating.Database.ExecuteSqlInterpolatedAsync(
-            $"UPDATE refresh_tokens SET status = 'rotated', used_at = {t.Clock.GetUtcNow()} WHERE token_hash = {hash}", Ct);
+            $"UPDATE refresh_tokens SET status = 'rotated', used_at = now() WHERE token_hash = {hash}", Ct);
         await rotating.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO refresh_tokens (id, family_id, account_id, token_hash, status, auth_time, expires_at, created_at)
             SELECT {Guid.NewGuid()}, family_id, account_id, {Opaque.Sha256(Opaque.NewToken())}, 'active', auth_time, expires_at, created_at
@@ -283,12 +311,17 @@ public class SessionTests(Containers containers)
                 $"SELECT wait_event_type AS \"Value\" FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").ToListAsync(Ct)).Count > 0;
         },
         10, "sign-out-everywhere waiting on the rotation");
+        var committingAt = (await rotating.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"").ToListAsync(Ct)).Single();
         await tx.CommitAsync(Ct);
 
         Assert.Equal(HttpStatusCode.OK, (await signOut).StatusCode);
         var rows = await RowsAsync(t, account.Id);
         Assert.Equal(2, rows.Count);
         Assert.All(rows, r => Assert.Equal(RefreshStatuses.Revoked, r.Status));
+        var validAfter = (await t.AccountAsync(account.Id)).TokensValidAfter!.Value;
+        Assert.True(rotationIat < validAfter, "the rotation's access token must count as revoked at the gateway (iat < tokens_valid_after)");
+        Assert.True(committingAt < validAfter, "the stamp is taken after the lock wait, not at the start of the revoking transaction");
+        Assert.Equal(validAfter.ToUnixTimeMilliseconds(), Assert.Single(await Outbox.EnvelopesAsync(t, "identity.tokens-revoked.v1")).GetPayload<TokensRevokedV1>().IssuedBefore);
     }
 
     [Fact]

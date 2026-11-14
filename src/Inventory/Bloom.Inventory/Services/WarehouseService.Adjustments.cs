@@ -3,6 +3,7 @@ using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Inventory.Errors;
 using Bloom.Inventory.V1;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -26,7 +27,7 @@ public sealed partial class WarehouseService
 
         return await guard.ExecuteAsync(request, context, async _ =>
         {
-            var now = clock.GetUtcNow();
+            var now = await db.Database.NowAsync(ct);
             if (!(await locks.LockAsync([a.SkuId], ct)).TryGetValue(a.SkuId, out var item))
                 throw InventoryErrors.Error(InventoryErrors.SkuNotStocked, "The SKU has no stock record yet.");
             CheckSerialShape(a, item.Serialized);
@@ -92,8 +93,8 @@ public sealed partial class WarehouseService
             {
                 Id = adjustmentId, SkuId = a.SkuId, Serial = serial, Delta = a.Delta, ReasonCode = a.Reason, Note = a.Note, StaffId = caller.UserId, CreatedAt = now,
             });
-            ledger.Add(a.SkuId, EntryTypes.Adjusted, new(OnHand: a.Delta, Damaged: damaged, Lost: lost - lostBack), RefTypes.Adjustment, adjustmentId);
-            if (a.Delta > 0) await allocator.RunAsync([a.SkuId], ct);
+            ledger.Add(a.SkuId, EntryTypes.Adjusted, new(OnHand: a.Delta, Damaged: damaged, Lost: lost - lostBack), RefTypes.Adjustment, adjustmentId, now);
+            if (a.Delta > 0) await allocator.RunAsync([a.SkuId], now, ct);
 
             audit.Record(caller.UserId, caller.Role!, "inventory.stock-adjusted", "adjustment", adjustmentId.ToString(),
                 new { skuId = a.SkuId, delta = a.Delta, reasonCode = a.Reason, serial });

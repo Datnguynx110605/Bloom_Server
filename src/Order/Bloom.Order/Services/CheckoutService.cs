@@ -10,6 +10,7 @@ using Bloom.Order.Observability;
 using Bloom.Payment.Contracts;
 using Bloom.Shared.Errors;
 using Bloom.Shared.Idempotency;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -25,7 +26,7 @@ namespace Bloom.Order.Services;
 /// </summary>
 public sealed class CheckoutService(
     OrderDbContext db, IdempotencyGuard guard, Upstreams upstreams, Transitions transitions, CheckoutFailures failures, Coupons coupons,
-    OrderMetrics metrics, OrderOptions options, TimeProvider clock, ILogger<CheckoutService> logger) : OrderCheckout.OrderCheckoutBase
+    OrderMetrics metrics, OrderOptions options, ILogger<CheckoutService> logger) : OrderCheckout.OrderCheckoutBase
 {
     private const long MinTotalCents = 50; // CHK-R20: the card processor's minimum
 
@@ -66,7 +67,7 @@ public sealed class CheckoutService(
         var existing = await db.CheckoutKeys.AsNoTracking().Where(k => k.AccountId == claim.UserId && k.IdempotencyKey == key).Select(k => (Guid?)k.OrderId).SingleOrDefaultAsync(ct);
         if (existing is { } orderId) return (orderId, true);
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var isLaunch = request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch;
         var order = new OrderRow
         {
@@ -228,7 +229,7 @@ public sealed class CheckoutService(
         }));
         await db.SaveChangesAsync(ct);
         var t = placement.Totals;
-        var deadline = clock.GetUtcNow() + PaymentWindow;
+        var deadline = await db.Database.NowAsync(ct) + PaymentWindow;
         var moved = await transitions.MoveAsync(order.Id, [OrderStatuses.Creating], OrderStatuses.PendingPayment, new Actor(ActorTypes.Customer, order.AccountId), null, null,
             s => s.SetProperty(o => o.SubtotalCents, t.SubtotalCents).SetProperty(o => o.DiscountCents, t.DiscountCents).SetProperty(o => o.TaxCents, t.TaxCents)
                 .SetProperty(o => o.ShippingCents, t.ShippingCents).SetProperty(o => o.TotalCents, t.TotalCents).SetProperty(o => o.TaxRateBp, options.TaxRateBasisPoints!.Value)
