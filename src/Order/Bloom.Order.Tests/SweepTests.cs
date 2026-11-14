@@ -125,6 +125,20 @@ public class SweepTests(Containers containers)
     }
 
     [Fact]
+    public async Task Expiry_follows_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var orderId = await PendingOrderAsync(t);
+        t.Clock.Advance(TimeSpan.FromDays(1)); // the app clock is far ahead of the database: an app-clock sweep would find the deadline passed
+
+        Assert.Equal(0, await t.Sweeps().RunExpiryAsync(Ct));
+        Assert.Equal(OrderStatuses.PendingPayment, (await OrderAsync(t, orderId)).Status);
+
+        await AgeDeadlinesAsync(t, PaymentWindow + TimeSpan.FromSeconds(1));
+        Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
+    }
+
+    [Fact]
     public async Task Launch_order_expiry_releases_the_allocation_hold()
     {
         await using var t = await TestOrder.StartAsync(containers);

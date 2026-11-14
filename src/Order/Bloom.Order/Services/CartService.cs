@@ -96,15 +96,9 @@ public sealed class CartService(OrderDbContext db, Upstreams upstreams) : OrderC
     /// </summary>
     private async Task BumpVersionAsync(Guid accountId, long expected, CancellationToken ct)
     {
-        int affected;
-        if (expected == 0)
-            affected = await db.Database.ExecuteSqlAsync($"INSERT INTO carts (account_id, version, updated_at) VALUES ({accountId}, 1, now()) ON CONFLICT (account_id) DO NOTHING", ct);
-        else
-        {
-            var now = await db.Database.NowAsync(ct);
-            affected = await db.Carts.Where(c => c.AccountId == accountId && c.Version == expected)
-                .ExecuteUpdateAsync(s => s.SetProperty(c => c.Version, c => c.Version + 1).SetProperty(c => c.UpdatedAt, now), ct);
-        }
+        var affected = expected == 0
+            ? await db.Database.ExecuteSqlAsync($"INSERT INTO carts (account_id, version, updated_at) VALUES ({accountId}, 1, now()) ON CONFLICT (account_id) DO NOTHING", ct)
+            : await db.Database.ExecuteSqlAsync($"UPDATE carts SET version = version + 1, updated_at = now() WHERE account_id = {accountId} AND version = {expected}", ct);
         if (affected != 1) throw OrderErrors.Conflict("cart");
     }
 
