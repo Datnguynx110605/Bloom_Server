@@ -62,8 +62,8 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 // Step 3.
                 // Read inside the transaction, on every attempt: a close or release may have committed since step 1. FOR SHARE OF l locks the launches row only, first, before any product or SKU lock (D5, §7):
                 // a room close or stage change takes the row FOR UPDATE, so it waits for this hold and a hold waits for it.
-                // The requested SKUs and their products ride along unlocked: they are read with the statement's snapshot, taken before any wait on the launches lock, which is safe because products, SKUs and limits
-                // are frozen from preorder_open (§6.7, LCH-R25) and a hold needs a pass, which only exists from preorder_open.
+                // The requested SKUs and their products ride along unlocked: they are read with the statement's snapshot, taken before any wait on the launches lock, which is safe because SKU membership and
+                // purchase limits are frozen from preorder_open (§6.7, LCH-R25); allocation can still rise, but step 3 does not read it.
                 var skuIds = lines.Select(l => l.Sku).ToArray();
                 var read = await db.Database.SqlQuery<LaunchRead>(
                     $@"SELECT l.stage AS ""Stage"", l.waiting_room_closed_at AS ""WaitingRoomClosedAt"", s.sku_id AS ""SkuId"", s.product_id AS ""ProductId"", p.purchase_limit AS ""PurchaseLimit""
@@ -100,10 +100,10 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 {
                     if (p.Sum <= p.Limit) // R11: a sum above the limit fails without SQL
                     {
-                        await db.Database.ExecuteSqlAsync(
-                            $"INSERT INTO limit_usage (launch_id, account_id, product_id, held, sold) VALUES ({launchId}, {caller.UserId}, {p.Product}, 0, 0) ON CONFLICT DO NOTHING", ct);
                         var moved = await db.Database.ExecuteSqlAsync(
-                            $"UPDATE limit_usage SET held = held + {p.Sum} WHERE launch_id = {launchId} AND account_id = {caller.UserId} AND product_id = {p.Product} AND held::bigint + sold + {p.Sum} <= {p.Limit}", ct);
+                            $@"INSERT INTO limit_usage (launch_id, account_id, product_id, held, sold) VALUES ({launchId}, {caller.UserId}, {p.Product}, {p.Sum}, 0)
+                               ON CONFLICT (launch_id, account_id, product_id) DO UPDATE SET held = limit_usage.held + {p.Sum}
+                               WHERE limit_usage.held::bigint + limit_usage.sold + {p.Sum} <= {p.Limit}", ct);
                         if (moved == 1) continue;
                     }
                     await tx.RollbackAsync(ct);

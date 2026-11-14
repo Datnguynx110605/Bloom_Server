@@ -384,7 +384,7 @@ public class HoldTests(Containers containers)
             await block.ExecuteNonQueryAsync(Ct);
         }
         var hold = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (sku, 1))), Ct);
-        await Poll.UntilAsync(() => WaiterAsync(t, "%UPDATE launch_skus%"), 15, "the hold waits on the SKU row");
+        await ObservedPollAsync(hold, () => WaiterAsync(t, "%UPDATE launch_skus%"), "the hold waits on the SKU row");
 
         var close = Task.Run(async () =>
         {
@@ -394,7 +394,7 @@ public class HoldTests(Containers containers)
             await tx.CommitAsync(Ct);
             return closed;
         }, Ct);
-        await Poll.UntilAsync(() => WaiterAsync(t, "%FROM launches%FOR UPDATE%"), 15, "the close waits on the launches row");
+        await ObservedPollAsync(close, () => WaiterAsync(t, "%FROM launches%FOR UPDATE%"), "the close waits on the launches row");
         Assert.False(close.IsCompleted);
 
         await sideTx.CommitAsync(Ct);
@@ -423,7 +423,7 @@ public class HoldTests(Containers containers)
             await close.ExecuteNonQueryAsync(Ct);
         }
         var hold = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (launch.Skus[0], 1))), Ct);
-        await Poll.UntilAsync(() => WaiterAsync(t, "%FOR SHARE OF l%"), 15, "the hold waits on the launches row");
+        await ObservedPollAsync(hold, () => WaiterAsync(t, "%FOR SHARE OF l%"), "the hold waits on the launches row");
 
         await sideTx.CommitAsync(Ct);
 
@@ -448,11 +448,11 @@ public class HoldTests(Containers containers)
             await block.ExecuteNonQueryAsync(Ct);
         }
         var a = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, first.Id, account), (first.Skus[0], 1))), Ct);
-        await Poll.UntilAsync(() => WaiterAsync(t, "%UPDATE launch_skus%"), 15, "call A waits on the SKU row");
+        await ObservedPollAsync(a, () => WaiterAsync(t, "%UPDATE launch_skus%"), "call A waits on the SKU row");
 
         // Call B: the same order on another launch with its own pass. It passes step 4 (another pass) and waits at the unique order_id entry of A's uncommitted holds row.
         var b = Task.Run(() => Holds.CallAsync(t, account, Holds.Request(order, Holds.Token(t, second.Id, account), (second.Skus[0], 1))), Ct);
-        await Poll.UntilAsync(() => WaiterAsync(t, "%INSERT INTO holds%"), 15, "call B waits on A's order_id entry");
+        await ObservedPollAsync(b, () => WaiterAsync(t, "%INSERT INTO holds%"), "call B waits on A's order_id entry");
 
         await sideTx.CommitAsync(Ct);
 
@@ -463,6 +463,18 @@ public class HoldTests(Containers containers)
         Assert.Equal(0, await ConsumedAsync(t, second.Id)); // LR-03: B's pass is still unused
         Assert.Equal((0, 0), await Holds.SkuAsync(t, second.Skus[0]));
         await Holds.InvariantAsync(t, first.Id);
+        await Holds.InvariantAsync(t, second.Id);
+    }
+
+    /// <summary>Polls like <see cref="Poll.UntilAsync"/>; when it times out and <paramref name="call"/> has already finished, the call's own exception is what the test reports.</summary>
+    private static async Task ObservedPollAsync(Task call, Func<Task<bool>> condition, string what)
+    {
+        try { await Poll.UntilAsync(condition, 15, what); }
+        catch when (call.IsCompleted)
+        {
+            await call;
+            throw;
+        }
     }
 
     /// <summary>True while a statement matching <paramref name="queryLike"/> waits for a lock.</summary>
@@ -524,6 +536,38 @@ public class HoldTests(Containers containers)
 
         await NothingWrittenAsync(t, a.Id, a.Skus[0]);
         await Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), token, (a.Skus[0], 1))); // the pass is unused
+    }
+
+    [Fact]
+    public async Task Two_missing_skus_name_the_first_in_sku_id_order()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t);
+        var account = Guid.NewGuid();
+        var (x, y) = (Guid.NewGuid(), Guid.NewGuid());
+        if (string.CompareOrdinal(x.ToString("D"), y.ToString("D")) > 0) (x, y) = (y, x); // x < y
+
+        var e = await Assert.ThrowsAsync<RpcException>(() => Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (y, 1), (x, 1))));
+
+        Assert.Equal(LaunchErrors.SkuNotInLaunch, Rpc.Info(e).Reason);
+        Assert.Equal($"SKU {x:D} is not in this launch.", e.Status.Detail);
+    }
+
+    [Fact]
+    public async Task Limit_with_one_unit_left_refuses_two_and_reports_remaining_1()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, products: new SeedProduct(3, 100));
+        var account = Guid.NewGuid();
+        await Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (launch.Skus[0], 2)));
+
+        var info = await Rpc.FailsAsync(Holds.CallAsync(t, account, Holds.Request(Guid.NewGuid(), Holds.Token(t, launch.Id, account), (launch.Skus[0], 2))), LaunchErrors.LimitExceeded);
+
+        Assert.Equal((launch.Products[0].ToString(), "1"), (info.Metadata["productId"], info.Metadata["remaining"]));
+        await using var db = t.NewDb();
+        var usage = await db.LimitUsage.AsNoTracking().SingleAsync(Ct);
+        Assert.Equal((2, 0), (usage.Held, usage.Sold));
+        await Holds.InvariantAsync(t, launch.Id);
     }
 
     [Fact]

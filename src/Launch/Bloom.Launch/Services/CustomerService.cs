@@ -45,10 +45,12 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
 
         // Before launch time a random position in [0, 1); after it, 1 + seconds since launch time, so always behind them (LCH-R07).
         var score = now < launch.LaunchTime ? Random.Shared.NextDouble() : 1 + Math.Round((now - launch.LaunchTime).TotalMilliseconds) / 1000;
-        await db.SortedSetAddAsync(RedisKeys.Queue(launch.Id), account.ToString("D"), score, When.NotExists);
-        var pass = db.StringGetAsync(RedisKeys.Pass(launch.Id, account)); // issued together, after the ZADD, so the rank reflects it
+        // One connection and no await between them: the multiplexer sends them in order, so the rank reflects the ZADD (two round trips in all).
+        // The pass is read again because admission can admit the customer between the ZADD and the rank.
+        var add = db.SortedSetAddAsync(RedisKeys.Queue(launch.Id), account.ToString("D"), score, When.NotExists);
+        var pass = db.StringGetAsync(RedisKeys.Pass(launch.Id, account));
         var rank = db.SortedSetRankAsync(RedisKeys.Queue(launch.Id), account.ToString("D"));
-        await Task.WhenAll(pass, rank);
+        await Task.WhenAll(add, pass, rank);
         return Status(launch, account, room, await pass, await rank);
     });
 
