@@ -250,7 +250,7 @@ public class InvitationTests(Containers containers)
     }
 
     [Fact]
-    public async Task Invite_expires_exactly_at_72h()
+    public async Task Invite_is_accepted_a_minute_before_expiry_and_refused_once_expired()
     {
         await using var t = await TestIdentity.StartAsync(containers);
         var (text, secret) = TestTotp.NewSecret();
