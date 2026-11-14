@@ -7,7 +7,7 @@
 | **Status** | Approved (2026-11-14) |
 | **Last updated** | 2026-11-14 |
 | **Product design** | [doc/product-design](../product-design/00-overview.md) |
-| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 021) |
+| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 022) |
 
 ## Summary
 
@@ -403,6 +403,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | [HLD-ADR-019](adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage |
 | [HLD-ADR-020](adr/HLD-ADR-020-health-endpoints.md) | Health endpoints: liveness everywhere, started-only readiness on API pods |
 | [HLD-ADR-021](adr/HLD-ADR-021-checkout-latency-excludes-payment.md) | Checkout start latency (QA-03) excludes the payment call |
+| [HLD-ADR-022](adr/HLD-ADR-022-stripe-rate-limit.md) | Stripe rate limit sized to the launch admission rate |
 
 ## 11. Risks
 
@@ -418,6 +419,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | R-08 | Eventual consistency: status can lag briefly across services (for example "paid" visible a moment after payment). | UI shows pending states; consumer lag is monitored. |
 | R-10 | 100k notification WebSockets at launch peak add a second scaling problem through ingress, gateway and notification. | Sized and autoscaled on connection count; 15-min connection life with jittered reconnects; included in the launch load test. |
 | R-09 | Push-based deploys from GitHub Actions: cluster state can drift from the repo after manual changes. | No manual changes to the cluster; manifests in the repo are the only source. |
+| R-11 | Stripe's API rate limit (about 100 requests/s by default) is below QA-05's 200 checkouts/s; each checkout creates one Checkout Session. | Raise the account's limit before a launch, sized to the admission rate ([HLD-ADR-022](adr/HLD-ADR-022-stripe-rate-limit.md)); a 429 is transient and the customer retries. |
 
 ## 12. Assumptions
 

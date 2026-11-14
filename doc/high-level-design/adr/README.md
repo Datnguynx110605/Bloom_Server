@@ -29,3 +29,4 @@ Architecture decisions for Bloom's backend. Conventions and the MADR template ar
 | [HLD-ADR-019](HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage | Accepted | 2026-11-12 |
 | [HLD-ADR-020](HLD-ADR-020-health-endpoints.md) | Health endpoints | Accepted | 2026-11-14 |
 | [HLD-ADR-021](HLD-ADR-021-checkout-latency-excludes-payment.md) | Checkout start latency excludes the payment call | Accepted | 2026-11-14 |
+| [HLD-ADR-022](HLD-ADR-022-stripe-rate-limit.md) | Stripe rate limit sized to the launch admission rate | Accepted | 2026-11-14 |
