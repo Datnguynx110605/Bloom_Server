@@ -291,7 +291,13 @@ public class CustomerTests(Containers containers)
         foreach (var account in accounts) await Join(t, launch.Id, account);
         var pollers = accounts.Select(account => Task.Run(async () =>
         {
-            while ((await Status(t, launch.Id, account)).State != "admitted") { } // a NOT_IN_QUEUE throws
+            // Poll.UntilAsync waits 50 ms per round, too coarse to catch the race; a NOT_IN_QUEUE throws.
+            var clock = Stopwatch.StartNew();
+            while ((await Status(t, launch.Id, account)).State != "admitted")
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30), $"Account {account} not admitted within 30 s");
+                await Task.Delay(2, Ct);
+            }
         }, Ct)).ToList();
 
         for (var i = 0; i < accounts.Count; i++) await t.TickAsync(launch.Id);
