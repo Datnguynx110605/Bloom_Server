@@ -875,7 +875,7 @@ public class CheckoutTests(Containers containers)
         await using var t = await TestOrder.StartAsync(containers);
         await using var db = t.NewDb();
         var sql = CheckoutService.PaymentRead(db, Guid.NewGuid()).ToQueryString();
-        Assert.Contains("o.deadline_at <= now()", sql); // a client-side time would be a parameter here (R9, D21)
+        Assert.Matches(@"(\w+\.)?""?deadline_at""? <= now\(\)", sql); // a client-side time would be a parameter here (R9, D21)
         Assert.Contains("order_lines", sql); // the lines come in the same statement
     }
 }
