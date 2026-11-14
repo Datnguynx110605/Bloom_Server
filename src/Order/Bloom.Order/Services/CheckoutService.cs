@@ -200,7 +200,7 @@ public sealed class CheckoutService(
     private async Task CommitPlacementAsync(OrderRow order, Placement placement, CancellationToken ct)
     {
         var tx = await db.Database.BeginTransactionAsync(ct); // not disposed on the rejection path: the guard commits it
-        var locked = await db.Database.SqlQuery<Guid>($"SELECT id AS \"Value\" FROM orders WHERE id = {order.Id} AND status = {OrderStatuses.Creating} FOR UPDATE").ToListAsync(ct);
+        var locked = await db.Database.SqlQuery<DateTimeOffset>($"SELECT now() AS \"Value\" FROM orders WHERE id = {order.Id} AND status = {OrderStatuses.Creating} FOR UPDATE").ToListAsync(ct);
         if (locked.Count == 0)
         {
             await tx.DisposeAsync();
@@ -229,8 +229,9 @@ public sealed class CheckoutService(
         }));
         await db.SaveChangesAsync(ct);
         var t = placement.Totals;
-        var deadline = await db.Database.NowAsync(ct) + PaymentWindow;
-        var moved = await transitions.MoveAsync(order.Id, [OrderStatuses.Creating], OrderStatuses.PendingPayment, new Actor(ActorTypes.Customer, order.AccountId), null, null,
+        var now = locked[0]; // the database clock, read under the row lock
+        var deadline = now + PaymentWindow;
+        var moved = await transitions.MoveLockedAsync(order.Id, OrderStatuses.Creating, OrderStatuses.PendingPayment, new Actor(ActorTypes.Customer, order.AccountId), null, now,
             s => s.SetProperty(o => o.SubtotalCents, t.SubtotalCents).SetProperty(o => o.DiscountCents, t.DiscountCents).SetProperty(o => o.TaxCents, t.TaxCents)
                 .SetProperty(o => o.ShippingCents, t.ShippingCents).SetProperty(o => o.TotalCents, t.TotalCents).SetProperty(o => o.TaxRateBp, options.TaxRateBasisPoints!.Value)
                 .SetProperty(o => o.DeadlineAt, deadline), ct);
@@ -246,13 +247,20 @@ public sealed class CheckoutService(
     /// </summary>
     private async Task<StartCheckoutResponse> PayAsync(Guid orderId, CancellationToken ct)
     {
-        var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == orderId, ct);
-        if (order.Status == OrderStatuses.Cancelled
-            || (order.Status == OrderStatuses.PendingPayment && await db.Database.SqlQuery<bool>($"SELECT COALESCE(deadline_at <= now(), false) AS \"Value\" FROM orders WHERE id = {orderId}").SingleAsync(ct)))
+        // One round trip: the order, its past-the-deadline flag and its lines. DateTimeOffset.UtcNow translates to the database's now() (null deadline_at: false).
+        var read = await db.Orders.AsNoTracking().Where(o => o.Id == orderId)
+            .Select(o => new
+            {
+                Order = o,
+                Expired = o.DeadlineAt <= DateTimeOffset.UtcNow,
+                Lines = db.OrderLines.Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToList(),
+            }).SingleAsync(ct);
+        var order = read.Order;
+        if (order.Status == OrderStatuses.Cancelled || (order.Status == OrderStatuses.PendingPayment && read.Expired))
             throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
         if (order.Status != OrderStatuses.PendingPayment) return Response(order, "");
 
-        var lines = await db.OrderLines.AsNoTracking().Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToListAsync(ct);
+        var lines = read.Lines;
         var display = lines.Select(l => new DisplayLine { Name = $"{l.Name} × {l.Quantity}", AmountCents = l.PaidCents }).ToList();
         if (order.ShippingCents > 0) display.Add(new DisplayLine { Name = "Express shipping", AmountCents = order.ShippingCents }); // they sum to the total (spec §7)
 
