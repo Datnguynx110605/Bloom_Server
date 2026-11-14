@@ -132,13 +132,14 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var now = await db.Database.NowAsync(ct);
-        var next = now + Backoff.Schedule[Math.Min(n, Backoff.Schedule.Length) - 1];
+        var backoff = Backoff.Schedule[Math.Min(n, Backoff.Schedule.Length) - 1];
         // 0 rows: a webhook moved the refund on while the lock was free, so Stripe has it and it must not fail here.
-        var pending = await db.Database.ExecuteSqlAsync($"""
-            UPDATE refunds SET attempts = {n}, next_attempt_at = {next}, updated_at = {now}
+        var rows = await db.Database.SqlQuery<DateTimeOffset>($"""
+            UPDATE refunds SET attempts = {n}, next_attempt_at = now() + {backoff}, updated_at = now()
             WHERE id = {refund.Id} AND status = {RefundStatuses.Pending}
-            """, ct) == 1;
+            RETURNING next_attempt_at AS "Value"
+            """).ToListAsync(ct);
+        var pending = rows.Count == 1;
         var transitions = scope.ServiceProvider.GetRequiredService<Transitions>();
         if (pending && n >= MaxAttempts)
         {
@@ -147,7 +148,7 @@ public sealed class ProviderExecutor(IServiceScopeFactory scopes, TimeProvider c
         }
         await tx.CommitAsync(ct);
         if (!pending) return; // nothing was rescheduled or failed, so there is nothing to log
-        if (n < MaxAttempts) logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); retrying at {NextAttemptAt}", refund.Id, n, next);
+        if (n < MaxAttempts) logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); retrying at {NextAttemptAt}", refund.Id, n, rows[0]);
         else logger.LogWarning(e, "Stripe refund for {RefundId} failed (attempt {Attempt}); giving up", refund.Id, n);
     }
 }
