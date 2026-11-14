@@ -46,10 +46,10 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
         // Before launch time a random position in [0, 1); after it, 1 + seconds since launch time, so always behind them (LCH-R07).
         var score = now < launch.LaunchTime ? Random.Shared.NextDouble() : 1 + Math.Round((now - launch.LaunchTime).TotalMilliseconds) / 1000;
         // One connection and no await between them: the multiplexer sends them in order, so the rank reflects the ZADD (two round trips in all).
-        // The pass is read again because admission can admit the customer between the ZADD and the rank.
+        // The rank comes before the pass: admission pops and sets the pass in one script, so no rank means the pass is already there.
         var add = db.SortedSetAddAsync(RedisKeys.Queue(launch.Id), account.ToString("D"), score, When.NotExists);
-        var pass = db.StringGetAsync(RedisKeys.Pass(launch.Id, account));
         var rank = db.SortedSetRankAsync(RedisKeys.Queue(launch.Id), account.ToString("D"));
+        var pass = db.StringGetAsync(RedisKeys.Pass(launch.Id, account));
         await Task.WhenAll(add, pass, rank);
         return Status(launch, account, room, await pass, await rank);
     });
@@ -64,8 +64,9 @@ public sealed class CustomerService(StateCache cache, IConnectionMultiplexer red
             // §6.3 reads issued together: one round trip. WhenAll observes every task, so none is left faulted and unobserved.
             var db = redis.GetDatabase();
             var snapshot = cache.GetAsync(launchId, context.CancellationToken);
-            var pass = db.StringGetAsync(RedisKeys.Pass(launchId, account));
+            // The rank comes before the pass: admission pops and sets the pass in one script, so no rank means the pass is already there.
             var rank = db.SortedSetRankAsync(RedisKeys.Queue(launchId), account.ToString("D"));
+            var pass = db.StringGetAsync(RedisKeys.Pass(launchId, account));
             await Task.WhenAll(snapshot, pass, rank);
             var launch = Visible(await snapshot);
             return Status(launch, account, launch.RoomState(time.GetUtcNow()), await pass, await rank);

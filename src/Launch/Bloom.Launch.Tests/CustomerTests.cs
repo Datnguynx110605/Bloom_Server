@@ -283,6 +283,22 @@ public class CustomerTests(Containers containers)
     }
 
     [Fact]
+    public async Task Status_polled_through_the_admission_never_shows_NOT_IN_QUEUE()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, rate: 1);
+        var accounts = Enumerable.Range(0, 100).Select(_ => Guid.NewGuid()).ToList();
+        foreach (var account in accounts) await Join(t, launch.Id, account);
+        var pollers = accounts.Select(account => Task.Run(async () =>
+        {
+            while ((await Status(t, launch.Id, account)).State != "admitted") { } // a NOT_IN_QUEUE throws
+        }, Ct)).ToList();
+
+        for (var i = 0; i < accounts.Count; i++) await t.TickAsync(launch.Id);
+        await Task.WhenAll(pollers);
+    }
+
+    [Fact]
     public async Task Status_when_not_queued_in_an_open_room_is_NOT_IN_QUEUE()
     {
         await using var t = await StartAsync();
