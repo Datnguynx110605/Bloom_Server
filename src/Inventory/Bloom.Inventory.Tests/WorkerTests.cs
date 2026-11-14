@@ -218,6 +218,25 @@ public class WorkerTests(Containers containers)
     }
 
     [Fact]
+    public async Task Stuck_reservation_cutoff_follows_the_database_clock_not_the_app_clock()
+    {
+        var (api, worker) = await StartAsync();
+        await using var _ = api;
+        await using var __ = worker;
+        using var metrics = new MetricCapture(worker.Services);
+        var monitor = worker.Services.GetServices<IHostedService>().OfType<StockMonitor>().Single();
+        await monitor.StopAsync(Ct); // its own tick would overwrite the gauge after the RunOnceAsync below (IN-2)
+        var sku = Seed.Sku(api);
+        await Seed.ReceiveAsync(api, sku, 5);
+        await Seed.ReserveAsync(api, Guid.CreateVersion7(), (sku, 2)); // reserved just now by the database clock
+
+        worker.Clock.Advance(TimeSpan.FromDays(1)); // the app clock is far ahead of the database: an app-clock cutoff would call the reservation stuck
+        await monitor.RunOnceAsync(Ct);
+
+        Assert.Equal(0, metrics.Latest("stuck_reservations"));
+    }
+
+    [Fact]
     public async Task Dlq_admin_is_hosted()
     {
         var (api, worker) = await StartAsync(); // the worker declares the queues
