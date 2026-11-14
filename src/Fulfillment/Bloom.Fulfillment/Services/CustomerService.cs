@@ -78,7 +78,7 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
                 units.Add(new ReturnUnit { ReturnId = returnId, UnitNo = units.Count + 1, LineNo = u.LineNo });
         db.ReturnUnits.AddRange(units);
         outbox.PublishEvent(FulfillmentMessages.ReturnRequested, new ReturnRequestedV1(orderId, returnId));
-        if (planOnly) await DecidePlansAsync(account, returnId, lines, units, ct);
+        if (planOnly) await DecidePlansAsync(account, returnId, lines, units, now, ct);
         await db.SaveChangesAsync(ct); // the view below reads the rows; the guard commits
         return await Views.ReturnAsync(db, returnId, ct);
     }
@@ -88,7 +88,7 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
     /// Fills in the decision and money of the new units, then settles the refund (<see cref="RefundEngine.SettleReturnAsync"/>).
     /// Lock order after the order lock: order_line_accounts (ascending), then warranty_coverages.
     /// </summary>
-    private async Task DecidePlansAsync(OrderAccount account, Guid returnId, Dictionary<int, OrderLineAccount> lines, List<ReturnUnit> units, CancellationToken ct)
+    private async Task DecidePlansAsync(OrderAccount account, Guid returnId, Dictionary<int, OrderLineAccount> lines, List<ReturnUnit> units, DateTimeOffset now, CancellationToken ct)
     {
         var perLine = new Dictionary<int, (int Units, long Cents)>();
         foreach (var unit in units)
@@ -108,7 +108,7 @@ public sealed class CustomerService(FulfillmentDbContext db, IdempotencyGuard gu
                 orderby s.Seq descending
                 select c.Id).Take(count).ToListAsync(ct));
 
-        await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, ct);
+        await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, now, ct);
     }
 
     /// <summary>The caller's returns, newest first.</summary>

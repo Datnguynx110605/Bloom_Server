@@ -123,17 +123,19 @@ public sealed class LabelWorker(IServiceScopeFactory scopes, TimeProvider clock,
     private async Task FailAsync(Shipment shipment, Exception e, CancellationToken ct)
     {
         var n = shipment.LabelAttempts + 1;
-        DateTimeOffset next;
+        var backoff = Backoff[Math.Min(n, Backoff.Length) - 1]; // from now, after the Shippo call (F-3)
+        DateTimeOffset? next; // null when the row had left label_pending (nothing was rescheduled)
         try
         {
             await using var scope = scopes.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
             await using var tx = await db.Database.BeginTransactionAsync(ct);
-            next = await db.Database.NowAsync(ct) + Backoff[Math.Min(n, Backoff.Length) - 1]; // from now, after the Shippo call (F-3)
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE shipments SET label_attempts = {n}, next_attempt_at = {next}, version = version + 1
+            var rows = await db.Database.SqlQuery<DateTimeOffset>($"""
+                UPDATE shipments SET label_attempts = {n}, next_attempt_at = now() + {backoff}, version = version + 1
                 WHERE id = {shipment.Id} AND status = {ShipmentStatuses.LabelPending}
-                """, ct);
+                RETURNING next_attempt_at AS "Value"
+                """).ToListAsync(ct);
+            next = rows.Count == 1 ? rows[0] : null;
             await tx.CommitAsync(ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)

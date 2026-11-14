@@ -101,7 +101,7 @@ public sealed class SupportService(
         }
         db.ReturnUnits.AddRange(planUnits);
 
-        var (refundId, total) = await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, ct);
+        var (refundId, total) = await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, now, ct);
         await SendToInventoryAsync(orderId, accepted, ct);
 
         if (units.Any(u => u.Decision == Decisions.Reject)) // RET-R08: Bloom ships the rejected units back at its cost

@@ -126,9 +126,10 @@ public class LabelTests(Containers containers)
             Assert.Equal(n >= 5 ? 1 : 0, metrics.Sum("labels_total", ("result", "failed")));
             Assert.Equal(n >= 5, ErrorLogged());
 
+            await using (var db = t.NewDb()) await db.Database.ExecuteSqlAsync($"UPDATE shipments SET next_attempt_at = now() + interval '1 hour' WHERE id = {shipmentId}", Ct); // pinned, so "not due yet" needs no margin on the short delays
             await Seed.RunLabelWorkerAsync(t); // not due yet: no call
             Assert.Equal(calls + 1, t.Shippo.Calls(""));
-            await t.AgeAsync(delays[n - 1]);
+            await using (var db = t.NewDb()) await db.Database.ExecuteSqlAsync($"UPDATE shipments SET next_attempt_at = now() - interval '1 second' WHERE id = {shipmentId}", Ct); // the delay has passed
         }
 
         await Seed.RunLabelWorkerAsync(t); // Shippo is back
@@ -291,7 +292,19 @@ public class LabelTests(Containers containers)
 
         public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken ct)
         {
-            if (!command.CommandText.Contains("SET label_attempts") || Interlocked.Decrement(ref Failures) < 0) return base.NonQueryExecutingAsync(command, eventData, result, ct);
+            MaybeFail(command);
+            return base.NonQueryExecutingAsync(command, eventData, result, ct);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken ct)
+        {
+            MaybeFail(command); // the retry write is an UPDATE … RETURNING, so it runs as a reader
+            return base.ReaderExecutingAsync(command, eventData, result, ct);
+        }
+
+        private void MaybeFail(DbCommand command)
+        {
+            if (!command.CommandText.Contains("SET label_attempts") || Interlocked.Decrement(ref Failures) < 0) return;
             Interlocked.Increment(ref Hits);
             throw new NpgsqlException("injected database failure");
         }
