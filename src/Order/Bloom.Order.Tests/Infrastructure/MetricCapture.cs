@@ -36,6 +36,12 @@ public sealed class MetricCapture : IDisposable
         lock (_all) return Matching(name, tags).Count();
     }
 
+    /// <summary>The values recorded on a histogram carrying all <paramref name="tags"/>, in order.</summary>
+    public double[] Values(string name, params (string Tag, string Value)[] tags)
+    {
+        lock (_all) return Matching(name, tags).Select(m => m.Value).ToArray();
+    }
+
     /// <summary>The newest value of an observable gauge carrying all <paramref name="tags"/>; polls the gauges first.</summary>
     public double Latest(string name, params (string Tag, string Value)[] tags)
     {

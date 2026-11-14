@@ -32,6 +32,8 @@ public sealed class CheckoutService(
     private static readonly TimeSpan CreatingWindow = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan PaymentWindow = TimeSpan.FromMinutes(15);
 
+    private TimeSpan _paymentCall; // left out of checkout_start_seconds (HLD-ADR-021)
+
     private sealed record Placement(IReadOnlyList<PricedLine> Lines, Totals Totals, Guid? CouponId);
 
     public override async Task<StartCheckoutResponse> StartCheckout(StartCheckoutRequest request, ServerCallContext context)
@@ -55,7 +57,7 @@ public sealed class CheckoutService(
         }
         finally
         {
-            metrics.CheckoutStarted(kind, Stopwatch.GetElapsedTime(started).TotalSeconds);
+            metrics.CheckoutStarted(kind, (Stopwatch.GetElapsedTime(started) - _paymentCall).TotalSeconds);
         }
     }
 
@@ -256,6 +258,7 @@ public sealed class CheckoutService(
         if (order.ShippingCents > 0) display.Add(new DisplayLine { Name = "Express shipping", AmountCents = order.ShippingCents }); // they sum to the total (spec §7)
 
         CreatePaymentResponse payment;
+        var paymentStarted = Stopwatch.GetTimestamp();
         try
         {
             payment = await upstreams.CreatePaymentAsync(order.Id, order.Number, order.AccountId, order.TotalCents, display, ct);
@@ -264,6 +267,10 @@ public sealed class CheckoutService(
         {
             logger.LogError(e, "CreatePayment failed for order {OrderId}; the order stays pending_payment.", order.Id);
             throw new RpcException(new Status(StatusCode.Unavailable, "The payment could not be started; try again."));
+        }
+        finally
+        {
+            _paymentCall += Stopwatch.GetElapsedTime(paymentStarted); // += : a takeover may run this step again
         }
 
         _ = await db.Database.BeginTransactionAsync(ct); // the guard saves and commits it with the stored response

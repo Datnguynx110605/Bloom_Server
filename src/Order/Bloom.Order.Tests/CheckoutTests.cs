@@ -127,6 +127,24 @@ public class CheckoutTests(Containers containers)
     }
 
     [Fact]
+    public async Task OR01_checkout_start_seconds_leaves_out_the_payment_call()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (account, _) = await CartOfOneAsync(t);
+        t.Upstreams.Before = method => method == "CreatePayment" ? Task.Delay(TimeSpan.FromSeconds(1), Ct) : Task.CompletedTask;
+
+        var wall = System.Diagnostics.Stopwatch.StartNew();
+        var response = await Seed.CheckoutAsync(t, account);
+        wall.Stop();
+
+        Assert.Equal(OrderStatuses.PendingPayment, (await OrderOfAsync(t, account)).Status);
+        Assert.NotEmpty(response.PaymentUrl);
+        Assert.True(wall.Elapsed >= TimeSpan.FromSeconds(1), $"the call took {wall.Elapsed}");
+        Assert.True(Assert.Single(metrics.Values("checkout_start_seconds", ("kind", "regular"))) < 1.0);
+    }
+
+    [Fact]
     public async Task O02_retry_with_the_same_key_after_success_replays()
     {
         await using var t = await TestOrder.StartAsync(containers);
