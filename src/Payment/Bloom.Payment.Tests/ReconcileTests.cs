@@ -12,10 +12,18 @@ public class ReconcileTests(Containers containers)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    // Today: Bloom stamps its rows with the database clock and Stripe's side with the fake clock, which starts at the real time; the fake clock is not moved.
-    private static readonly DateOnly Day = DateOnly.FromDateTime(DateTime.UtcNow);
+    // The test's own day: Stripe's side is stamped by the fake clock, which is frozen at the real start time. Bloom's side is stamped by the database clock, so a test pins it
+    // (PinBloomAsync) to noon of that day and no comparison depends on the real clock crossing midnight.
+    private static DateOnly DayOf(TestPayment t) => DateOnly.FromDateTime(t.Clock.GetUtcNow().UtcDateTime);
 
-    private static readonly DateTimeOffset DayNoon = new(Day.ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero);
+    private static DateTimeOffset NoonOf(TestPayment t) => new(DayOf(t).ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero);
+
+    private static async Task PinBloomAsync(TestPayment t)
+    {
+        var noon = NoonOf(t);
+        await t.SqlAsync($"UPDATE payments SET succeeded_at = {noon} WHERE succeeded_at IS NOT NULL");
+        await t.SqlAsync($"UPDATE refunds SET updated_at = {noon} WHERE status = 'succeeded'");
+    }
 
     private static Task Reconcile(TestPayment t) => ActivatorUtilities.CreateInstance<Reconciler>(t.Services).RunOnceAsync(Ct);
 
@@ -42,6 +50,7 @@ public class ReconcileTests(Containers containers)
         await Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, new RefundPaymentV1(orderId, refundId, 400, "return", null));
         await t.RunExecutorAsync();
         Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(refundId)).Status);
+        await PinBloomAsync(t);
         return (paymentId, piId, refundId);
     }
 
@@ -311,9 +320,9 @@ public class ReconcileTests(Containers containers)
         await using var t = await TestPayment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
         var (_, piId, _) = await PaidWithRefundAsync(t);
-        var dashboard = t.Stripe.AddDashboardRefund(piId, 100, DayNoon.AddHours(-2));
+        var dashboard = t.Stripe.AddDashboardRefund(piId, 100, NoonOf(t).AddHours(-2));
 
-        var mismatches = await Nightly(t).RunAsync(Day, Ct);
+        var mismatches = await Nightly(t).RunAsync(DayOf(t), Ct);
 
         Assert.Equal([$"stripe_only refund {dashboard}"], mismatches);
         Assert.Equal(1, metrics.Latest("reconcile_mismatches"));
@@ -328,7 +337,7 @@ public class ReconcileTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         await PaidWithRefundAsync(t);
 
-        var mismatches = await Nightly(t).RunAsync(Day, Ct);
+        var mismatches = await Nightly(t).RunAsync(DayOf(t), Ct);
 
         Assert.Empty(mismatches);
         Assert.Equal(0, metrics.Latest("reconcile_mismatches"));
@@ -340,13 +349,13 @@ public class ReconcileTests(Containers containers)
     {
         await using var t = await TestPayment.StartAsync(containers);
         var (orderId, response, sessionId) = await Seed.CreateAsync(t);
-        var piId = t.Stripe.Pay(sessionId, DayNoon.AddHours(-12).AddSeconds(-1)); // 23:59:59 the day before
+        var piId = t.Stripe.Pay(sessionId, NoonOf(t).AddHours(-12).AddSeconds(-1)); // 23:59:59 the day before
         using var posted = await PostCompleted(t, Guid.Parse(response.PaymentId), orderId, sessionId, piId);
         posted.EnsureSuccessStatusCode();
-        await t.SqlAsync($"UPDATE payments SET succeeded_at = {DayNoon.AddHours(-12).AddSeconds(1)} WHERE order_id = {orderId}"); // Bloom learns of it after midnight
+        await t.SqlAsync($"UPDATE payments SET succeeded_at = {NoonOf(t).AddHours(-12).AddSeconds(1)} WHERE order_id = {orderId}"); // Bloom learns of it after midnight
 
-        Assert.Empty(await Nightly(t).RunAsync(Day, Ct));
-        Assert.Empty(await Nightly(t).RunAsync(Day.AddDays(-1), Ct));
+        Assert.Empty(await Nightly(t).RunAsync(DayOf(t), Ct));
+        Assert.Empty(await Nightly(t).RunAsync(DayOf(t).AddDays(-1), Ct));
     }
 
     [Fact]
@@ -367,7 +376,7 @@ public class ReconcileTests(Containers containers)
             await db.Database.ExecuteSqlAsync($"UPDATE payments SET amount_cents = 900 WHERE id = {paymentId}", Ct);
         }
 
-        var mismatches = await Nightly(t).RunAsync(Day, Ct);
+        var mismatches = await Nightly(t).RunAsync(DayOf(t), Ct);
 
         Assert.Equal([$"amount payment {piId} stripe=1000 bloom=900", $"bloom_only refund {ghost}"], mismatches);
         await using var after = t.NewDb();
@@ -379,9 +388,9 @@ public class ReconcileTests(Containers containers)
     {
         await using var t = await TestPayment.StartAsync(containers);
         var (orderId, response, _) = await Seed.CreateAsync(t);
-        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', succeeded_at = {DayNoon}, stripe_payment_intent_id = 'pi_early', stripe_session_id = NULL WHERE order_id = {orderId}"); // an early webhook won the race
+        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', succeeded_at = {NoonOf(t)}, stripe_payment_intent_id = 'pi_early', stripe_session_id = NULL WHERE order_id = {orderId}"); // an early webhook won the race
 
-        var mismatches = await Nightly(t).RunAsync(Day, Ct);
+        var mismatches = await Nightly(t).RunAsync(DayOf(t), Ct);
 
         Assert.Equal(["bloom_only payment pi_early"], mismatches);
     }
@@ -404,11 +413,11 @@ public class ReconcileTests(Containers containers)
             await db.SaveChangesAsync(Ct);
         }
         var (lostOrder, _, _) = await Seed.CreateAsync(t);
-        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', succeeded_at = {DayNoon}, stripe_payment_intent_id = 'pi_lost' WHERE order_id = {lostOrder}");
+        await t.SqlAsync($"UPDATE payments SET status = 'succeeded', succeeded_at = {NoonOf(t)}, stripe_payment_intent_id = 'pi_lost' WHERE order_id = {lostOrder}");
         t.Stripe.Fail("v1/refunds/re_ghost", 500);
         t.Stripe.Fail("v1/checkout/sessions/cs_test_2", 500);
 
-        var mismatches = await Nightly(t).RunAsync(Day, Ct); // neither failed lookup aborts the run
+        var mismatches = await Nightly(t).RunAsync(DayOf(t), Ct); // neither failed lookup aborts the run
 
         Assert.Equal(["bloom_only payment pi_lost", $"bloom_only refund {ghost}"], mismatches);
         Assert.Equal(2, metrics.Latest("reconcile_mismatches"));
@@ -421,8 +430,9 @@ public class ReconcileTests(Containers containers)
         await using var t = await TestPayment.StartAsync(containers);
         t.Stripe.PageSize = 2;
         for (var i = 0; i < 5; i++) await Seed.PaidAsync(t);
+        await PinBloomAsync(t);
 
-        Assert.Empty(await Nightly(t).RunAsync(Day, Ct));
+        Assert.Empty(await Nightly(t).RunAsync(DayOf(t), Ct));
         Assert.Equal(3, t.Stripe.Count("v1/payment_intents"));
     }
 
@@ -459,9 +469,9 @@ public class ReconcileTests(Containers containers)
         await using var t = await TestPayment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
         var (_, piId, _) = await PaidWithRefundAsync(t);
-        var dashboard = t.Stripe.AddDashboardRefund(piId, 100, DayNoon.AddHours(-2));
+        var dashboard = t.Stripe.AddDashboardRefund(piId, 100, NoonOf(t).AddHours(-2));
 
-        var ran = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Nightly(t).RunTonightAsync(Day, Ct)));
+        var ran = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Nightly(t).RunTonightAsync(DayOf(t), Ct)));
 
         Assert.Equal(1, ran.Count(r => r));
         Assert.Equal(1, t.Stripe.Requests.Count(r => r.Method == "GET" && r.Path == "v1/refunds")); // one comparison, one set of list calls
