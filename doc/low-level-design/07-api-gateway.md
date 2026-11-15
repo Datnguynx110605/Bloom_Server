@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-10-31 |
+| **Status** | Approved (2026-11-14) |
+| **Last updated** | 2026-11-14 |
 | **Product rules** | ACC-R10, [10-accounts-access §3](../product-design/10-accounts-access.md) (permission matrix) |
 | **HLD** | [high-level-design.md §4, §9.1](../high-level-design/high-level-design.md), HLD-ADR-003, HLD-ADR-010, HLD-ADR-011 |
 | **Depends on** | [06-identity.md](06-identity.md) (tokens, JWKS, revocation events) |
@@ -255,7 +255,7 @@ On `tokens-revoked {accountId, issuedBefore}`: Lua `SET rev:{accountId} max(exis
 | `gateway_redis_degraded` | — | 1 while in fallback mode |
 | `jwks_refresh_total` | `result` | Key rotation health |
 
-**Alerts:** `gateway_redis_degraded = 1` for > 1 min; overhead p95 > 10 ms; spike in `TOKEN_REVOKED` or `TOKEN_INVALID`; `jwks_refresh_total{result="error"}`.
+**Alerts:** `gateway_redis_degraded = 1` for > 1 min; overhead p95 > 10 ms; spike in `TOKEN_REVOKED` or `TOKEN_INVALID`; `jwks_refresh_total{result="error"}`; clock offset above 10 s on a gateway or database node (the 30 s future-iat check compares identity's database time with the gateway node's clock).
 
 ## 11. Test cases
 

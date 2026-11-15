@@ -38,15 +38,17 @@ public class HandoverTests(Containers containers)
         const string id = "X1";
         var (order, taskId, shipmentId) = await LabelReadyAsync(t, id);
         var tracking = (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!;
-        t.Clock.Advance(TimeSpan.FromSeconds(90.5));
+        await t.AgeAsync(TimeSpan.FromSeconds(90.5));
+        var before = await t.DbNowAsync();
 
         using var response = await HandOverAsync(t, new { trackingNumber = tracking });
         var body = await response.OkJsonAsync();
+        var after = await t.DbNowAsync();
 
         Assert.Equal((shipmentId.ToString(), "handed_over", tracking), (body.GetProperty("id").GetString(), body.GetProperty("status").GetString(), body.GetProperty("trackingNumber").GetString()));
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.HandedOver, shipment.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), shipment.HandedOverAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(shipment.HandedOverAt!.Value, before, after);
         Assert.Equal(TaskStatuses.HandedOver, await TaskStatusAsync(t, taskId));
         var shipped = Assert.Single(await Outbox.PayloadsAsync<ShipmentShippedV1>(t, FulfillmentMessages.ShipmentShipped));
         Assert.Equal((order.OrderId, order.OrderId, tracking), (shipped.OrderId, shipped.RefId, shipped.TrackingNumber));
@@ -56,7 +58,7 @@ public class HandoverTests(Containers containers)
         var audit = (await Outbox.AuditAsync(t)).Last();
         Assert.Equal(("fulfillment.hand-over", "shipment", shipmentId.ToString(), Warehouse.Id), (audit.Action, audit.TargetType, audit.TargetId, audit.ActorId));
         Assert.Equal(1, metrics.Count("time_to_handover_seconds", ("shipping_option", "standard")));
-        Assert.Equal(90, metrics.Sum("time_to_handover_seconds", ("shipping_option", "standard")));
+        Assert.InRange(metrics.Sum("time_to_handover_seconds", ("shipping_option", "standard")), 90, 150); // 90.5 s plus the seconds the test took
     }
 
     [Fact]
@@ -81,7 +83,6 @@ public class HandoverTests(Containers containers)
         using var first = await HandOverAsync(t, new { shipmentId });
         var firstBody = await first.OkJsonAsync();
         var audits = (await Outbox.AuditAsync(t)).Count;
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
 
         using var second = await HandOverAsync(t, new { shipmentId });
 
@@ -189,11 +190,12 @@ public class HandoverTests(Containers containers)
 
     private static async Task<Guid> SeedShipmentAsync(TestFulfillment t, string direction, string tracking)
     {
+        var now = await t.DbNowAsync();
         await using var db = t.NewDb();
         var shipment = new Shipment
         {
             Id = Guid.NewGuid(), OrderId = Guid.NewGuid(), ReturnRequestId = Guid.NewGuid(), Direction = direction, Service = ShippingOptions.Standard,
-            Status = ShipmentStatuses.LabelReady, TrackingNumber = tracking, NextAttemptAt = t.Clock.GetUtcNow(), CreatedAt = t.Clock.GetUtcNow(),
+            Status = ShipmentStatuses.LabelReady, TrackingNumber = tracking, NextAttemptAt = now, CreatedAt = now,
         };
         db.Shipments.Add(shipment);
         await db.SaveChangesAsync(Ct);

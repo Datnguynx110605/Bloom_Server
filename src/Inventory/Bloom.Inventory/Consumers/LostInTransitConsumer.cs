@@ -2,6 +2,7 @@ using Bloom.Fulfillment.Contracts;
 using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Consumers;
@@ -13,7 +14,7 @@ namespace Bloom.Inventory.Consumers;
 /// A repeat for a ref whose serialized units are already counted is a no-op.
 /// Runs in <c>ConsumerHost</c>'s transaction (plan R10); SKU rows are locked first (plan R9).
 /// </summary>
-public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks locks, Ledger ledger, TimeProvider clock) : IMessageHandler
+public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks locks, Ledger ledger) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Command(FulfillmentMessages.MarkLostInTransit)];
 
@@ -45,7 +46,7 @@ public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks lock
             else throw new PermanentFailureException($"Lost in transit {refId}: serialized SKU {a.SkuId} has no shipped serial.");
         }
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         foreach (var (a, lost) in counts)
         {
             await db.Database.ExecuteSqlAsync($"""
@@ -53,7 +54,7 @@ public sealed class LostInTransitConsumer(InventoryDbContext db, StockLocks lock
                 WHERE ref_id = {refId} AND sku_id = {a.SkuId} AND status = {SerialStatuses.Shipped}
                 """, ct);
             await db.Database.ExecuteSqlAsync($"UPDATE stock_items SET lost = lost + {lost}, updated_at = {now} WHERE sku_id = {a.SkuId}", ct);
-            ledger.Add(a.SkuId, EntryTypes.LostInTransit, new(Lost: lost), RefTypes.Of(a.Kind), refId);
+            ledger.Add(a.SkuId, EntryTypes.LostInTransit, new(Lost: lost), RefTypes.Of(a.Kind), refId, now);
         }
     }
 }

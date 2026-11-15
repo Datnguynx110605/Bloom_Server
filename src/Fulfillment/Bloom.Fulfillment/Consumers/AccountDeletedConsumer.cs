@@ -12,7 +12,7 @@ namespace Bloom.Fulfillment.Consumers;
 /// D31 (05-fulfillment §6.7): the account's return requests still in <c>requested</c> become <c>expired</c> (their unbought label voided, so the label worker never picks them up) and
 /// <c>return-closed</c> (reason <c>expired</c>) is published for each. Lock order as the expiry sweep: shipments, then return_requests.
 /// </summary>
-public sealed class AccountDeletedConsumer(FulfillmentDbContext db, OutboxWriter outbox, TimeProvider clock) : IMessageHandler
+public sealed class AccountDeletedConsumer(FulfillmentDbContext db, OutboxWriter outbox) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("identity", IdentityMessages.AccountDeleted)];
 
@@ -32,7 +32,6 @@ public sealed class AccountDeletedConsumer(FulfillmentDbContext db, OutboxWriter
             WHERE ship_to IS NOT NULL AND order_id IN (SELECT order_id FROM order_accounts WHERE account_id = {{accountId}})
             """, ct);
 
-        var now = clock.GetUtcNow();
         await db.Database.ExecuteSqlAsync($"""
             SELECT 1 FROM shipments
             WHERE direction = {Directions.Return}
@@ -40,7 +39,7 @@ public sealed class AccountDeletedConsumer(FulfillmentDbContext db, OutboxWriter
             ORDER BY id FOR UPDATE
             """, ct); // waits for a label worker that is buying one of them; its request is then label_issued and left alone
         var closed = await db.Database.SqlQuery<Closed>($"""
-            UPDATE return_requests SET status = {ReturnStatuses.Expired}, version = version + 1, updated_at = {now}
+            UPDATE return_requests SET status = {ReturnStatuses.Expired}, version = version + 1, updated_at = now()
             WHERE account_id = {accountId} AND status = {ReturnStatuses.Requested}
             RETURNING id AS "Id", order_id AS "OrderId"
             """).ToListAsync(ct);

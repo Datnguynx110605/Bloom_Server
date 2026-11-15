@@ -37,7 +37,7 @@ public class StaffTests(Containers containers)
     {
         await using var t = await TestPayment.StartAsync(containers);
         var (orderId, paymentId, piId) = await Seed.PaidAsync(t, 1000);
-        var now = t.Clock.GetUtcNow();
+        var now = await t.DbNowAsync();
         var (older, newer) = (Guid.NewGuid(), Guid.NewGuid());
         await using (var db = t.NewDb())
         {

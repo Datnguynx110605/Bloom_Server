@@ -47,7 +47,9 @@ public class GoogleTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var (sub, email) = (NewSub(), $"  {Guid.NewGuid():N}@Example.com ");
 
+        var before = await t.DbNowAsync();
         var response = await SignInAsync(t, google.Mint(sub, email));
+        var after = await t.DbNowAsync();
 
         await ExpectTokensAsync(response);
         await using var db = t.NewDb();
@@ -57,7 +59,7 @@ public class GoogleTests(Containers containers)
         Assert.Equal("Ann Lee", account.Name);
         Assert.Equal(email.Trim(), account.EmailDisplay);
         Assert.Equal(email.Trim().ToLowerInvariant(), account.EmailNormalized);
-        Assert.Equal(t.Clock.GetUtcNow(), account.LastSignInAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(account.LastSignInAt!.Value, before, after);
         var registered = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.CustomerRegistered)).GetPayload<CustomerRegisteredV1>();
         Assert.Equal(new CustomerRegisteredV1(account.Id, email.Trim(), "Ann Lee"), registered);
         Assert.Equal(1, metrics.Sum("signins_total", ("type", "customer"), ("method", "google"), ("result", "success")));
@@ -85,9 +87,11 @@ public class GoogleTests(Containers containers)
         var account = await Seed.CustomerAsync(t, googleSub: sub);
 
         // The Google email is not the account's email: the sub decides.
+        var before = await t.DbNowAsync();
         await ExpectTokensAsync(await SignInAsync(t, google.Mint(sub, NewEmail())));
+        var after = await t.DbNowAsync();
 
-        Assert.Equal(t.Clock.GetUtcNow(), (await t.AccountAsync(account.Id)).LastSignInAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange((await t.AccountAsync(account.Id)).LastSignInAt!.Value, before, after);
         Assert.Empty(await Outbox.EnvelopesAsync(t, IdentityMessages.CustomerRegistered));
     }
 

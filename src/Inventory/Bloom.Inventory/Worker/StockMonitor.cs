@@ -1,5 +1,6 @@
 using Bloom.Inventory.Data;
 using Bloom.Inventory.Observability;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Worker;
@@ -31,9 +32,9 @@ public sealed class StockMonitor(IServiceScopeFactory scopes, InventoryMetrics m
 
     internal async Task RunOnceAsync(CancellationToken ct)
     {
-        var cutoff = time.GetUtcNow() - StuckAfter;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+        var cutoff = await db.Database.NowAsync(ct) - StuckAfter;
         var stuck = await db.StockAllocations.AsNoTracking().LongCountAsync(a => a.Status == AllocationStatuses.Reserved && a.CreatedAt < cutoff, ct);
         var available = await db.StockItems.AsNoTracking().ToDictionaryAsync(i => i.SkuId, i => i.OnHand - i.Reserved, ct);
         var backorders = await db.StockAllocations.AsNoTracking().Where(a => a.Status == AllocationStatuses.Backordered)

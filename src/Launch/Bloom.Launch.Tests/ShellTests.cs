@@ -222,4 +222,16 @@ public class ShellTests(Containers containers)
 
         await Rpc.FailsAsync(t.Internal.HoldAllocationAsync(new() { OrderId = "x" }, Api.Staff(), cancellationToken: TestContext.Current.CancellationToken), "ROLE_NOT_ALLOWED");
     }
+
+    [Fact]
+    public async Task Health_endpoints_answer_200_in_api_mode() // HLD-ADR-020
+    {
+        await using var t = await TestLaunch.StartAsync(containers);
+
+        foreach (var path in new[] { "/healthz", "/readyz" })
+        {
+            using var response = await t.Http.GetAsync(path, TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        }
+    }
 }

@@ -142,8 +142,9 @@ internal sealed class OutboxRelay(
         if ((activity?.Id ?? headers.GetValueOrDefault("traceparent")) is { } traceparent)
             properties.Headers = new Dictionary<string, object?> { ["traceparent"] = traceparent };
 
-        await channel.BasicPublishAsync(row.Exchange, row.RoutingKey, mandatory: false, properties,
-            Encoding.UTF8.GetBytes(row.Payload), ct);
+        // occurredAt is the row's database insert time, not the writer's clock (00-reliability §5.2, §10).
+        var body = (Envelope.Parse(Encoding.UTF8.GetBytes(row.Payload)) with { OccurredAt = row.CreatedAt }).ToUtf8Bytes();
+        await channel.BasicPublishAsync(row.Exchange, row.RoutingKey, mandatory: false, properties, body, ct);
     }
 
     private static Dictionary<string, object?> LogScope(OutboxMessage row) => new()

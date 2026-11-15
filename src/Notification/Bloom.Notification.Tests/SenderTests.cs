@@ -35,7 +35,9 @@ public class SenderTests(Containers containers)
         await Consume.Async(t, OrderMessages.Paid, new OrderPaidV1(order, "BL-1001", account, null, t.Clock.GetUtcNow(), 1000, []));
         var job = Assert.Single(await t.NewDb().EmailJobs.AsNoTracking().Where(j => j.AccountId == account).ToListAsync(Ct));
 
+        var before = await t.DbNowAsync();
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+        var after = await t.DbNowAsync();
 
         var request = Assert.Single(t.Resend.Requests);
         Assert.Equal($"bloom:email:{job.Id:D}", request.IdempotencyKey);
@@ -44,7 +46,7 @@ public class SenderTests(Containers containers)
         Assert.Contains("https://shop.test/orders/BL-1001", request.Body.GetProperty("text").GetString());
         var row = await RowAsync(t, job.Id);
         Assert.Equal(EmailStatuses.Sent, row.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), row.SentAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(row.SentAt!.Value, before, after);
         Assert.Equal("re_1", row.ProviderMessageId);
         Assert.Equal(1, row.Attempts);
         Assert.Equal(1, metrics.Count("event_to_email_seconds", ("type", "order.confirmed")));
@@ -111,14 +113,17 @@ public class SenderTests(Containers containers)
 
         for (var attempt = 1; attempt <= 4; attempt++)
         {
+            var before = await t.DbNowAsync();
             Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+            var after = await t.DbNowAsync();
             var row = await RowAsync(t, id);
             Assert.Equal(EmailStatuses.Pending, row.Status);
             Assert.Equal(attempt, row.Attempts);
             Assert.Equal("http_500", row.LastError);
-            Assert.Equal(t.Clock.GetUtcNow() + delays[attempt - 1], row.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+            Assert.InRange(row.NextAttemptAt, before + delays[attempt - 1], after + delays[attempt - 1]);
+            await t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = now() + interval '1 hour' WHERE id = {id}"); // pinned, so "not due yet" needs no margin on the short delays
             Assert.Equal(0, await Sender(t).RunOnceAsync(Ct)); // not due yet
-            t.Clock.Advance(delays[attempt - 1]);
+            await t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = now() - interval '1 second' WHERE id = {id}"); // the delay has passed
         }
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
 
@@ -128,7 +133,7 @@ public class SenderTests(Containers containers)
         Assert.Equal("http_500", failed.LastError);
         Assert.Equal(1, t.ErrorLogs);
 
-        await t.SqlAsync($"UPDATE email_jobs SET status = {EmailStatuses.Pending}, next_attempt_at = {t.Clock.GetUtcNow()} WHERE id = {id}"); // §8 Ops re-queue
+        await t.SqlAsync($"UPDATE email_jobs SET status = {EmailStatuses.Pending}, next_attempt_at = now() WHERE id = {id}"); // §8 Ops re-queue
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
         Assert.Equal(EmailStatuses.Sent, (await RowAsync(t, id)).Status);
     }
@@ -148,13 +153,15 @@ public class SenderTests(Containers containers)
         t.Resend.Fail(429, retryAfter: retryAfter);
         var id = await JobAtThirtySecondStepAsync(t);
 
+        var before = await t.DbNowAsync();
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+        var after = await t.DbNowAsync();
 
         var row = await RowAsync(t, id);
         Assert.Equal(EmailStatuses.Pending, row.Status);
         Assert.Equal(2, row.Attempts);
         Assert.Equal("http_429", row.LastError);
-        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(waitSeconds), row.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(row.NextAttemptAt, before.AddSeconds(waitSeconds), after.AddSeconds(waitSeconds));
         Assert.Equal(0, t.ErrorLogs);
     }
 
@@ -165,12 +172,14 @@ public class SenderTests(Containers containers)
         t.Resend.Fail(429);
         var id = await JobAtThirtySecondStepAsync(t);
 
+        var before = await t.DbNowAsync();
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+        var after = await t.DbNowAsync();
 
         var row = await RowAsync(t, id);
         Assert.Equal(EmailStatuses.Pending, row.Status);
         Assert.Equal(2, row.Attempts);
-        Assert.Equal(t.Clock.GetUtcNow().AddSeconds(30), row.NextAttemptAt, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(row.NextAttemptAt, before.AddSeconds(30), after.AddSeconds(30));
     }
 
     [Fact]
@@ -184,7 +193,7 @@ public class SenderTests(Containers containers)
         for (var i = 0; i < 8; i++)
         {
             Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
-            t.Clock.Advance(TimeSpan.FromMinutes(2));
+            await t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = now() - interval '1 second' WHERE id = {id}"); // the wait has passed
         }
 
         var row = await RowAsync(t, id);
@@ -198,7 +207,7 @@ public class SenderTests(Containers containers)
         await using var t = await TestNotification.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
         var id = await Seed.JobAsync(t);
-        var takenOver = t.Clock.GetUtcNow().AddMinutes(2);
+        var takenOver = (await t.DbNowAsync()).AddMinutes(2);
         // Another sender takes the job over while this pass is inside the provider call for it.
         t.Resend.Before = () => t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = {takenOver} WHERE id = {id}");
 
@@ -234,7 +243,7 @@ public class SenderTests(Containers containers)
     public async Task Not_due_and_finished_jobs_are_skipped()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        await Seed.JobAsync(t, next: t.Clock.GetUtcNow().AddSeconds(5));
+        await Seed.JobAsync(t, next: (await t.DbNowAsync()).AddHours(1));
         foreach (var status in new[] { EmailStatuses.Sent, EmailStatuses.Failed, EmailStatuses.Cancelled }) await Seed.JobAsync(t, status: status);
 
         Assert.Equal(0, await Sender(t).RunOnceAsync(Ct));
@@ -264,13 +273,32 @@ public class SenderTests(Containers containers)
     public async Task Claimed_job_waits_for_its_lease()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        var id = await Seed.JobAsync(t, next: t.Clock.GetUtcNow().AddMinutes(1)); // what a crashed sender leaves behind
+        var id = await Seed.JobAsync(t, next: (await t.DbNowAsync()).AddMinutes(1)); // what a crashed sender leaves behind
 
         Assert.Equal(0, await Sender(t).RunOnceAsync(Ct));
-        t.Clock.Advance(TimeSpan.FromSeconds(61));
+        await t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = next_attempt_at - interval '61 seconds' WHERE id = {id}"); // 61 s have passed since the lease was taken
         Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
 
         Assert.Equal(EmailStatuses.Sent, (await RowAsync(t, id)).Status);
+    }
+
+    [Fact]
+    public async Task Due_check_and_retry_follow_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+        t.Clock.Advance(TimeSpan.FromDays(2)); // the app clock is far ahead of the database
+        t.Resend.Fail(500);
+        var notYet = await Seed.JobAsync(t, next: (await t.DbNowAsync()).AddHours(1)); // an app-clock picker would find it due
+        var due = await Seed.JobAsync(t);
+
+        var before = await t.DbNowAsync();
+        Assert.Equal(1, await Sender(t).RunOnceAsync(Ct));
+        var after = await t.DbNowAsync();
+
+        Assert.Equal(0, (await RowAsync(t, notYet)).Attempts);
+        var row = await RowAsync(t, due);
+        Assert.Equal(1, row.Attempts);
+        Assert.InRange(row.NextAttemptAt, before + EmailSender.Backoff[0], after + EmailSender.Backoff[0]); // not two days from now
     }
 
     [Fact]
@@ -279,7 +307,7 @@ public class SenderTests(Containers containers)
         await using var t = await TestNotification.StartAsync(containers);
         var first = await Seed.JobAsync(t);
         var second = await Seed.JobAsync(t);
-        var takenOver = t.Clock.GetUtcNow().AddMinutes(2);
+        var takenOver = (await t.DbNowAsync()).AddMinutes(2);
         // While pass A sends the first job it holds, a second sender claims the other one (its next_attempt_at moves).
         t.Resend.Before = () => t.SqlAsync($"UPDATE email_jobs SET next_attempt_at = {takenOver} WHERE 'bloom:email:' || id::text <> {t.Resend.Requests[0].IdempotencyKey}");
 
@@ -364,7 +392,7 @@ public class SenderTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
-        var later = t.Clock.GetUtcNow().AddHours(1);
+        var later = (await t.DbNowAsync()).AddHours(1);
         await Seed.JobAsync(t, next: later);
         await Seed.JobAsync(t, next: later);
         await Seed.JobAsync(t, status: EmailStatuses.Sent);

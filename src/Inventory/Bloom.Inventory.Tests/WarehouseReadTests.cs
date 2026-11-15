@@ -112,17 +112,18 @@ public class WarehouseReadTests(Containers containers)
         await using var t = await TestInventory.StartAsync(containers);
         var now = t.Clock.GetUtcNow();
         var start = new DateTimeOffset(now.Year, now.Month, now.Day, now.Hour, now.Minute, now.Second, TimeSpan.Zero).AddSeconds(1); // whole seconds, as the query string carries
-        t.Clock.SetUtcNow(start);
         var sku = Seed.Sku(t);
         var staff = TestCaller.Staff("warehouse");
         var receipts = new List<Guid>();
-        for (var i = 0; i < 4; i++) // one ledger row each, a minute apart
+        for (var i = 0; i < 4; i++) // one ledger row each
         {
             var body = new { lines = new[] { new { skuId = sku, quantity = i + 1, serials = Array.Empty<string>() } } };
             using var posted = await t.SendAsync(HttpMethod.Post, Base + "/receipts", body, staff, Guid.NewGuid());
             receipts.Add(Guid.Parse((await posted.OkJsonAsync()).GetProperty("receiptId").GetString()!));
-            t.Clock.Advance(TimeSpan.FromMinutes(1));
         }
+        await using (var db = t.NewDb()) // ledger rows are stamped by the database clock: put them a minute apart from start
+            for (var i = 0; i < 4; i++)
+                await db.Database.ExecuteSqlAsync($"UPDATE stock_ledger SET created_at = {start.AddMinutes(i)} WHERE ref_id = {receipts[i]}", Ct);
 
         async Task<JsonElement[]> EntriesAsync(string query)
         {

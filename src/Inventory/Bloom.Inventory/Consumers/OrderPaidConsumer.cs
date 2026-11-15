@@ -2,6 +2,7 @@ using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Order.Contracts;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Consumers;
@@ -11,7 +12,7 @@ namespace Bloom.Inventory.Consumers;
 /// <c>committed</c> ones; a pre-order (<c>launchId</c> set) queues one <c>backordered</c> allocation per SKU and runs the allocator (§6.4).
 /// An order in <c>released_orders</c> gets nothing (LLD-ADR-014). Runs in <c>ConsumerHost</c>'s transaction (plan R10); SKU rows are locked in ascending order before any allocation is touched (plan R9).
 /// </summary>
-public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, TimeProvider clock, ILogger<OrderPaidConsumer> logger) : IMessageHandler
+public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, ILogger<OrderPaidConsumer> logger) : IMessageHandler
 {
     public static ConsumerBinding[] Bindings { get; } = [ConsumerBinding.Event("order", OrderMessages.Paid)];
 
@@ -33,7 +34,7 @@ public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, A
         var reserved = await db.StockAllocations.AsNoTracking()
             .Where(a => a.OrderId == orderId && a.Status == AllocationStatuses.Reserved).OrderBy(a => a.SkuId).ToListAsync(ct);
         await locks.LockAsync(reserved.Select(a => a.SkuId), ct);
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         foreach (var a in reserved)
         {
             // Status guard after the lock: a duplicate or a racing release already moved the allocation.
@@ -48,7 +49,7 @@ public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, A
                 WHERE sku_id = {a.SkuId} AND reserved >= {q}
                 """, ct) == 0)
                 throw new InvalidOperationException($"Reservation {a.RefId}/{a.SkuId} is not backed by reserved stock.");
-            ledger.Add(a.SkuId, EntryTypes.Committed, new(OnHand: -q, Reserved: -q, Committed: q), RefTypes.Order, a.RefId);
+            ledger.Add(a.SkuId, EntryTypes.Committed, new(OnHand: -q, Reserved: -q, Committed: q), RefTypes.Order, a.RefId, now);
         }
     }
 
@@ -59,13 +60,13 @@ public sealed class OrderPaidConsumer(InventoryDbContext db, StockLocks locks, A
             throw new PermanentFailureException($"Pre-order {paid.OrderId} has no lines or a line with a non-positive quantity.");
 
         await locks.LockAsync(lines.Select(l => l.SkuId), ct);
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         foreach (var (skuId, q) in lines)
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO stock_allocations (ref_id, sku_id, order_id, kind, quantity, status, paid_at, version, created_at, updated_at)
                 VALUES ({paid.OrderId}, {skuId}, {paid.OrderId}, {AllocationKinds.Preorder}, {q}, {AllocationStatuses.Backordered}, {paid.PaidAt.ToUniversalTime()}, 0, {now}, {now})
                 ON CONFLICT (ref_id, sku_id) DO NOTHING
                 """, ct);
-        await allocator.RunAsync(lines.Select(l => l.SkuId), ct);
+        await allocator.RunAsync(lines.Select(l => l.SkuId), now, ct);
     }
 }

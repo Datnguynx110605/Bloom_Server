@@ -45,17 +45,18 @@ public class WebhookTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var p = await OpenAsync(t);
         t.Clock.Advance(TimeSpan.FromSeconds(30));
-        var now = t.Clock.GetUtcNow();
+        var before = await t.DbNowAsync();
 
         using var response = await Complete(t, p);
+        var after = await t.DbNowAsync();
 
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         var row = await t.PaymentAsync(p.PaymentId);
         Assert.Equal(PaymentStatuses.Succeeded, row.Status);
         Assert.Equal(p.Pi, row.StripePaymentIntentId);
-        Assert.Equal(now, row.SucceededAt);
+        Assert.InRange(row.SucceededAt!.Value, before, after); // stamped by the database clock
         var sent = Assert.Single(await Outbox.PayloadsAsync<PaymentSucceededV1>(t, PaymentMessages.Succeeded));
-        Assert.Equal(new PaymentSucceededV1(p.OrderId, p.PaymentId, 1000, now), sent);
+        Assert.Equal(new PaymentSucceededV1(p.OrderId, p.PaymentId, 1000, row.SucceededAt.Value), sent);
         Assert.Equal(1, await EventCountAsync(t));
         Assert.Equal(1, metrics.Sum("payments_succeeded_total", ("late", "false")));
         Assert.Equal(1, metrics.Sum("webhooks_total", ("type", "checkout.session.completed"), ("result", "processed")));

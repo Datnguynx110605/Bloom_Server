@@ -8,6 +8,7 @@
 | **Date** | 2026-10-31 |
 | **Deciders** | Project owner |
 | **Related** | CHK-R04 … R14, CAT-R08, PD-ADR-003, PD-ADR-004, HLD-ADR-005 |
+| **Amended by** | [HLD-ADR-021](HLD-ADR-021-checkout-latency-excludes-payment.md) |
 
 ## Context
 Checkout start must answer "reserved" or "sold out" immediately, lock prices (CAT-R08), and expire after 15 minutes. Payments confirm asynchronously and can arrive after expiry.

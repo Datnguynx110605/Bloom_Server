@@ -33,7 +33,7 @@ public sealed class OutboxWriter(DbContext db, BloomOptions options, IHttpContex
         var causationId = handling?.MessageId;
         var id = Guid.CreateVersion7();
 
-        var envelope = new Envelope(id, messageType, kind, options.ServiceName, DateTime.UtcNow, correlationId,
+        var envelope = new Envelope(id, messageType, kind, options.ServiceName, default /* set by the relay from created_at (00-reliability §5.2) */, correlationId,
             JsonSerializer.SerializeToElement(payload, BloomJson.Options), causationId);
 
         var headers = new Dictionary<string, string>();

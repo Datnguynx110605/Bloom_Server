@@ -129,11 +129,9 @@ public class OrderTests(Containers containers)
         await using var t = await TestOrder.StartAsync(containers);
         var account = Guid.NewGuid();
         var ids = new List<string>();
-        for (var i = 0; i < 3; i++)
-        {
-            ids.Add((await CheckoutAsync(t, account)).OrderId);
-            t.Clock.Advance(TimeSpan.FromMinutes(1));
-        }
+        var before = await t.DbNowAsync();
+        for (var i = 0; i < 3; i++) ids.Add((await CheckoutAsync(t, account)).OrderId); // created_at is the database clock, so newest first needs no clock moves
+        var after = await t.DbNowAsync();
         var me = TestCaller.Customer(account);
 
         var first = await t.Rpc.Customer.ListMyOrdersAsync(new ListMyOrdersRequest { Page = 1, PageSize = 2 }, me.Call());
@@ -145,7 +143,7 @@ public class OrderTests(Containers containers)
         Assert.Equal(("regular", "pending_payment"), (summary.Kind, summary.Status));
         Assert.StartsWith("BLM-", summary.Number);
         Assert.True(summary.TotalCents > 0);
-        Assert.Equal(t.Clock.GetUtcNow().AddMinutes(-1), summary.CreatedAt.ToDateTimeOffset(), TimeSpan.FromSeconds(1));
+        Assert.InRange(summary.CreatedAt.ToDateTimeOffset(), before, after);
         Assert.Equal(3, (await t.Rpc.Customer.ListMyOrdersAsync(new ListMyOrdersRequest(), me.Call())).Items.Count); // page 0 is 1, page_size 0 is 50
     }
 
@@ -155,9 +153,7 @@ public class OrderTests(Containers containers)
         await using var t = await TestOrder.StartAsync(containers);
         var (a, b) = (Guid.NewGuid(), Guid.NewGuid());
         var a1 = await CheckoutAsync(t, a);
-        t.Clock.Advance(TimeSpan.FromMinutes(1));
         var a2 = await CheckoutAsync(t, a);
-        t.Clock.Advance(TimeSpan.FromMinutes(1));
         var b1 = await CheckoutAsync(t, b);
         await SetStatusAsync(t, a2.OrderId, "paid");
         var support = TestCaller.Staff("support");

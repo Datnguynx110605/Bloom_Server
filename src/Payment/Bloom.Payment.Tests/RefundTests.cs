@@ -18,6 +18,9 @@ public class RefundTests(Containers containers)
     private static RefundPaymentV1 Command(Guid orderId, long amount, Guid? refundId = null, IReadOnlyList<RefundLineV1>? lines = null, string reason = "return") =>
         new(orderId, refundId ?? Guid.NewGuid(), amount, reason, lines);
 
+    /// <summary>The backoff has passed: the pending refunds are due now (the database clock cannot be advanced).</summary>
+    private static Task DueAsync(TestPayment t) => t.SqlAsync($"UPDATE refunds SET next_attempt_at = now() WHERE status = 'pending'");
+
     private static Task Send(TestPayment t, RefundPaymentV1 command) =>
         Consume.Async<RefundPaymentConsumer>(t, PaymentMessages.RefundPayment, command);
 
@@ -43,13 +46,14 @@ public class RefundTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var (orderId, paymentId, piId) = await Seed.PaidAsync(t, 1000);
         var command = Command(orderId, 400, lines: [new(1, 250), new(2, 150)]);
+        var before = await t.DbNowAsync();
 
         await Send(t, command);
 
         var pending = await t.RefundAsync(command.RefundId);
         Assert.Equal(RefundStatuses.Pending, pending.Status);
         Assert.Equal((paymentId, orderId, 400L, "return", 0), (pending.PaymentId, pending.OrderId, pending.AmountCents, pending.Reason, pending.Attempts));
-        Assert.Equal(t.Clock.GetUtcNow(), pending.NextAttemptAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(pending.NextAttemptAt!.Value, before, await t.DbNowAsync()); // due at once, on the database clock
         Assert.Equal(command.Lines, pending.Lines);
         Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
         Assert.Empty(Creates(t));
@@ -370,15 +374,17 @@ public class RefundTests(Containers containers)
 
         for (var attempt = 1; attempt <= 4; attempt++)
         {
+            var before = await t.DbNowAsync();
             await t.RunExecutorAsync();
+            var after = await t.DbNowAsync();
             var row = await t.RefundAsync(command.RefundId);
             Assert.Equal((RefundStatuses.Pending, attempt), (row.Status, row.Attempts));
-            var due = t.Clock.GetUtcNow() + schedule[attempt - 1];
-            Assert.Equal(due, row.NextAttemptAt!.Value, TimeSpan.FromMilliseconds(1));
+            Assert.InRange(row.NextAttemptAt!.Value, before + schedule[attempt - 1], after + schedule[attempt - 1]); // the schedule on the database clock
 
-            await t.RunExecutorAsync(); // not due yet: no call
+            await t.SqlAsync($"UPDATE refunds SET next_attempt_at = now() + interval '1 minute'"); // not due yet: no call (the real 1 s step could pass between the two runs)
+            await t.RunExecutorAsync();
             Assert.Equal(attempt, Creates(t).Count());
-            t.Clock.Advance(schedule[attempt - 1]);
+            await DueAsync(t);
         }
         Assert.Equal(0, t.ErrorLogs);
 
@@ -392,6 +398,29 @@ public class RefundTests(Containers containers)
         Assert.Equal(1, t.ErrorLogs);
     }
 
+    // 00-reliability §10: the executor's due check follows the database's now(), not the app clock. Two days on the app clock change nothing.
+    [Fact]
+    public async Task The_executor_picks_a_refund_by_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestPayment.StartAsync(containers);
+        var (orderId, _, _) = await Seed.PaidAsync(t, 1000);
+        var command = Command(orderId, 400);
+        await Send(t, command);
+        await t.SqlAsync($"UPDATE refunds SET next_attempt_at = now() + interval '1 hour'");
+        t.Clock.Advance(TimeSpan.FromDays(2));
+
+        await t.RunExecutorAsync();
+
+        Assert.Empty(Creates(t)); // not due on the database clock, however late the app clock says it is
+        Assert.Equal(RefundStatuses.Pending, (await t.RefundAsync(command.RefundId)).Status);
+
+        await t.SqlAsync($"UPDATE refunds SET next_attempt_at = now() - interval '1 second'");
+        await t.RunExecutorAsync();
+
+        Assert.Single(Creates(t));
+        Assert.Equal(RefundStatuses.Succeeded, (await t.RefundAsync(command.RefundId)).Status);
+    }
+
     [Fact]
     public async Task Fifth_failure_leaves_a_refund_the_webhook_already_submitted()
     {
@@ -400,11 +429,10 @@ public class RefundTests(Containers containers)
         var command = Command(orderId, 400);
         await Send(t, command);
         t.Stripe.Fail(Refunds, 500, times: 5);
-        TimeSpan[] schedule = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)];
-        foreach (var delay in schedule)
+        for (var attempt = 0; attempt < 4; attempt++)
         {
             await t.RunExecutorAsync();
-            t.Clock.Advance(delay);
+            await DueAsync(t);
         }
         Task<HttpResponseMessage>? webhook = null;
         t.Stripe.Before = async path =>
@@ -461,10 +489,10 @@ public class RefundTests(Containers containers)
         var command = Command(orderId, 400);
         await Send(t, command);
         t.Stripe.Fail(Refunds, 500, times: 5);
-        foreach (var delay in new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.Zero })
+        for (var attempt = 0; attempt < 5; attempt++)
         {
             await t.RunExecutorAsync();
-            t.Clock.Advance(delay);
+            await DueAsync(t);
         }
 
         Assert.Equal(RefundStatuses.Failed, (await t.RefundAsync(command.RefundId)).Status);
@@ -508,7 +536,7 @@ public class RefundTests(Containers containers)
 
         var retrying = await t.RefundAsync(command.RefundId);
         Assert.Equal((RefundStatuses.Pending, 1), (retrying.Status, retrying.Attempts));
-        t.Clock.Advance(TimeSpan.FromSeconds(1));
+        await DueAsync(t);
 
         await t.RunExecutorAsync();
 
@@ -535,7 +563,6 @@ public class RefundTests(Containers containers)
         Assert.Equal(1, t.ErrorLogs);
         Assert.Equal(400, (await t.PaymentAsync(paymentId)).RefundedCents);
 
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         await t.RunExecutorAsync(); // a later pass (or a restart) must not create again
 
         Assert.Single(Creates(t));
@@ -552,7 +579,6 @@ public class RefundTests(Containers containers)
         t.Stripe.Fail(Refunds, 404, "resource_missing");
 
         await t.RunExecutorAsync();
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         await t.RunExecutorAsync();
 
         var row = await t.RefundAsync(command.RefundId);

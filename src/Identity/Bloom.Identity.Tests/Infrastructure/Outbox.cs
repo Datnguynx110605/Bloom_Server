@@ -23,9 +23,8 @@ public static class Outbox
     public static async Task<string> LatestCodeAsync(TestIdentity t, string email, string purpose)
     {
         var message = (await EnvelopesAsync(t, IdentityMessages.VerificationCode))
-            .Select(e => (e.OccurredAt, Payload: e.GetPayload<VerificationCodeV1>()))
-            .Where(x => x.Payload.Email == email && x.Payload.Purpose == purpose)
-            .OrderBy(x => x.OccurredAt).Last().Payload;
+            .Select(e => e.GetPayload<VerificationCodeV1>())
+            .Last(p => p.Email == email && p.Purpose == purpose);
         return Encoding.UTF8.GetString(new SecretBox(t.Secrets.CodeEncryptionKey).Open(Base64Url.DecodeFromChars(message.EncryptedCode)));
     }
 }

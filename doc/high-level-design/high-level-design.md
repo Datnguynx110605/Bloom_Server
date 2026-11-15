@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-11-12 |
+| **Status** | Approved (2026-11-14) |
+| **Last updated** | 2026-11-14 |
 | **Product design** | [doc/product-design](../product-design/00-overview.md) |
-| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 019) |
+| **Decision records** | [adr/](adr/README.md) (HLD-ADR-001 … 022) |
 
 ## Summary
 
@@ -57,7 +57,7 @@ Bloom is a single-vendor US store selling Apple devices ([product overview](../p
 |---|---|---|
 | QA-01 | Availability | 99.9% monthly for checkout and catalog (≤ 43 min downtime/month) |
 | QA-02 | Latency: catalog reads | p95 < 150 ms at launch peak |
-| QA-03 | Latency: checkout start | p95 < 300 ms at launch peak |
+| QA-03 | Latency: checkout start | p95 < 300 ms at launch peak, excluding the payment call ([HLD-ADR-021](adr/HLD-ADR-021-checkout-latency-excludes-payment.md)) |
 | QA-04 | Latency: waiting-room status | p95 < 50 ms at launch peak |
 | QA-05 | Throughput | 200 checkouts/s and 20k status reads/s sustained during a launch |
 | QA-06 | Consistency | Zero violations of BI-01 … BI-07 |
@@ -341,7 +341,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 
 - OpenTelemetry in every service for traces, metrics and logs. Trace context travels through gRPC metadata and RabbitMQ message headers, so one trace follows checkout → payment → outbox → consumer.
 - Grafana with Tempo (traces), Prometheus (metrics), Loki (logs) ([HLD-ADR-015](adr/HLD-ADR-015-observability.md)).
-- Key signals: SLO latency and error rate per route (QA-01 … QA-05), waiting-room size and admission rate, outbox backlog and age, consumer lag, DLQ count, sagas stuck past a deadline, payments pending without a webhook.
+- Key signals: SLO latency and error rate per route (QA-01 … QA-05; QA-03 is read from order's checkout_start_seconds, which leaves out the payment call, HLD-ADR-021), waiting-room size and admission rate, outbox backlog and age, consumer lag, DLQ count, sagas stuck past a deadline, payments pending without a webhook.
 - Alerts: any DLQ message; SLO burn; outbox age above threshold; stuck sagas.
 
 ### 9.4 Failure handling summary
@@ -362,6 +362,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | Component | Deployment |
 |---|---|
 | Each domain service | API deployment + worker deployment (same image, different entrypoint) |
+| Health endpoints | Every domain service: `/healthz` (process alive) in API and worker mode; `/readyz` (started, not shutting down) in API mode only. Neither checks dependencies: outages are handled by each service's degraded behaviour ([HLD-ADR-020](adr/HLD-ADR-020-health-endpoints.md)). The gateway's endpoints: [07-api-gateway §6.6](../low-level-design/07-api-gateway.md#66-health). |
 | api-gateway | Deployment, autoscaled horizontally |
 | launch API | Autoscaled horizontally (launch hot path) |
 | Workers | Scaled on RabbitMQ queue length by KEDA |
@@ -400,6 +401,9 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | [HLD-ADR-017](adr/HLD-ADR-017-postgres-full-text-search.md) | Catalog search on PostgreSQL full-text |
 | [HLD-ADR-018](adr/HLD-ADR-018-external-providers.md) | Stripe, Shippo, Resend behind interfaces |
 | [HLD-ADR-019](adr/HLD-ADR-019-consumers-pause-during-own-db-outage.md) | Consumers pause during their own database outage |
+| [HLD-ADR-020](adr/HLD-ADR-020-health-endpoints.md) | Health endpoints: liveness everywhere, started-only readiness on API pods |
+| [HLD-ADR-021](adr/HLD-ADR-021-checkout-latency-excludes-payment.md) | Checkout start latency (QA-03) excludes the payment call |
+| [HLD-ADR-022](adr/HLD-ADR-022-stripe-rate-limit.md) | Stripe rate limit sized to the launch admission rate |
 
 ## 11. Risks
 
@@ -415,6 +419,7 @@ The delivery-failure flow (ORD-R12, R13, R17) follows the same shape, also orche
 | R-08 | Eventual consistency: status can lag briefly across services (for example "paid" visible a moment after payment). | UI shows pending states; consumer lag is monitored. |
 | R-10 | 100k notification WebSockets at launch peak add a second scaling problem through ingress, gateway and notification. | Sized and autoscaled on connection count; 15-min connection life with jittered reconnects; included in the launch load test. |
 | R-09 | Push-based deploys from GitHub Actions: cluster state can drift from the repo after manual changes. | No manual changes to the cluster; manifests in the repo are the only source. |
+| R-11 | Stripe's API rate limit (about 100 requests/s by default) is below QA-05's 200 checkouts/s; each checkout creates one Checkout Session. | Raise the account's limit before a launch, sized to the admission rate ([HLD-ADR-022](adr/HLD-ADR-022-stripe-rate-limit.md)); a 429 is transient and the customer retries. |
 
 ## 12. Assumptions
 

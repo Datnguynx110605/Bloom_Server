@@ -3,6 +3,7 @@ using Bloom.Payment.Data;
 using Bloom.Payment.Errors;
 using Bloom.Payment.Observability;
 using Bloom.Payment.Stripe;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -10,7 +11,7 @@ using Microsoft.EntityFrameworkCore;
 namespace Bloom.Payment.Services;
 
 /// <summary>04-payment §5.1 internal API (order calls it; no HTTP route, no role check: Linkerd guards it, §9).</summary>
-public sealed class InternalService(PaymentDbContext db, IPaymentProvider provider, TimeProvider clock, PaymentMetrics metrics) : PaymentInternal.PaymentInternalBase
+public sealed class InternalService(PaymentDbContext db, IPaymentProvider provider, PaymentMetrics metrics) : PaymentInternal.PaymentInternalBase
 {
     private static readonly TimeSpan Lock = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan SessionLife = TimeSpan.FromMinutes(47); // 15-min checkout + Stripe's 30-min minimum + 2-min margin (spec §4)
@@ -37,11 +38,11 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
             metrics.Created("existing");
             return Response(found.Id, found.CheckoutUrl, found.SessionExpiresAt);
         }
-        if (found.LockedUntil > clock.GetUtcNow())
+        var now = await db.Database.NowAsync(ct);
+        if (found.LockedUntil > now)
             throw Fail("in_progress", PaymentErrors.CreateInProgress, "The payment for this order is being created.");
 
         // Stale `creating`: take over, then resume with the stored expiry so Stripe sees the identical request.
-        var now = clock.GetUtcNow();
         var until = now + Lock;
         var taken = await db.Database.ExecuteSqlAsync($"""
             UPDATE payments SET locked_until = {until}, version = version + 1, updated_at = {now}
@@ -58,7 +59,7 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
     /// <summary>Tx 1: the claimed row, or null when another call already holds the order.</summary>
     private async Task<PaymentRow?> InsertAsync(CreatePaymentRequest r, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var row = new PaymentRow
         {
             Id = Guid.CreateVersion7(),
@@ -94,9 +95,8 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
         {
             // Owner item 2: release our own claim so the next call resumes at once. A crash never gets here and waits out the 60 s.
             // P-8: not the request's token. A caller that has gone away must not leave the claim to the 60 s path.
-            var now = clock.GetUtcNow();
             await db.Database.ExecuteSqlAsync($"""
-                UPDATE payments SET locked_until = {now}, version = version + 1, updated_at = {now}
+                UPDATE payments SET locked_until = now(), version = version + 1, updated_at = now()
                 WHERE id = {row.Id} AND locked_until = {row.LockedUntil}
                 """, CancellationToken.None);
             throw Fail("provider_unavailable", PaymentErrors.ProviderUnavailable, "The payment provider is unavailable.");
@@ -106,7 +106,7 @@ public sealed class InternalService(PaymentDbContext db, IPaymentProvider provid
         // P-8: not the request's token. Stripe already holds the session, so a cancelled caller must not strand the row in `creating`.
         var saved = await db.Database.ExecuteSqlAsync($"""
             UPDATE payments SET stripe_session_id = {session.Id}, checkout_url = {session.Url}, session_expires_at = {session.ExpiresAt},
-                status = CASE status WHEN 'creating' THEN 'open' ELSE status END, locked_until = NULL, version = version + 1, updated_at = {clock.GetUtcNow()}
+                status = CASE status WHEN 'creating' THEN 'open' ELSE status END, locked_until = NULL, version = version + 1, updated_at = now()
             WHERE id = {row.Id}
             """, CancellationToken.None);
         if (saved != 1) throw new InvalidOperationException($"Payment {row.Id} vanished before its session was stored.");

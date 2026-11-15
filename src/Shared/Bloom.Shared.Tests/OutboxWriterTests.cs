@@ -69,6 +69,7 @@ public class OutboxWriterTests(Containers containers)
         var env = Envelope.Parse(System.Text.Encoding.UTF8.GetBytes(row.Payload));
         Assert.Equal(row.Id, env.MessageId);
         Assert.Equal(svc, env.Producer);
+        Assert.Equal(default, env.OccurredAt);
         Assert.Equal("event", env.Kind);
         Assert.Equal(1, env.Payload.GetProperty("a").GetInt32());
         Assert.Null(env.CausationId);

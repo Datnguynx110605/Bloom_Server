@@ -4,6 +4,7 @@ using Bloom.Order.Api;
 using Bloom.Order.Contracts;
 using Bloom.Order.Data;
 using Bloom.Order.Domain;
+using Bloom.Order.Services;
 using Bloom.Payment.Contracts;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -83,19 +84,21 @@ public class CheckoutTests(Containers containers)
         await Seed.CartAsync(t, account, (device, 2, null), (plan, 1, 1));
         await CouponAsync(t, "SAVE-10", r => r.TotalLimit = 5);
 
+        var before = await t.DbNowAsync();
         var response = await Seed.CheckoutAsync(t, account, configure: r => r.CouponCode = "save-10");
+        var after = await t.DbNowAsync();
 
         // device 2 x 1000 = 2000, 10 % off = 200, tax on 1800 = 149 (half-cent up); the plan is untaxed: 1949 + 9900
         Assert.Equal((11900L, 200L, 149L, 0L, 11849L), (response.SubtotalCents, response.DiscountCents, response.TaxCents, response.ShippingCents, response.TotalCents));
         Assert.Equal($"https://pay.test/{response.OrderId}", response.PaymentUrl);
-        Assert.Equal(t.Clock.GetUtcNow().AddMinutes(15), response.DeadlineAt.ToDateTimeOffset(), TimeSpan.FromMilliseconds(1));
+        Assert.InRange(response.DeadlineAt.ToDateTimeOffset(), before.AddMinutes(15), after.AddMinutes(15)); // the database clock plus the payment window
 
         await using var db = t.NewDb();
         var order = await db.Orders.AsNoTracking().SingleAsync(Ct);
         Assert.Equal((response.OrderId, response.Number, OrderStatuses.PendingPayment, OrderKinds.Regular, 825), (order.Id.ToString("D"), order.Number, order.Status, order.Kind, order.TaxRateBp));
         Assert.Equal(response.TotalCents, order.TotalCents);
         Assert.Equal(FakeUpstreams.PaymentIdOf(response.OrderId), order.PaymentId);
-        Assert.Equal(t.Clock.GetUtcNow().AddMinutes(15), order.DeadlineAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(order.DeadlineAt!.Value, before.AddMinutes(15), after.AddMinutes(15));
         Assert.Equal<(string?, string)[]>([(null, "creating"), ("creating", "pending_payment")], (await HistoryAsync(t, order.Id)).ToArray());
 
         var lines = await db.OrderLines.AsNoTracking().Where(l => l.OrderId == order.Id).OrderBy(l => l.LineNo).ToListAsync(Ct);
@@ -124,6 +127,45 @@ public class CheckoutTests(Containers containers)
         Assert.Equal(1, metrics.Count("checkout_start_seconds", ("kind", "regular")));
         Assert.Equal(1, metrics.Sum("coupon_redemptions_total", ("result", "held")));
         Assert.Empty(await Outbox.PayloadsAsync<OrderCancelledV1>(t, OrderMessages.Cancelled));
+    }
+
+    [Fact]
+    public async Task OR01_checkout_start_seconds_leaves_out_the_payment_call()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (account, _) = await CartOfOneAsync(t);
+        t.Upstreams.Before = method => method == "CreatePayment" ? Task.Delay(TimeSpan.FromSeconds(1), Ct) : Task.CompletedTask;
+
+        var wall = System.Diagnostics.Stopwatch.StartNew();
+        await Seed.CheckoutAsync(t, account);
+        wall.Stop();
+
+        AssertLeavesOutPayment(metrics, wall);
+    }
+
+    [Fact]
+    public async Task OR01_checkout_start_seconds_leaves_out_a_failed_payment_call()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        using var metrics = new MetricCapture(t.Services);
+        var (account, _) = await CartOfOneAsync(t);
+        t.Upstreams.Before = method => method == "CreatePayment" ? Task.Delay(TimeSpan.FromSeconds(1), Ct) : Task.CompletedTask;
+        t.Upstreams.Fail("CreatePayment", StatusCode.Unavailable);
+
+        var wall = System.Diagnostics.Stopwatch.StartNew();
+        await UnavailableAsync(Seed.CheckoutAsync(t, account));
+        wall.Stop();
+
+        AssertLeavesOutPayment(metrics, wall);
+    }
+
+    /// <summary>The call took at least the 1 s payment delay, and the one recorded value is the rest of it: wall time minus the delay, with 0.1 s of slack.</summary>
+    private static void AssertLeavesOutPayment(MetricCapture metrics, System.Diagnostics.Stopwatch wall)
+    {
+        Assert.True(wall.Elapsed >= TimeSpan.FromSeconds(1), $"the call took {wall.Elapsed}");
+        var recorded = Assert.Single(metrics.Values("checkout_start_seconds", ("kind", "regular")));
+        Assert.True(recorded <= wall.Elapsed.TotalSeconds - 0.9, $"recorded {recorded} s, the call took {wall.Elapsed.TotalSeconds} s");
     }
 
     [Fact]
@@ -346,6 +388,7 @@ public class CheckoutTests(Containers containers)
         Assert.Equal((order.Id, SagaTypes.CheckoutCompensation), (saga.OrderId, saga.Type));
         Assert.Equal([SagaSteps.InventoryRelease], saga.PendingSteps);
 
+        var before = await t.DbNowAsync();
         await using (var scope = t.Services.CreateAsyncScope()) // the release is confirmed: the step goes and the saga completes
         {
             var scoped = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
@@ -356,7 +399,7 @@ public class CheckoutTests(Containers containers)
         await using var verify = t.NewDb();
         var done = await verify.OrderSagas.AsNoTracking().SingleAsync(Ct);
         Assert.Empty(done.PendingSteps);
-        Assert.Equal(t.Clock.GetUtcNow(), done.CompletedAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(done.CompletedAt!.Value, before, await t.DbNowAsync()); // stamped by the database clock
     }
 
     [Fact]
@@ -430,7 +473,7 @@ public class CheckoutTests(Containers containers)
         t.Upstreams.Before = async method =>
         {
             if (method != "ReserveStock") return;
-            t.Clock.Advance(TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(1));
+            await Seed.AgeDeadlinesAsync(t, TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(1));
             await t.Sweeps().RunCreatingAsync(Ct); // the creating sweep cancels the order and sends the release while the reserve is on its way
         };
 
@@ -798,5 +841,41 @@ public class CheckoutTests(Containers containers)
         Assert.Equal(0, await check.CouponCustomerUsages.AsNoTracking().Select(u => u.UsesCount).SingleAsync(Ct));
         var use = await check.CouponUses.AsNoTracking().SingleAsync(Ct);
         Assert.Equal((orders[0], CouponUseStatuses.Released), (use.OrderId, use.Status));
+    }
+
+    [Fact]
+    public async Task Coupon_hold_checks_its_dates_against_the_database_clock()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var coupon = await CouponAsync(t, "DATES-1", r => r.TotalLimit = 10);
+        var id = Guid.Parse(coupon.Id);
+        var account = Guid.NewGuid();
+
+        async Task<string> HoldReasonAsync()
+        {
+            await using var scope = t.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            await using var tx = await db.Database.BeginTransactionAsync(Ct);
+            var e = await Assert.ThrowsAsync<RpcException>(() => scope.ServiceProvider.GetRequiredService<Coupons>().HoldAsync(id, account, Guid.NewGuid(), Ct));
+            return Rpc.Info(e).Reason;
+        }
+
+        await using var db = t.NewDb();
+        await db.Database.ExecuteSqlAsync($"UPDATE coupons SET expires_at = now() - interval '1 second' WHERE id = {id}", Ct);
+        Assert.Equal("COUPON_EXPIRED", await HoldReasonAsync());
+
+        await db.Database.ExecuteSqlAsync($"UPDATE coupons SET expires_at = NULL, starts_at = now() + interval '1 hour' WHERE id = {id}", Ct);
+        Assert.Equal("COUPON_NOT_STARTED", await HoldReasonAsync());
+        Assert.Equal(0, (await db.Coupons.AsNoTracking().SingleAsync(Ct)).UsesCount); // a refused hold leaves no count
+    }
+
+    [Fact]
+    public async Task The_payment_read_is_one_statement_that_compares_the_deadline_with_the_database_clock()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        await using var db = t.NewDb();
+        var sql = CheckoutService.PaymentRead(db, Guid.NewGuid()).ToQueryString();
+        Assert.Matches(@"(\w+\.)?""?deadline_at""? <= now\(\)", sql); // a client-side time would be a parameter here (R9, D21)
+        Assert.Contains("order_lines", sql); // the lines come in the same statement
     }
 }

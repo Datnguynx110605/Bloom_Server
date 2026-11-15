@@ -162,6 +162,18 @@ public class ShellTests(Containers containers)
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Health_endpoints_answer_200_in_api_mode() // HLD-ADR-020
+    {
+        await using var t = await TestNotification.StartAsync(containers);
+
+        foreach (var path in new[] { "/healthz", "/readyz" })
+        {
+            using var response = await t.Http.GetAsync(path, TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        }
+    }
+
     private static ErrorInfo ErrorInfoOf(RpcException e) =>
         e.GetRpcStatus()!.Details.Single().Unpack<ErrorInfo>();
 }

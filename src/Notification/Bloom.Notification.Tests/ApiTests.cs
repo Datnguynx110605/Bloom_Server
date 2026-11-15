@@ -57,7 +57,7 @@ public class ApiTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var account = Guid.NewGuid();
-        var start = t.Clock.GetUtcNow().AddMinutes(-10);
+        var start = (await t.DbNowAsync()).AddMinutes(-10);
         start = new DateTimeOffset(start.Ticks - start.Ticks % TimeSpan.TicksPerSecond, TimeSpan.Zero);
         var rows = new List<(Guid Id, DateTimeOffset At)>();
         // 40 distinct seconds (0..40 but 24) plus 5 rows on second 24: the tie straddles the first page break
@@ -83,7 +83,7 @@ public class ApiTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var account = Guid.NewGuid();
-        var at = t.Clock.GetUtcNow();
+        var at = await t.DbNowAsync();
         var unread = await Seed.NotificationAsync(t, account, at.AddMinutes(-1), "order.shipped");
         var read = await Seed.NotificationAsync(t, account, at.AddMinutes(-2), "order.confirmed", readAt: at);
         using var client = t.CustomerClient(account);
@@ -110,7 +110,7 @@ public class ApiTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var (a, b) = (Guid.NewGuid(), Guid.NewGuid());
-        var start = t.Clock.GetUtcNow().AddHours(-1);
+        var start = (await t.DbNowAsync()).AddHours(-1);
         var a1 = await Seed.NotificationAsync(t, a, start.AddSeconds(1));
         var b2 = await Seed.NotificationAsync(t, b, start.AddSeconds(2));
         var a3 = await Seed.NotificationAsync(t, a, start.AddSeconds(3));
@@ -145,7 +145,7 @@ public class ApiTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var (a, b) = (Guid.NewGuid(), Guid.NewGuid());
-        var at = t.Clock.GetUtcNow();
+        var at = await t.DbNowAsync();
         await Seed.NotificationAsync(t, a, at);
         await Seed.NotificationAsync(t, a, at);
         await Seed.NotificationAsync(t, a, at, readAt: at);
@@ -162,17 +162,18 @@ public class ApiTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var (a, b) = (Guid.NewGuid(), Guid.NewGuid());
-        var earlier = t.Clock.GetUtcNow().AddHours(-2);
+        var earlier = (await t.DbNowAsync()).AddHours(-2);
         var own = await Seed.NotificationAsync(t, a, earlier);
         var alreadyRead = await Seed.NotificationAsync(t, a, earlier, readAt: earlier);
         var others = await Seed.NotificationAsync(t, b, earlier);
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         using var client = t.CustomerClient(a);
 
+        var before = await t.DbNowAsync();
         var response = await client.PostAsJsonAsync("/api/notifications/read", new { ids = new[] { own, alreadyRead, others, Guid.NewGuid() } }, Ct);
+        var after = await t.DbNowAsync();
 
         Assert.Equal("{}", (await JsonAsync(response)).GetRawText());
-        Assert.Equal(t.Clock.GetUtcNow(), await ReadAtAsync(t, own));
+        Assert.InRange((await ReadAtAsync(t, own))!.Value, before, after);
         Assert.Equal(earlier, await ReadAtAsync(t, alreadyRead));
         Assert.Null(await ReadAtAsync(t, others));
     }
@@ -191,7 +192,7 @@ public class ApiTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var a = Guid.NewGuid();
-        var own = await Seed.NotificationAsync(t, a, t.Clock.GetUtcNow());
+        var own = await Seed.NotificationAsync(t, a, await t.DbNowAsync());
         using var client = t.CustomerClient(a);
 
         var info = await ErrorInfoAsync(await client.PostAsync("/api/notifications/read", new StringContent(json, Encoding.UTF8, "application/json"), Ct), HttpStatusCode.BadRequest, "VALIDATION_FAILED");
@@ -205,19 +206,20 @@ public class ApiTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var (a, b) = (Guid.NewGuid(), Guid.NewGuid());
-        var earlier = t.Clock.GetUtcNow().AddHours(-2);
+        var earlier = (await t.DbNowAsync()).AddHours(-2);
         var unread1 = await Seed.NotificationAsync(t, a, earlier);
         var unread2 = await Seed.NotificationAsync(t, a, earlier);
         var alreadyRead = await Seed.NotificationAsync(t, a, earlier, readAt: earlier);
         var others = await Seed.NotificationAsync(t, b, earlier);
-        t.Clock.Advance(TimeSpan.FromMinutes(5));
         using var client = t.CustomerClient(a);
 
+        var before = await t.DbNowAsync();
         var response = await client.PostAsJsonAsync("/api/notifications/read-all", new { }, Ct);
+        var after = await t.DbNowAsync();
 
         Assert.Equal("{}", (await JsonAsync(response)).GetRawText());
-        Assert.Equal(t.Clock.GetUtcNow(), await ReadAtAsync(t, unread1));
-        Assert.Equal(t.Clock.GetUtcNow(), await ReadAtAsync(t, unread2));
+        Assert.InRange((await ReadAtAsync(t, unread1))!.Value, before, after);
+        Assert.InRange((await ReadAtAsync(t, unread2))!.Value, before, after);
         Assert.Equal(earlier, await ReadAtAsync(t, alreadyRead));
         Assert.Null(await ReadAtAsync(t, others));
     }

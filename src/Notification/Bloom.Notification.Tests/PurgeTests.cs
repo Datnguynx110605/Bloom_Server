@@ -17,10 +17,10 @@ public class PurgeTests(Containers containers)
     {
         await using var t = await TestNotification.StartAsync(containers);
         var account = Guid.NewGuid();
-        var now = t.Clock.GetUtcNow();
+        var now = await t.DbNowAsync();
         await using (var db = t.NewDb())
         {
-            for (var i = 0; i < 2500; i++) db.Notifications.Add(Seed.Notification(t, account, now.AddDays(-91)));
+            for (var i = 0; i < 2500; i++) db.Notifications.Add(await Seed.Notification(t, account, now.AddDays(-91)));
             await db.SaveChangesAsync(Ct);
         }
         for (var i = 0; i < 3; i++) await Seed.NotificationAsync(t, account, now.AddDays(-89));
@@ -36,7 +36,7 @@ public class PurgeTests(Containers containers)
     public async Task Finished_email_jobs_older_than_30_days_are_purged()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        var now = t.Clock.GetUtcNow();
+        var now = await t.DbNowAsync();
         foreach (var status in new[] { EmailStatuses.Sent, EmailStatuses.Failed, EmailStatuses.Cancelled }) await Seed.JobAsync(t, status: status, createdAt: now.AddDays(-31));
         await Seed.JobAsync(t, createdAt: now.AddDays(-31));
         await Seed.JobAsync(t, status: EmailStatuses.Sent, createdAt: now.AddDays(-29));
@@ -54,7 +54,7 @@ public class PurgeTests(Containers containers)
     public async Task N6_notifications_purge_failure_still_purges_email_jobs()
     {
         await using var t = await TestNotification.StartAsync(containers);
-        var now = t.Clock.GetUtcNow();
+        var now = await t.DbNowAsync();
         await Seed.NotificationAsync(t, Guid.NewGuid(), now.AddDays(-91));
         var old = await Seed.JobAsync(t, status: EmailStatuses.Sent, createdAt: now.AddDays(-31));
         await t.SqlAsync($"""

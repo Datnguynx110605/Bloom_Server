@@ -321,8 +321,10 @@ public class PackingTests(Containers containers)
 
         using (var stale = await t.SendAsync(HttpMethod.Post, Tasks($"/{taskId}/complete"), new { version = 0 }, staff))
             await stale.ExpectErrorAsync(409, "CONCURRENCY_CONFLICT");
+        var before = await t.DbNowAsync();
         using var response = await t.SendAsync(HttpMethod.Post, Tasks($"/{taskId}/complete"), new { version = 1 }, staff);
         var body = await response.OkJsonAsync();
+        var after = await t.DbNowAsync();
 
         var task = body.GetProperty("task");
         var shipment = body.GetProperty("shipment");
@@ -331,8 +333,10 @@ public class PackingTests(Containers containers)
             (shipment.GetProperty("direction").GetString(), shipment.GetProperty("service").GetString(), shipment.GetProperty("status").GetString()));
         await using var db = t.NewDb();
         var row = await db.Shipments.AsNoTracking().SingleAsync(Ct);
-        Assert.Equal((taskId, orderId, "outbound", "express", "label_pending", t.Clock.GetUtcNow(), t.Clock.GetUtcNow(), 0, shipment.GetProperty("id").GetString()),
-            (row.PackTaskId, row.OrderId, row.Direction, row.Service, row.Status, row.CreatedAt, row.NextAttemptAt, row.LabelAttempts, row.Id.ToString()));
+        Assert.Equal((taskId, orderId, "outbound", "express", "label_pending", 0, shipment.GetProperty("id").GetString()),
+            (row.PackTaskId, row.OrderId, row.Direction, row.Service, row.Status, row.LabelAttempts, row.Id.ToString()));
+        Assert.InRange(row.CreatedAt, before, after);
+        Assert.Equal(row.CreatedAt, row.NextAttemptAt);
         var coverage = await db.WarrantyCoverages.AsNoTracking().SingleAsync(Ct);
         Assert.Equal((orderId, 2, 1, "B", 12, "pending_delivery", (DateTimeOffset?)null),
             (coverage.OrderId, coverage.PlanLineNo, coverage.DeviceLineNo, coverage.Serial, coverage.CoverageMonths, coverage.Status, coverage.StartsAt));
@@ -352,7 +356,6 @@ public class PackingTests(Containers containers)
         for (var i = 0; i < 3; i++)
         {
             ids.Add((await ReadyTaskAsync(t)).TaskId);
-            t.Clock.Advance(TimeSpan.FromSeconds(1));
         }
         await PostOkAsync(t, Tasks($"/{ids[1]}/start"), new { version = 0 });
         await t.Internal.CancelPackTaskAsync(new() { OrderId = Guid.NewGuid().ToString("D"), By = "customer" }, cancellationToken: Ct).ResponseAsync; // a marker

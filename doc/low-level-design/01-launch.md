@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-11-12 |
+| **Status** | Approved (2026-11-14) |
+| **Last updated** | 2026-11-14 |
 | **Product rules** | [04-launch](../product-design/04-launch.md) (LCH-R01 … R28), BI-01, BI-03 |
 | **HLD** | [high-level-design.md §5, §8.1](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-012 |
 | **Decision records** | [LLD-ADR-012](adr/LLD-ADR-012-admission-paced-per-launch.md) |
@@ -27,7 +27,7 @@
 | LR-02 | `sold + held ≤ purchase_limit` for every (account, launch product), always. | BI-03, LCH-R11, R12 |
 | LR-03 | A pass enables exactly one successful hold; failed attempts don't consume it. | LCH-R22 |
 | LR-04 | Waiting-room status p95 < 50 ms at 20k req/s; never touches Postgres. | QA-04 |
-| LR-05 | Hold p95 within the checkout budget (checkout start p95 < 300 ms overall). | QA-03 |
+| LR-05 | Hold p95 within the checkout budget (checkout start p95 < 300 ms, payment call excluded, HLD-ADR-021). | QA-03 |
 | LR-06 | Admission never exceeds the configured rate, nor outstanding passes beyond units available. | HLD-ADR-012 |
 | LR-07 | `launch` never releases a hold on its own; only `order` does. | Owner decision |
 
@@ -262,13 +262,12 @@ The token is signed when the customer reads it (§6.3), not stored, so a worker 
 2. If a `holds` row exists for `order_id`: same account, launch and lines → return the stored hold (idempotent retry); anything different → `HOLD_CONFLICT`.
 3. Read the `launches` row `FOR SHARE`, first, before the product and SKU locks: `stage = preorder_open` and not closed, otherwise `LAUNCH_NOT_OPEN`. Every SKU belongs to the launch, otherwise `SKU_NOT_IN_LAUNCH`.
 4. `INSERT INTO consumed_passes …`. Conflict → `PASS_ALREADY_USED`.
-5. For each product, **in ascending `product_id` order**: `INSERT INTO limit_usage … ON CONFLICT DO NOTHING`, then
-   `UPDATE limit_usage SET held = held + @n WHERE launch_id = @L AND account_id = @A AND product_id = @P AND held + sold + @n <= @limit`. 0 rows → `ROLLBACK`, `LIMIT_EXCEEDED`.
-6. For each SKU, **in ascending `sku_id` order**: `UPDATE launch_skus SET held = held + @q WHERE launch_id = @L AND sku_id = @S AND held + sold + @q <= allocation`. 0 rows → `ROLLBACK`, `SOLD_OUT`.
-7. Insert `holds` (`held`) and `hold_lines`.
+5. For each product, **in ascending `product_id` order**: `INSERT INTO limit_usage (launch_id, account_id, product_id, held, sold) VALUES (@L, @A, @P, @n, 0) ON CONFLICT (launch_id, account_id, product_id) DO UPDATE SET held = limit_usage.held + @n WHERE limit_usage.held + limit_usage.sold + @n <= @limit`. 0 rows → `ROLLBACK`, `LIMIT_EXCEEDED`. A new row needs `@n <= @limit`, checked before the statement (R11).
+6. Insert `holds` (`held`) and `hold_lines`.
+7. For each SKU, **in ascending `sku_id` order**: `UPDATE launch_skus SET held = held + @q WHERE launch_id = @L AND sku_id = @S AND held + sold + @q <= allocation`. 0 rows → `ROLLBACK`, `SOLD_OUT`.
 8. `COMMIT`. Then best effort: `ZREM wr:{L}:passes pid`, `DEL wr:{L}:pass:{A}`.
 
-A failed hold rolls back step 4, so the pass stays usable (LR-03). Fixed lock order (the launch row, then products, then SKUs, each ascending) prevents deadlocks between concurrent holds.
+A failed hold rolls back step 4, so the pass stays usable (LR-03). Fixed lock order (the launch row, then products, then SKUs, each ascending) prevents deadlocks between concurrent holds. The SKU updates come last, right before `COMMIT`: `launch_skus` rows are the hot rows at launch peak (R-02), so their locks are held for the shortest time.
 
 ### 6.6 Settlement
 
@@ -301,8 +300,8 @@ Every admin change uses optimistic locking (`version`), is audited (`identity.st
 
 | Risk | Protection |
 |---|---|
-| Overselling allocation | Guarded update (§6.5 step 6) + `CHECK` constraint |
-| Exceeding the limit | Guarded update on `limit_usage` (§6.5 step 5) |
+| Overselling allocation | Guarded update (§6.5 step 7) + `CHECK` constraint |
+| Exceeding the limit | Guarded upsert on `limit_usage` (§6.5 step 5) |
 | Pass reuse | Primary key on `consumed_passes.pass_id` in the hold transaction |
 | Two admission workers | Transaction-level advisory lock per launch, plus the tick key `wr:{L}:tick` (§6.4 step 7, [LLD-ADR-012](adr/LLD-ADR-012-admission-paced-per-launch.md)) |
 | Hold vs room close / stage change | Row lock on `launches`: a hold reads it `FOR SHARE` (§6.5 step 3). Room close (admission tick §6.4 step 5) and every stage change (scheduler, admin) take it `FOR UPDATE` before evaluating their conditions, in a statement after the lock (a fresh READ COMMITTED snapshot) |

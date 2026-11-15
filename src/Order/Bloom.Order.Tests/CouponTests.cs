@@ -39,13 +39,15 @@ public class CouponTests(Containers containers)
         await using var t = await TestOrder.StartAsync(containers);
         var staff = TestCaller.Staff("catalog_manager");
 
+        var before = await t.DbNowAsync();
         var coupon = await CreateAsync(t, " Save-10 ", staff, r => { r.Type = "fixed"; r.Value = 500; r.MinSpendCents = 2500; r.TotalLimit = 100; });
+        var after = await t.DbNowAsync();
 
         Assert.Equal("Save-10", coupon.Code);
         Assert.Equal(("fixed", 500, 2500, 100), (coupon.Type, coupon.Value, coupon.MinSpendCents, coupon.TotalLimit));
         Assert.True(coupon.Active);
         Assert.Equal((0, 0L), (coupon.UsesCount, coupon.Version));
-        Assert.Equal(t.Clock.GetUtcNow(), coupon.CreatedAt.ToDateTimeOffset());
+        Assert.InRange(coupon.CreatedAt.ToDateTimeOffset(), before, after); // stamped by the database clock
         await using var db = t.NewDb();
         var row = await db.Coupons.SingleAsync(Ct);
         Assert.Equal(("SAVE-10", "Save-10"), (row.CodeNormalized, row.CodeDisplay));
@@ -179,7 +181,6 @@ public class CouponTests(Containers containers)
         foreach (var code in codes)
         {
             coupons.Add(await CreateAsync(t, code, staff));
-            t.Clock.Advance(TimeSpan.FromMinutes(1));
         }
 
         using var deactivate = await t.SendAsync(HttpMethod.Post, $"/api/admin/coupons/{coupons[1].Id}/deactivate", new { version = 0 }, staff);
@@ -216,14 +217,15 @@ public class CouponTests(Containers containers)
         var seeded = await t.Rpc.Staff.GetCheckoutSettingsAsync(new GetCheckoutSettingsRequest(), admin.Call());
         Assert.Equal((1500L, 0L, ""), (seeded.ExpressFeeCents, seeded.Version, seeded.UpdatedBy));
 
-        t.Clock.Advance(TimeSpan.FromHours(1));
+        var before = await t.DbNowAsync();
         using (var set = await t.SendAsync(HttpMethod.Put, "/api/admin/settings/checkout/express-fee", new { expressFeeCents = 2000, version = 0 }, admin))
         {
             var settings = await set.OkJsonAsync();
             Assert.Equal(("2000", "1", admin.Id.ToString("D")), (settings.GetProperty("expressFeeCents").GetString(), settings.GetProperty("version").GetString(), settings.GetProperty("updatedBy").GetString()));
         }
         var read = await t.Rpc.Staff.GetCheckoutSettingsAsync(new GetCheckoutSettingsRequest(), admin.Call());
-        Assert.Equal((2000L, t.Clock.GetUtcNow()), (read.ExpressFeeCents, read.UpdatedAt.ToDateTimeOffset()));
+        Assert.Equal(2000L, read.ExpressFeeCents);
+        Assert.InRange(read.UpdatedAt.ToDateTimeOffset(), before, await t.DbNowAsync()); // stamped by the database clock
         var audit = Assert.Single(await Outbox.AuditAsync(t));
         Assert.Equal(("order.set-express-fee", admin.Id), (audit.Action, audit.ActorId));
 

@@ -54,11 +54,9 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
         var db = scope.ServiceProvider.GetRequiredService<NotificationDbContext>();
         var provider = scope.ServiceProvider.GetRequiredService<IEmailProvider>();
 
-        var now = clock.GetUtcNow();
-        var lease = now + Lease;
         var jobs = await db.EmailJobs.FromSql($"""
-            UPDATE email_jobs SET next_attempt_at = {lease}
-            WHERE id IN (SELECT id FROM email_jobs WHERE status = {EmailStatuses.Pending} AND next_attempt_at <= {now} ORDER BY next_attempt_at LIMIT {Batch} FOR UPDATE SKIP LOCKED)
+            UPDATE email_jobs SET next_attempt_at = now() + {Lease}
+            WHERE id IN (SELECT id FROM email_jobs WHERE status = {EmailStatuses.Pending} AND next_attempt_at <= now() ORDER BY next_attempt_at LIMIT {Batch} FOR UPDATE SKIP LOCKED)
             RETURNING *
             """).AsNoTracking().ToListAsync(ct);
 
@@ -69,9 +67,8 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
     private async Task HandleAsync(NotificationDbContext db, IEmailProvider provider, EmailJobRow claimed, CancellationToken ct)
     {
         // Renew this job's lease for its own send; 0 rows: a second sender took it over, so it is theirs. The fence is the value the database returned, never one computed here (microsecond precision).
-        var renewed = clock.GetUtcNow() + Lease;
         var job = (await db.EmailJobs.FromSql($"""
-            UPDATE email_jobs SET next_attempt_at = {renewed} WHERE id = {claimed.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {claimed.NextAttemptAt} RETURNING *
+            UPDATE email_jobs SET next_attempt_at = now() + {Lease} WHERE id = {claimed.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {claimed.NextAttemptAt} RETURNING *
             """).AsNoTracking().ToListAsync(ct)).SingleOrDefault();
         if (job is null) return;
 
@@ -120,12 +117,12 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
             metrics.EmailSend(clock.GetElapsedTime(started).TotalSeconds);
         }
 
-        var sentAt = clock.GetUtcNow();
-        var updated = await db.Database.ExecuteSqlAsync($"""
-            UPDATE email_jobs SET status = {EmailStatuses.Sent}, sent_at = {sentAt}, provider_message_id = {providerMessageId}, attempts = attempts + 1, data = data - 'encryptedCode'
+        var sent = await db.Database.SqlQuery<DateTimeOffset>($"""
+            UPDATE email_jobs SET status = {EmailStatuses.Sent}, sent_at = now(), provider_message_id = {providerMessageId}, attempts = attempts + 1, data = data - 'encryptedCode'
             WHERE id = {job.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {job.NextAttemptAt}
-            """, ct);
-        if (updated == 1) metrics.EventToEmail(job.Template, (sentAt - job.CreatedAt).TotalSeconds);
+            RETURNING sent_at AS "Value"
+            """).ToListAsync(ct);
+        if (sent.Count == 1) metrics.EventToEmail(job.Template, (sent[0] - job.CreatedAt).TotalSeconds);
     }
 
     private async Task RecordFailureAsync(NotificationDbContext db, EmailJobRow job, bool transient, string reason, TimeSpan? retryAfter, CancellationToken ct)
@@ -134,18 +131,18 @@ public sealed class EmailSender(IServiceScopeFactory scopes, TimeProvider clock,
         {
             // D39 (§6.2 step 4): a throttled send isn't counted; wait the longer of the step the next counted attempt would use and Retry-After. No cap on how often.
             var step = Backoff[Math.Min(job.Attempts, Backoff.Length - 1)];
-            var at = clock.GetUtcNow() + (asked > step ? asked : step);
+            var wait = asked > step ? asked : step;
             await db.Database.ExecuteSqlAsync($"""
-                UPDATE email_jobs SET next_attempt_at = {at}, last_error = {reason} WHERE id = {job.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {job.NextAttemptAt}
+                UPDATE email_jobs SET next_attempt_at = now() + {wait}, last_error = {reason} WHERE id = {job.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {job.NextAttemptAt}
                 """, ct);
             return;
         }
         var attempts = job.Attempts + 1;
         if (transient && attempts < MaxAttempts)
         {
-            var next = clock.GetUtcNow() + Backoff[attempts - 1];
+            var backoff = Backoff[attempts - 1];
             await db.Database.ExecuteSqlAsync($"""
-                UPDATE email_jobs SET attempts = attempts + 1, next_attempt_at = {next}, last_error = {reason} WHERE id = {job.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {job.NextAttemptAt}
+                UPDATE email_jobs SET attempts = attempts + 1, next_attempt_at = now() + {backoff}, last_error = {reason} WHERE id = {job.Id} AND status = {EmailStatuses.Pending} AND next_attempt_at = {job.NextAttemptAt}
                 """, ct);
             return;
         }

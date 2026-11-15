@@ -5,7 +5,7 @@ namespace Bloom.Notification.Worker;
 
 /// <summary>
 /// Daily at 03:00 UTC (09-notification §6.6, spec §7; N-11): deletes in-app notifications older than 90 days and finished (<c>sent</c>, <c>failed</c>, <c>cancelled</c>) email jobs older than
-/// 30 days, by <c>created_at</c>, 1,000 rows per statement until a statement deletes fewer. The cut-offs come from the app clock as parameters, never <c>now()</c>.
+/// 30 days, by <c>created_at</c>, 1,000 rows per statement until a statement deletes fewer. The cut-offs are the database's <c>now()</c> minus the age (00-reliability §10); only the next-run wait uses the app clock.
 /// </summary>
 public sealed class DailyPurge(IServiceScopeFactory scopes, TimeProvider clock, ILogger<DailyPurge> logger) : BackgroundService
 {
@@ -39,15 +39,11 @@ public sealed class DailyPurge(IServiceScopeFactory scopes, TimeProvider clock, 
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<NotificationDbContext>();
-        var now = clock.GetUtcNow();
-        var notificationCutoff = now.AddDays(-90);
-        var jobCutoff = now.AddDays(-30);
-
         // Independent: one table's failure must not skip the other's purge (N-6).
         try
         {
             while (await db.Database.ExecuteSqlAsync($"""
-                DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE created_at < {notificationCutoff} LIMIT {Batch})
+                DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE created_at < now() - interval '90 days' LIMIT {Batch})
                 """, ct) >= Batch) { }
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -58,7 +54,7 @@ public sealed class DailyPurge(IServiceScopeFactory scopes, TimeProvider clock, 
         {
             while (await db.Database.ExecuteSqlAsync($"""
                 DELETE FROM email_jobs WHERE id IN (
-                    SELECT id FROM email_jobs WHERE status IN ({EmailStatuses.Sent}, {EmailStatuses.Failed}, {EmailStatuses.Cancelled}) AND created_at < {jobCutoff} LIMIT {Batch})
+                    SELECT id FROM email_jobs WHERE status IN ({EmailStatuses.Sent}, {EmailStatuses.Failed}, {EmailStatuses.Cancelled}) AND created_at < now() - interval '30 days' LIMIT {Batch})
                 """, ct) >= Batch) { }
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)

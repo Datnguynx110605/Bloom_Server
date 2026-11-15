@@ -47,14 +47,15 @@ public class ReturnTests(Containers containers)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         var (order, _, customer) = await DeliveredAsync(t);
-        var requestedAt = t.Clock.GetUtcNow();
+        var before = await t.DbNowAsync();
 
         using var response = await RequestAsync(t, order.OrderId, customer, (1, 2));
         var body = await response.OkJsonAsync();
+        var after = await t.DbNowAsync();
 
         var returnId = Guid.Parse(body.GetProperty("id").GetString()!);
         Assert.Equal((order.OrderId.ToString(), "requested"), (body.GetProperty("orderId").GetString(), body.GetProperty("status").GetString()));
-        Assert.Equal(requestedAt.AddDays(14), body.GetProperty("expiresAt").GetDateTimeOffset(), TimeSpan.FromMilliseconds(1));
+        Assert.InRange(body.GetProperty("expiresAt").GetDateTimeOffset(), before.AddDays(14), after.AddDays(14));
         Assert.Equal([(1, 1), (2, 1)], body.GetProperty("units").EnumerateArray().Select(u => (u.GetProperty("unitNo").GetInt32(), u.GetProperty("lineNo").GetInt32())).ToArray());
         var returnShipment = await ReturnShipmentAsync(t, returnId);
         Assert.Equal((Directions.Return, ShippingOptions.Standard, ShipmentStatuses.LabelPending, returnId, (Guid?)null),
@@ -97,9 +98,9 @@ public class ReturnTests(Containers containers)
         using (var staff = await RequestAsync(t, order.OrderId, Warehouse, (1, 1)))
             await staff.ExpectErrorAsync(403, "ROLE_NOT_ALLOWED");
 
-        t.Clock.Advance(TimeSpan.FromDays(14)); // RET-R01: now <= delivered_at + 14 days
+        await t.AgeAsync(TimeSpan.FromDays(14) - TimeSpan.FromMinutes(1)); // RET-R01: now <= delivered_at + 14 days
         using (var last = await RequestAsync(t, order.OrderId, customer, (1, 1))) await last.OkJsonAsync();
-        t.Clock.Advance(TimeSpan.FromSeconds(1));
+        await t.AgeAsync(TimeSpan.FromMinutes(2));
         using (var late = await RequestAsync(t, order.OrderId, customer, (1, 1)))
             await late.ExpectErrorAsync(400, "RETURN_WINDOW_CLOSED");
     }
@@ -117,13 +118,13 @@ public class ReturnTests(Containers containers)
             await tooMany.ExpectErrorAsync(400, "RETURN_QUANTITY_EXCEEDED");
 
         await Seed.RunLabelWorkerAsync(t);
-        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
+        await t.AgeAsync(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
         await SweepAsync(t);
         Assert.Equal(ReturnStatuses.Expired, (await Seed.ReturnRequestAsync(t, first)).Status);
 
         // The window is closed by now; a reship delivery restarts it (spec §7), which the test does directly.
         await using (var db = t.NewDb())
-            await db.OrderAccounts.Where(a => a.OrderId == order.OrderId).ExecuteUpdateAsync(s => s.SetProperty(a => a.DeliveredAt, t.Clock.GetUtcNow()), Ct);
+            await db.Database.ExecuteSqlAsync($"UPDATE order_accounts SET delivered_at = now() WHERE order_id = {order.OrderId}", Ct);
         using var again = await RequestAsync(t, order.OrderId, customer, (1, 2));
         await again.OkJsonAsync();
     }
@@ -333,7 +334,7 @@ public class ReturnTests(Containers containers)
         var (order, serials, customer) = await DeliveredAsync(t);
         var returnId = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 2));
         await Seed.RunLabelWorkerAsync(t);
-        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromMinutes(1));
+        await t.AgeAsync(TimeSpan.FromDays(14) + TimeSpan.FromMinutes(1));
         await SweepAsync(t);
         Assert.Equal(ReturnStatuses.Expired, (await Seed.ReturnRequestAsync(t, returnId)).Status);
 
@@ -360,10 +361,10 @@ public class ReturnTests(Containers containers)
         await Seed.RunLabelWorkerAsync(t);
         Assert.Equal(ReturnStatuses.LabelIssued, (await Seed.ReturnRequestAsync(t, returnId)).Status);
 
-        t.Clock.Advance(TimeSpan.FromDays(14) - TimeSpan.FromMinutes(1));
+        await t.AgeAsync(TimeSpan.FromDays(14) - TimeSpan.FromMinutes(1));
         await SweepAsync(t);
         Assert.Equal(ReturnStatuses.LabelIssued, (await Seed.ReturnRequestAsync(t, returnId)).Status);
-        t.Clock.Advance(TimeSpan.FromHours(1) + TimeSpan.FromMinutes(1));
+        await t.AgeAsync(TimeSpan.FromHours(1) + TimeSpan.FromMinutes(1));
         await SweepAsync(t);
 
         Assert.Equal(ReturnStatuses.Expired, (await Seed.ReturnRequestAsync(t, returnId)).Status);
@@ -379,6 +380,21 @@ public class ReturnTests(Containers containers)
     }
 
     [Fact]
+    public async Task Expiry_follows_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestFulfillment.StartAsync(containers);
+        var (order, _, customer) = await DeliveredAsync(t);
+        var returnId = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 2));
+        await Seed.RunLabelWorkerAsync(t);
+
+        t.Clock.Advance(TimeSpan.FromDays(30)); // the app clock is far past expires_at; the database's is not
+        await SweepAsync(t);
+
+        Assert.Equal(ReturnStatuses.LabelIssued, (await Seed.ReturnRequestAsync(t, returnId)).Status);
+        Assert.Empty(await Outbox.PayloadsAsync<ReturnClosedV1>(t, FulfillmentMessages.ReturnClosed));
+    }
+
+    [Fact]
     public async Task Sweep_row_failure_does_not_stop_others()
     {
         await using var t = await TestFulfillment.StartAsync(containers);
@@ -387,9 +403,9 @@ public class ReturnTests(Containers containers)
         var poisoned = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 1));
         var good = await Seed.ReturnAsync(t, otherOrder.OrderId, other, (1, 1));
         await Seed.RunLabelWorkerAsync(t);
+        await t.AgeAsync(TimeSpan.FromDays(14) + TimeSpan.FromHours(1)); // before the poison: it fails every UPDATE of the row
         await Seed.PoisonAsync(t, "return_requests", poisoned);
 
-        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
         await SweepAsync(t); // doesn't throw
 
         Assert.Equal(ReturnStatuses.LabelIssued, (await Seed.ReturnRequestAsync(t, poisoned)).Status); // rolled back
@@ -437,7 +453,7 @@ public class ReturnTests(Containers containers)
         var returnId = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 1));
         var bought = t.Shippo.Transactions.Count; // the outbound label
 
-        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
+        await t.AgeAsync(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
         await SweepAsync(t);
         await Seed.RunLabelWorkerAsync(t);
 
@@ -454,7 +470,7 @@ public class ReturnTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (order, _, customer) = await DeliveredAsync(t);
         var returnId = await Seed.ReturnAsync(t, order.OrderId, customer, (1, 1));
-        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
+        await t.AgeAsync(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
         Task sweep = Task.CompletedTask;
         var sweepStarted = false;
         t.Shippo.BeforeTransaction = () =>
@@ -492,7 +508,7 @@ public class ReturnTests(Containers containers)
         await Seed.RunLabelWorkerAsync(t);
         await Seed.TrackAsync(t, (await ReturnShipmentAsync(t, returnId)).TrackingNumber!, "DELIVERED"); // no TRANSIT event came
 
-        t.Clock.Advance(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
+        await t.AgeAsync(TimeSpan.FromDays(14) + TimeSpan.FromHours(1));
         await SweepAsync(t);
 
         Assert.Equal(ShipmentStatuses.Delivered, (await ReturnShipmentAsync(t, returnId)).Status);
@@ -511,7 +527,7 @@ public class ReturnTests(Containers containers)
         await Seed.RunLabelWorkerAsync(t);
         await Seed.TrackAsync(t, (await ReturnShipmentAsync(t, returnId)).TrackingNumber!, "TRANSIT");
 
-        t.Clock.Advance(TimeSpan.FromDays(30));
+        await t.AgeAsync(TimeSpan.FromDays(30));
         await SweepAsync(t);
 
         Assert.Equal(ReturnStatuses.InTransit, (await Seed.ReturnRequestAsync(t, returnId)).Status);
@@ -526,9 +542,7 @@ public class ReturnTests(Containers containers)
         var (orderA, _, customerA) = await DeliveredAsync(t);
         var (orderB, _, customerB) = await DeliveredAsync(t);
         var r1 = await Seed.ReceivedReturnAsync(t, orderA.OrderId, customerA, (1, 1));
-        t.Clock.Advance(TimeSpan.FromSeconds(1));
         var r2 = await Seed.ReturnAsync(t, orderA.OrderId, customerA, (1, 1));
-        t.Clock.Advance(TimeSpan.FromSeconds(1));
         var r3 = await Seed.ReturnAsync(t, orderB.OrderId, customerB, (1, 2));
 
         async Task<string[]> ListAsync(string path, TestCaller caller)

@@ -29,7 +29,7 @@ public class SweepTests(Containers containers)
     /// <summary>An order a crash left in <c>creating</c> (its hold may exist; nothing else follows it).</summary>
     private static async Task<OrderRow> CreatingOrderAsync(TestOrder t, string kind = OrderKinds.Regular)
     {
-        var now = t.Clock.GetUtcNow();
+        var now = await t.DbNowAsync();
         var order = new OrderRow
         {
             Id = Guid.CreateVersion7(), Number = "BLM-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant(), AccountId = Guid.NewGuid(), Kind = kind, LaunchId = kind == OrderKinds.Launch ? Guid.NewGuid() : null,
@@ -48,7 +48,7 @@ public class SweepTests(Containers containers)
     {
         await using var t = await TestOrder.StartAsync(containers);
         var order = await CreatingOrderAsync(t);
-        t.Clock.Advance(CreatingWindow + TimeSpan.FromSeconds(1));
+        await AgeDeadlinesAsync(t, CreatingWindow + TimeSpan.FromSeconds(1));
 
         Assert.Equal(1, await t.Sweeps().RunCreatingAsync(Ct));
 
@@ -66,11 +66,12 @@ public class SweepTests(Containers containers)
         Assert.Equal([SagaSteps.InventoryRelease], saga.PendingSteps);
         Assert.Null(saga.CompletedAt);
 
+        var before = await t.DbNowAsync();
         await Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(order.Id));
 
         saga = await SagaAsync(t, order.Id, SagaTypes.CheckoutCompensation);
         Assert.Empty(saga.PendingSteps);
-        Assert.Equal(t.Clock.GetUtcNow(), saga.CompletedAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(saga.CompletedAt!.Value, before, await t.DbNowAsync()); // stamped by the database clock
         await Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(Guid.NewGuid())); // an unknown order is no error
     }
 
@@ -81,7 +82,7 @@ public class SweepTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         await t.Rpc.Staff.CreateCouponAsync(new CreateCouponRequest { Code = "SAVE-10", Type = "percent", Value = 10, Scope = "order", TotalLimit = 5, PerCustomerLimit = 1 }, TestCaller.Staff("catalog_manager").Call());
         var orderId = await PendingOrderAsync(t, r => r.CouponCode = "SAVE-10");
-        t.Clock.Advance(PaymentWindow + TimeSpan.FromSeconds(1));
+        await AgeDeadlinesAsync(t, PaymentWindow + TimeSpan.FromSeconds(1));
 
         Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
 
@@ -112,15 +113,29 @@ public class SweepTests(Containers containers)
         await using var t = await TestOrder.StartAsync(containers);
         var creating = await CreatingOrderAsync(t);
         var pending = await PendingOrderAsync(t);
-        t.Clock.Advance(CreatingWindow - TimeSpan.FromSeconds(1));
+        await AgeDeadlinesAsync(t, CreatingWindow - TimeSpan.FromSeconds(30)); // 30 s short: the real time between seeding and the sweep counts now
         var sweeps = t.Sweeps();
 
         Assert.Equal((0, 0), (await sweeps.RunCreatingAsync(Ct), await sweeps.RunExpiryAsync(Ct)));
 
-        t.Clock.Advance(PaymentWindow - CreatingWindow); // the creating order is past its deadline now, the pending one is 1 s short
+        await AgeDeadlinesAsync(t, PaymentWindow - CreatingWindow); // the creating order is past its deadline now, the pending one is 30 s short
         Assert.Equal(0, await sweeps.RunExpiryAsync(Ct));
         Assert.Equal(OrderStatuses.PendingPayment, (await OrderAsync(t, pending)).Status);
         Assert.Equal(OrderStatuses.Creating, (await OrderAsync(t, creating.Id)).Status); // the expiry sweep does not touch creating orders
+    }
+
+    [Fact]
+    public async Task Expiry_follows_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestOrder.StartAsync(containers);
+        var orderId = await PendingOrderAsync(t);
+        t.Clock.Advance(TimeSpan.FromDays(1)); // the app clock is far ahead of the database: an app-clock sweep would find the deadline passed
+
+        Assert.Equal(0, await t.Sweeps().RunExpiryAsync(Ct));
+        Assert.Equal(OrderStatuses.PendingPayment, (await OrderAsync(t, orderId)).Status);
+
+        await AgeDeadlinesAsync(t, PaymentWindow + TimeSpan.FromSeconds(1));
+        Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
     }
 
     [Fact]
@@ -131,7 +146,7 @@ public class SweepTests(Containers containers)
         var device = Seed.LaunchSku(t.Upstreams, launchId);
         var orderId = await PendingOrderAsync(t, r =>
             r.Launch = new LaunchSource { LaunchId = launchId.ToString("D"), PassToken = "pass-1", Lines = { new CheckoutLine { Kind = "product", SkuId = device.SkuId, Quantity = 1 } } });
-        t.Clock.Advance(PaymentWindow + TimeSpan.FromSeconds(1));
+        await AgeDeadlinesAsync(t, PaymentWindow + TimeSpan.FromSeconds(1));
 
         Assert.Equal(1, await t.Sweeps().RunExpiryAsync(Ct));
 
@@ -149,7 +164,7 @@ public class SweepTests(Containers containers)
         var first = await CreatingOrderAsync(t);
         var poison = await CreatingOrderAsync(t);
         var last = await CreatingOrderAsync(t);
-        t.Clock.Advance(CreatingWindow + TimeSpan.FromSeconds(1));
+        await AgeDeadlinesAsync(t, CreatingWindow + TimeSpan.FromSeconds(1));
         await using (var db = t.NewDb()) // the poison order's step fails at its saga insert, after it moved the order and queued order.cancelled
         {
             await db.Database.ExecuteSqlAsync($"UPDATE orders SET number = 'BLM-POISON' WHERE id = {poison.Id}", Ct);
@@ -178,7 +193,7 @@ public class SweepTests(Containers containers)
     {
         await using var t = await TestOrder.StartAsync(containers);
         var order = await CreatingOrderAsync(t);
-        t.Clock.Advance(CreatingWindow + TimeSpan.FromSeconds(1));
+        await AgeDeadlinesAsync(t, CreatingWindow + TimeSpan.FromSeconds(1));
 
         await using (var other = t.NewDb())
         {

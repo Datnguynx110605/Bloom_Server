@@ -6,6 +6,7 @@ using Bloom.Identity.Redis;
 using Bloom.Identity.Sessions;
 using Bloom.Identity.Validation;
 using Bloom.Identity.V1;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Account = Bloom.Identity.Data.Account;
@@ -46,7 +47,7 @@ public sealed class StaffService(
     public override async Task<TokenResponse> AcceptStaffInvitation(AcceptStaffInvitationRequest request, ServerCallContext context)
     {
         var ct = context.CancellationToken;
-        var now = time.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var hash = Opaque.Sha256(request.InviteToken);
         var invitation = await db.StaffInvitations.AsNoTracking().SingleOrDefaultAsync(i => i.TokenHash == hash && i.AcceptedAt == null && i.ExpiresAt > now, ct)
             ?? throw IdentityErrors.Error(IdentityErrors.InvitationInvalid, "The invitation is not valid.");
@@ -62,15 +63,19 @@ public sealed class StaffService(
         var secret = ParseSecret(request.TotpSecret);
 
         var id = Guid.CreateVersion7(); // assigned up front for the replay mark
-        await VerifyFirstCodeAsync(secret, request.TotpCode, id, now);
+        await VerifyFirstCodeAsync(secret, request.TotpCode, id);
+        var passwordHash = passwordHasher.Hash(password); // before the transaction: the hash is slow and must not hold the connection
 
+        // Claiming the invitation and creating the account commit together.
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        now = await db.Database.NowAsync(ct); // the transaction's now(): the claim and the stamps below use it (GC3)
         var account = new Account
         {
             Id = id,
             Type = AccountTypes.Staff,
             EmailNormalized = invitation.EmailNormalized,
             EmailDisplay = invitation.EmailNormalized, // plan I33
-            PasswordHash = passwordHasher.Hash(password),
+            PasswordHash = passwordHash,
             Name = name,
             Role = invitation.Role,
             TotpSecretEnc = totpBox.Seal(secret),
@@ -78,8 +83,6 @@ public sealed class StaffService(
             CreatedAt = now,
             UpdatedAt = now,
         };
-        // Claiming the invitation and creating the account commit together.
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
         await ClaimInvitationAsync(invitation, now, ct);
         db.Accounts.Add(account);
         var session = await sessions.StartAsync(account);
@@ -92,13 +95,13 @@ public sealed class StaffService(
     private async Task<TokenResponse> ReenrolAsync(AcceptStaffInvitationRequest request, StaffInvitation invitation, Account account, ServerCallContext context)
     {
         var ct = context.CancellationToken;
-        var now = time.GetUtcNow();
         var secret = ParseSecret(request.TotpSecret);
         await credentials.CheckAccountPasswordAsync(account, request.CurrentPassword); // may save a rehash, so before anything is staged
         if (account.Status != AccountStatuses.Active) throw IdentityErrors.Error(IdentityErrors.InvalidCredentials, "Wrong email or password.");
-        await VerifyFirstCodeAsync(secret, request.TotpCode, account.Id, now);
+        await VerifyFirstCodeAsync(secret, request.TotpCode, account.Id);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var now = await db.Database.NowAsync(ct);
         await ClaimInvitationAsync(invitation, now, ct);
         account.TotpSecretEnc = totpBox.Seal(secret);
         var session = await sessions.StartAsync(account);
@@ -108,9 +111,9 @@ public sealed class StaffService(
     }
 
     /// <summary>The first code proves the device. A wrong or replayed one leaves the invitation usable (plan I27).</summary>
-    private async Task VerifyFirstCodeAsync(byte[] secret, string code, Guid accountId, DateTimeOffset now)
+    private async Task VerifyFirstCodeAsync(byte[] secret, string code, Guid accountId)
     {
-        if (!Totp.Verify(secret, code, now, out var step) || !await authStore.TryMarkTotpUsedAsync(accountId, step))
+        if (!Totp.Verify(secret, code, time.GetUtcNow(), out var step) || !await authStore.TryMarkTotpUsedAsync(accountId, step))
             throw Invalid();
     }
 

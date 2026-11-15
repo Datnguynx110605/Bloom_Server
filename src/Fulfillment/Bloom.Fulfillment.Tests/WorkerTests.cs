@@ -162,13 +162,14 @@ public class WorkerTests(Containers containers)
         await Seed.RunLabelWorkerAsync(api); // the return label comes from the API host's Shippo double; the worker host's own label worker has nothing due
         var pending = Seed.Ready();
         await Seed.ReadyAsync(api, pending); // a second, pending task
-        var now = worker.Clock.GetUtcNow();
-        var saga = new FulfillmentSaga { RefId = Guid.NewGuid(), Type = SagaTypes.ReturnRefund, PendingSteps = ["refund"], RefundId = Guid.NewGuid(), StartedAt = now.AddMinutes(-29) };
+        var now = await api.DbNowAsync();
+        var saga = new FulfillmentSaga { RefId = Guid.NewGuid(), Type = SagaTypes.ReturnRefund, PendingSteps = ["refund"], RefundId = Guid.NewGuid(), StartedAt = now };
         await using (var db = api.NewDb())
         {
             db.DeliveryFailures.Add(new DeliveryFailure { ShipmentId = shipmentId, Kind = "lost", Status = FailureStatuses.PossiblyLost, PreviousStatus = "in_transit", CreatedAt = now, UpdatedAt = now });
             db.FulfillmentSagas.Add(saga);
             await db.SaveChangesAsync(Ct);
+            await db.Database.ExecuteSqlAsync($"UPDATE fulfillment_sagas SET started_at = now() - interval '29 minutes'", Ct); // the monitor compares with the database's now()
         }
 
         await monitor.RunOnceAsync(Ct);
@@ -186,7 +187,7 @@ public class WorkerTests(Containers containers)
         Assert.Equal(1, metrics.Latest("pack_tasks_by_status", ("status", "cancelled")));
 
         await using (var db = api.NewDb())
-            await db.FulfillmentSagas.ExecuteUpdateAsync(s => s.SetProperty(x => x.StartedAt, now.AddMinutes(-31)), Ct); // the clock stays put: moving it would also tick the hosted loops
+            await db.Database.ExecuteSqlAsync($"UPDATE fulfillment_sagas SET started_at = now() - interval '31 minutes'", Ct);
         await monitor.RunOnceAsync(Ct);
         Assert.Single(worker.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains("open for more than 30 minutes"));
     }

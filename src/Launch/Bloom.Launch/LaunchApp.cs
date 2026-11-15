@@ -91,6 +91,7 @@ public static class LaunchApp
             app.MapGrpcService<AdminService>(); // transcoded to /api/admin/launches (spec §6)
             app.MapBloomDeadLetterAdmin(); // 00-reliability §7.7
         }
+        app.MapBloomHealth(api); // HLD-ADR-020
         return app;
     }
 }

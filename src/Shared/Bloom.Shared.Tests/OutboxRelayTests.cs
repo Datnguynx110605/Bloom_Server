@@ -68,6 +68,42 @@ public class OutboxRelayTests(Containers containers)
         Assert.Equal(0u, await s.Rabbit.MessageCountAsync(s.Queue));
     }
 
+    /// <summary>The published body is the stored envelope with <c>OccurredAt</c> = the row's <c>created_at</c> (00-reliability §5.2).</summary>
+    private static Envelope AssertSentIsStoredWithRowTime(OutboxMessage row, ReadOnlySpan<byte> body)
+    {
+        var stored = Envelope.Parse(Encoding.UTF8.GetBytes(row.Payload));
+        var sent = Envelope.Parse(body);
+        Assert.Equal(row.CreatedAt, sent.OccurredAt);
+        Assert.Equal(DateTimeKind.Utc, sent.OccurredAt.Kind); // DateTime equality ignores Kind
+        Assert.Equal((stored.MessageId, stored.MessageType, stored.Kind, stored.Producer, stored.CorrelationId, stored.CausationId),
+                     (sent.MessageId, sent.MessageType, sent.Kind, sent.Producer, sent.CorrelationId, sent.CausationId));
+        return sent;
+    }
+
+    [Fact]
+    public async Task Published_occurredAt_is_the_rows_created_at()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var s = await SetUpAsync();
+        using (var scope = s.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TestDbContext>();
+            scope.ServiceProvider.GetRequiredService<OutboxWriter>()
+                .PublishEvent("t.thing-happened.v1", new { name = "Zoë", nested = new { a = 1 } });
+            await db.SaveChangesAsync(ct);
+            await db.Database.ExecuteSqlAsync($"UPDATE outbox_messages SET created_at = now() - interval '1 day'", ct);
+        }
+
+        Assert.Equal(1, await s.Relay.RunOnceAsync(ct));
+
+        var row = Assert.Single(await RowsAsync(s.Host));
+        var got = await s.Rabbit.BasicGetAsync(s.Queue);
+        Assert.NotNull(got);
+        var sent = AssertSentIsStoredWithRowTime(row, got.Body.Span);
+        Assert.Equal("Zoë", sent.Payload.GetProperty("name").GetString());
+        Assert.Equal(1, sent.Payload.GetProperty("nested").GetProperty("a").GetInt32());
+    }
+
     [Fact]
     public async Task T02_confirmed_row_marked_sent()
     {
@@ -95,7 +131,7 @@ public class OutboxRelayTests(Containers containers)
         Assert.Equal(0, row.Attempts);
         var got = await s.Rabbit.BasicGetAsync(s.Queue);
         Assert.NotNull(got);
-        Assert.Equal(row.Payload, Encoding.UTF8.GetString(got.Body.Span));
+        AssertSentIsStoredWithRowTime(row, got.Body.Span);
         Assert.Equal(row.Id.ToString(), got.BasicProperties.MessageId);
         Assert.Equal(row.MessageType, got.BasicProperties.Type);
         Assert.Equal("application/json", got.BasicProperties.ContentType);

@@ -2,6 +2,7 @@ using Bloom.Inventory.Contracts;
 using Bloom.Inventory.Data;
 using Bloom.Inventory.Domain;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Bloom.Inventory.Consumers;
@@ -11,7 +12,7 @@ namespace Bloom.Inventory.Consumers;
 /// <c>reservation-released</c>, also when nothing needed releasing. Runs in <c>ConsumerHost</c>'s transaction (plan R10); the order's SKU rows are
 /// locked in ascending order before any allocation changes status (plan R9), so the allocator below sees a stable queue.
 /// </summary>
-public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, OutboxWriter outbox, TimeProvider clock) : IMessageHandler
+public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks locks, Allocator allocator, Ledger ledger, OutboxWriter outbox) : IMessageHandler
 {
     private const string LockSavepoint = "release_locks";
 
@@ -38,7 +39,7 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
             await locks.LockAsync(locked, ct);
         }
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var freed = new SortedSet<Guid>();
         foreach (var a in allocations)
         {
@@ -56,7 +57,7 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
                     await UpdateCountersAsync($"""
                         UPDATE stock_items SET reserved = reserved - {q}, updated_at = {now} WHERE sku_id = {a.SkuId} AND reserved >= {q}
                         """, a, ct);
-                    ledger.Add(a.SkuId, EntryTypes.ReservationReleased, new(Reserved: -q), refType, a.RefId);
+                    ledger.Add(a.SkuId, EntryTypes.ReservationReleased, new(Reserved: -q), refType, a.RefId, now);
                     break;
                 case AllocationStatuses.Committed:
                     await UpdateCountersAsync($"""
@@ -66,13 +67,13 @@ public sealed class ReleaseReservationConsumer(InventoryDbContext db, StockLocks
                         UPDATE serial_units SET status = {SerialStatuses.InStock}, ref_id = NULL, version = version + 1, updated_at = {now}
                         WHERE ref_id = {a.RefId} AND sku_id = {a.SkuId} AND status = {SerialStatuses.Assigned}
                         """, ct);
-                    ledger.Add(a.SkuId, EntryTypes.CommitmentReleased, new(OnHand: q, Committed: -q), refType, a.RefId);
+                    ledger.Add(a.SkuId, EntryTypes.CommitmentReleased, new(OnHand: q, Committed: -q), refType, a.RefId, now);
                     freed.Add(a.SkuId);
                     break;
             }
         }
 
-        await allocator.RunAsync(freed, ct); // freed units serve waiting pre-orders first
+        await allocator.RunAsync(freed, now, ct); // freed units serve waiting pre-orders first
         if (reshipId is null) // an order-level release closes the order for a late paid or reserve; a reship release must not (LLD-ADR-014)
             await db.Database.ExecuteSqlAsync($"INSERT INTO released_orders (order_id) VALUES ({orderId}) ON CONFLICT DO NOTHING", ct);
         outbox.PublishEvent(InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));

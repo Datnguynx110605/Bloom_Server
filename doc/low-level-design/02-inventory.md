@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Status** | Approved (2026-11-12) |
-| **Last updated** | 2026-11-12 |
+| **Status** | Approved (2026-11-14) |
+| **Last updated** | 2026-11-14 |
 | **Product rules** | [03-inventory](../product-design/03-inventory.md) (INV-R01 … R20), BI-02, BI-06, BI-07, LCH-R19, R20 |
 | **HLD** | [high-level-design.md §5, §8.5](../high-level-design/high-level-design.md), HLD-ADR-009, HLD-ADR-013 |
 | **Decision records** | [LLD-ADR-014](adr/LLD-ADR-014-release-tombstone.md) |
@@ -30,7 +30,7 @@
 | IR-05 | `inventory` never releases a reservation on its own; only a command from `order` (by order) or from `fulfillment` (by `reshipId`, §6.5) does. | Owner decision |
 | IR-06 | A decrease adjustment can't exceed available stock. | Owner decision |
 | IR-07 | A goods receipt is atomic: all lines and serials are recorded, or none. | Owner decision |
-| IR-08 | Reserve p95 fits the checkout budget (checkout start p95 < 300 ms overall). | QA-03 |
+| IR-08 | Reserve p95 fits the checkout budget (checkout start p95 < 300 ms, payment call excluded, HLD-ADR-021). | QA-03 |
 
 ## 3. Component structure
 

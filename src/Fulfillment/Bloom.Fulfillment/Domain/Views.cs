@@ -1,4 +1,5 @@
 using Bloom.Fulfillment.Data;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Microsoft.EntityFrameworkCore;
 
@@ -89,7 +90,7 @@ public static class Views
     /// The open coverage of the serial, else its newest cancelled one. With <paramref name="accountId"/> the coverage's order must be that account's; a miss and a foreign serial
     /// give the same <c>NOT_FOUND</c> (Review Focus 4). D30: an <c>active</c> coverage whose <c>ends_at</c> has passed reads <c>expired</c>; nothing stored changes.
     /// </summary>
-    public static async Task<V1.Coverage> CoverageAsync(FulfillmentDbContext db, TimeProvider clock, string serial, Guid? accountId, CancellationToken ct)
+    public static async Task<V1.Coverage> CoverageAsync(FulfillmentDbContext db, string serial, Guid? accountId, CancellationToken ct)
     {
         var c = await db.WarrantyCoverages.AsNoTracking().Where(c => c.Serial == serial)
             .OrderBy(c => c.Status == CoverageStatuses.Cancelled ? 1 : 0).ThenByDescending(c => c.Id).FirstOrDefaultAsync(ct);
@@ -98,7 +99,7 @@ public static class Views
         return new V1.Coverage
         {
             Serial = c.Serial, OrderId = c.OrderId.ToString(),
-            Status = c.Status == CoverageStatuses.Active && c.EndsAt <= clock.GetUtcNow() ? CoverageStatuses.Expired : c.Status, CoverageMonths = c.CoverageMonths,
+            Status = c.Status == CoverageStatuses.Active && c.EndsAt <= await db.Database.NowAsync(ct) ? CoverageStatuses.Expired : c.Status, CoverageMonths = c.CoverageMonths,
             StartsAt = c.StartsAt is { } s ? Timestamp.FromDateTimeOffset(s) : null, EndsAt = c.EndsAt is { } e ? Timestamp.FromDateTimeOffset(e) : null,
         };
     }

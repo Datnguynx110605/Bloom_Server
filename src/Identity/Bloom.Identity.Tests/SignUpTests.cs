@@ -55,13 +55,15 @@ public class SignUpTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var email = NewEmail();
 
+        var before = await t.DbNowAsync();
         var start = await StartAsync(t, email);
+        var after = await t.DbNowAsync();
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
         var envelope = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.VerificationCode));
         var sent = envelope.GetPayload<VerificationCodeV1>();
         Assert.Equal(email, sent.Email);
         Assert.Equal("signup", sent.Purpose);
-        Assert.Equal(t.Clock.GetUtcNow().AddMinutes(15), sent.ExpiresAt);
+        Assert.InRange(sent.ExpiresAt, before.AddMinutes(15), after.AddMinutes(15));
         Assert.False(string.IsNullOrEmpty(sent.EncryptedCode));
 
         var code = await Outbox.LatestCodeAsync(t, email, "signup");
@@ -170,7 +172,8 @@ public class SignUpTests(Containers containers)
         var expired = NewEmail();
         await StartAsync(t, expired);
         var expiredCode = await Outbox.LatestCodeAsync(t, expired, "signup");
-        t.Clock.Advance(TimeSpan.FromMinutes(15) + TimeSpan.FromSeconds(1));
+        await using (var db = t.NewDb()) // the 15 minutes have passed
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE verification_codes SET expires_at = now() - interval '1 second'", Ct);
         await (await VerifyAsync(t, expired, expiredCode)).ExpectErrorAsync(400, "CODE_INVALID");
 
         var email = NewEmail();

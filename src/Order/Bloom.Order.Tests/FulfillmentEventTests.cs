@@ -361,10 +361,11 @@ public class FulfillmentEventTests(Containers containers)
         Assert.Equal([SagaSteps.Refund], open.PendingSteps);
         Assert.Null(open.CompletedAt);
 
+        var before = await t.DbNowAsync();
         await RefundCompletedAsync(t, orderId, (1, 700));
         var done = await SagaAsync(t, orderId, SagaTypes.Cancellation);
         Assert.Empty(done.PendingSteps);
-        Assert.Equal(t.Clock.GetUtcNow(), done.CompletedAt);
+        Assert.InRange(done.CompletedAt!.Value, before, await t.DbNowAsync()); // stamped by the database clock
         Assert.Equal(700, (await LinesAsync(t, orderId))[0].RefundedCents);
     }
 
@@ -433,17 +434,19 @@ public class FulfillmentEventTests(Containers containers)
         var orderId = await CancelledAsync(t);
         await Consume.Async<ReservationReleasedConsumer>(t, InventoryMessages.ReservationReleased, new ReservationReleasedV1(orderId));
         await Consume.Async<RefundFailedConsumer>(t, PaymentMessages.RefundFailed, new RefundFailedV1(orderId, Guid.NewGuid(), "card_closed"));
+        var started = (await t.DbNowAsync()).AddMinutes(-31);
         await using (var db = t.NewDb())
-            await db.Set<OrderSaga>().ExecuteUpdateAsync(s => s.SetProperty(x => x.StartedAt, t.Clock.GetUtcNow().AddMinutes(-31)), Ct);
+            await db.Set<OrderSaga>().ExecuteUpdateAsync(s => s.SetProperty(x => x.StartedAt, started), Ct);
         await monitor.RunOnceAsync(Ct);
         Assert.Equal([SagaSteps.RefundFailed], (await SagaAsync(t, orderId, SagaTypes.Cancellation)).PendingSteps);
         Assert.Equal(1, metrics.Latest("sagas_stuck", ("type", "cancellation")));
 
+        var before = await t.DbNowAsync();
         await RefundCompletedAsync(t, orderId, (1, 700)); // Support asked again and it went through
 
         var saga = await SagaAsync(t, orderId, SagaTypes.Cancellation);
         Assert.Empty(saga.PendingSteps);
-        Assert.Equal(t.Clock.GetUtcNow(), saga.CompletedAt);
+        Assert.InRange(saga.CompletedAt!.Value, before, await t.DbNowAsync());
         await monitor.RunOnceAsync(Ct);
         Assert.Equal(0, metrics.Latest("sagas_stuck", ("type", "cancellation")));
         Assert.Equal(0, metrics.Latest("sagas_running", ("type", "cancellation")));

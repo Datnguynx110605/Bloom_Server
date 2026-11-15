@@ -7,6 +7,7 @@ using Bloom.Fulfillment.V1;
 using Bloom.Inventory.Contracts;
 using Bloom.Shared.Idempotency;
 using Bloom.Shared.Messaging;
+using Bloom.Shared.Persistence;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using PackTask = Bloom.Fulfillment.Data.PackTask;
@@ -18,7 +19,7 @@ namespace Bloom.Fulfillment.Services;
 
 /// <summary>05-fulfillment §3 component <c>Support API</c>: <c>Deciders</c> only (plan R7).</summary>
 public sealed class SupportService(
-    FulfillmentDbContext db, IdempotencyGuard guard, RefundEngine refunds, Failures failures, InventoryCalls inventory, Audit audit, OutboxWriter outbox, TimeProvider clock,
+    FulfillmentDbContext db, IdempotencyGuard guard, RefundEngine refunds, Failures failures, InventoryCalls inventory, Audit audit, OutboxWriter outbox,
     IServiceScopeFactory scopes, ILogger<SupportService> logger)
     : FulfillmentSupport.FulfillmentSupportBase
 {
@@ -47,7 +48,7 @@ public sealed class SupportService(
 
     private async Task<DecideReturnResponse> DecideAsync(Caller caller, Guid returnId, Dictionary<int, UnitDecision> decisions, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var orderIds = await db.Database.SqlQuery<Guid>($"""
             UPDATE return_requests SET status = {ReturnStatuses.Decided}, version = version + 1, updated_at = {now}
             WHERE id = {returnId} AND status = {ReturnStatuses.Inspected}
@@ -100,7 +101,7 @@ public sealed class SupportService(
         }
         db.ReturnUnits.AddRange(planUnits);
 
-        var (refundId, total) = await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, ct);
+        var (refundId, total) = await refunds.SettleReturnAsync(account, returnId, perLine, cancelled, now, ct);
         await SendToInventoryAsync(orderId, accepted, ct);
 
         if (units.Any(u => u.Decision == Decisions.Reject)) // RET-R08: Bloom ships the rejected units back at its cost
@@ -220,7 +221,7 @@ public sealed class SupportService(
     private async Task<V1.DeliveryFailure> ReshipAsync(Caller caller, Guid shipmentId, Guid reshipId, CancellationToken ct)
     {
         var (shipment, _) = await failures.LockAsync(shipmentId, ct);
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         if (await db.Database.ExecuteSqlAsync($"""
             UPDATE delivery_failures
             SET status = {FailureStatuses.ResolvedReship}, reship_id = {reshipId}, decided_by = {caller.UserId}, updated_at = {now}
@@ -276,6 +277,6 @@ public sealed class SupportService(
     public override async Task<Coverage> GetCoverage(GetCoverageRequest request, ServerCallContext context)
     {
         Caller.From(context).RequireStaff(Caller.Deciders);
-        return await Views.CoverageAsync(db, clock, Inputs.Serial(request.Serial, "serial"), null, context.CancellationToken);
+        return await Views.CoverageAsync(db, Inputs.Serial(request.Serial, "serial"), null, context.CancellationToken);
     }
 }

@@ -21,6 +21,12 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
 
     private record ProductUse(Guid Product, long Limit, long Sum);
 
+    /// <summary>Step 1 in one query: whether the launch exists, and the database clock.</summary>
+    private record LaunchClock(bool Exists, DateTimeOffset Now);
+
+    /// <summary>Step 3 in one query: the launch row (repeated on each row) with the requested SKUs that are in it; the SKU columns are null when none is.</summary>
+    private record LaunchRead(string Stage, DateTimeOffset? WaitingRoomClosedAt, Guid? SkuId, Guid? ProductId, int? PurchaseLimit);
+
     /// <summary>01-launch §6.5 in its step order, in one transaction; R11 (sums in <c>long</c>, guards in <c>bigint</c>) and R12 (concurrent retries).</summary>
     public override async Task<HoldAllocationResponse> HoldAllocation(HoldAllocationRequest request, ServerCallContext context)
     {
@@ -33,9 +39,13 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
         try
         {
             // Step 1.
-            if (claims is null || claims.AccountId != caller.UserId || !await db.Launches.AnyAsync(l => l.Id == claims.LaunchId, ct))
+            if (claims is null || claims.AccountId != caller.UserId)
                 throw Reject(launchId, "pass_invalid", LaunchErrors.PassInvalid, "The admission pass is not valid.");
-            if (claims.ExpiresAtUnixMs <= (await db.NowAsync(ct)).ToUnixTimeMilliseconds())
+            var clockRow = await db.Database.SqlQuery<LaunchClock>(
+                $"SELECT EXISTS (SELECT 1 FROM launches WHERE id = {launchId}) AS \"Exists\", now() AS \"Now\"").SingleAsync(ct);
+            if (!clockRow.Exists)
+                throw Reject(launchId, "pass_invalid", LaunchErrors.PassInvalid, "The admission pass is not valid.");
+            if (claims.ExpiresAtUnixMs <= clockRow.Now.ToUnixTimeMilliseconds())
                 throw Reject(launchId, "pass_expired", LaunchErrors.PassExpired, "The admission pass has expired.");
 
             for (var attempt = 0; ; attempt++)
@@ -50,17 +60,20 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 }
 
                 // Step 3.
-                // Read inside the transaction, on every attempt: a close or release may have committed since step 1. FOR SHARE, first, before any product or SKU lock (D5, §7):
+                // Read inside the transaction, on every attempt: a close or release may have committed since step 1. FOR SHARE OF l locks the launches row only, first, before any product or SKU lock (D5, §7):
                 // a room close or stage change takes the row FOR UPDATE, so it waits for this hold and a hold waits for it.
-                var open = (await db.Launches.FromSql($"SELECT * FROM launches WHERE id = {launchId} FOR SHARE").AsNoTracking().ToListAsync(ct))
-                    .Any(l => l.Stage == LaunchStages.PreorderOpen && l.WaitingRoomClosedAt == null);
-                if (!open)
+                // The requested SKUs and their products ride along unlocked: they are read with the statement's snapshot, taken before any wait on the launches lock, which is safe because SKU membership and
+                // purchase limits are frozen from preorder_open (§6.7, LCH-R25); allocation can still rise, but step 3 does not read it.
+                var skuIds = lines.Select(l => l.Sku).ToArray();
+                var read = await db.Database.SqlQuery<LaunchRead>(
+                    $@"SELECT l.stage AS ""Stage"", l.waiting_room_closed_at AS ""WaitingRoomClosedAt"", s.sku_id AS ""SkuId"", s.product_id AS ""ProductId"", p.purchase_limit AS ""PurchaseLimit""
+                       FROM launches l
+                       LEFT JOIN launch_skus s ON s.launch_id = l.id AND s.sku_id = ANY({skuIds})
+                       LEFT JOIN launch_products p ON p.launch_id = s.launch_id AND p.product_id = s.product_id
+                       WHERE l.id = {launchId} FOR SHARE OF l").ToListAsync(ct);
+                if (read is not [{ Stage: LaunchStages.PreorderOpen, WaitingRoomClosedAt: null }, ..])
                     throw LaunchErrors.Error(LaunchErrors.LaunchNotOpen, "The launch is not open for pre-orders.");
-                var skuIds = lines.Select(l => l.Sku).ToList();
-                var found = await (from s in db.LaunchSkus.AsNoTracking()
-                                   join p in db.LaunchProducts.AsNoTracking() on new { s.LaunchId, s.ProductId } equals new { p.LaunchId, p.ProductId }
-                                   where s.LaunchId == launchId && skuIds.Contains(s.SkuId)
-                                   select new { s.SkuId, s.ProductId, p.PurchaseLimit }).ToDictionaryAsync(x => x.SkuId, ct);
+                var found = read.Where(r => r.SkuId is not null).ToDictionary(r => r.SkuId!.Value, r => (ProductId: r.ProductId!.Value, PurchaseLimit: r.PurchaseLimit!.Value));
                 if (lines.FirstOrDefault(l => !found.ContainsKey(l.Sku)) is { } missing)
                     throw LaunchErrors.Error(LaunchErrors.SkuNotInLaunch, $"SKU {missing.Sku:D} is not in this launch.");
                 // R17 and the lock order (R9): products, then SKUs, each ascending.
@@ -87,10 +100,10 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                 {
                     if (p.Sum <= p.Limit) // R11: a sum above the limit fails without SQL
                     {
-                        await db.Database.ExecuteSqlAsync(
-                            $"INSERT INTO limit_usage (launch_id, account_id, product_id, held, sold) VALUES ({launchId}, {caller.UserId}, {p.Product}, 0, 0) ON CONFLICT DO NOTHING", ct);
                         var moved = await db.Database.ExecuteSqlAsync(
-                            $"UPDATE limit_usage SET held = held + {p.Sum} WHERE launch_id = {launchId} AND account_id = {caller.UserId} AND product_id = {p.Product} AND held::bigint + sold + {p.Sum} <= {p.Limit}", ct);
+                            $@"INSERT INTO limit_usage (launch_id, account_id, product_id, held, sold) VALUES ({launchId}, {caller.UserId}, {p.Product}, {p.Sum}, 0)
+                               ON CONFLICT (launch_id, account_id, product_id) DO UPDATE SET held = limit_usage.held + {p.Sum}
+                               WHERE limit_usage.held::bigint + limit_usage.sold + {p.Sum} <= {p.Limit}", ct);
                         if (moved == 1) continue;
                     }
                     await tx.RollbackAsync(ct);
@@ -100,7 +113,28 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                         ("productId", p.Product.ToString("D")), ("remaining", Math.Max(0, p.Limit - used).ToString()));
                 }
 
-                // Step 6.
+                // Step 6. The unique order_id makes a concurrent first call win: start again from step 2 (R12).
+                var holdId = Guid.CreateVersion7();
+                try
+                {
+                    var lineSkus = lines.Select(l => l.Sku).ToArray();
+                    var lineProducts = lines.Select(l => found[l.Sku].ProductId).ToArray();
+                    var lineQtys = lines.Select(l => l.Qty).ToArray();
+                    // One statement: the holds row and its lines. The unique order_id entry is raised by the holds insert, as before.
+                    await db.Database.ExecuteSqlAsync(
+                        $@"WITH h AS (
+                               INSERT INTO holds (id, order_id, launch_id, account_id, pass_id, status, version, created_at, updated_at)
+                               VALUES ({holdId}, {orderId}, {launchId}, {caller.UserId}, {claims.PassId}, {HoldStatuses.Held}, 0, now(), now()) RETURNING id)
+                           INSERT INTO hold_lines (hold_id, sku_id, product_id, quantity)
+                           SELECT h.id, x.sku_id, x.product_id, x.quantity
+                           FROM h, unnest({lineSkus}::uuid[], {lineProducts}::uuid[], {lineQtys}::integer[]) AS x(sku_id, product_id, quantity)", ct);
+                }
+                catch (PostgresException e) when (attempt == 0 && e.SqlState == PostgresErrorCodes.UniqueViolation && e.ConstraintName == "ux_holds_order_id")
+                {
+                    continue; // the transaction is rolled back on dispose
+                }
+
+                // Step 7. Last before COMMIT: the launch_skus rows are the hot rows at launch peak (R-02), so they stay locked for the shortest time.
                 var available = new List<(Guid Sku, long Left)>();
                 foreach (var l in lines)
                 {
@@ -114,21 +148,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
                     }
                     available.Add((l.Sku, left[0]));
                 }
-
-                // Step 7. The unique order_id makes a concurrent first call win: start again from step 2 (R12).
-                var holdId = Guid.CreateVersion7();
-                try
-                {
-                    await db.Database.ExecuteSqlAsync(
-                        $"INSERT INTO holds (id, order_id, launch_id, account_id, pass_id, status, version, created_at, updated_at) VALUES ({holdId}, {orderId}, {launchId}, {caller.UserId}, {claims.PassId}, {HoldStatuses.Held}, 0, now(), now())", ct);
-                    foreach (var l in lines)
-                        await db.Database.ExecuteSqlAsync($"INSERT INTO hold_lines (hold_id, sku_id, product_id, quantity) VALUES ({holdId}, {l.Sku}, {found[l.Sku].ProductId}, {l.Qty})", ct);
-                    await tx.CommitAsync(ct);
-                }
-                catch (PostgresException e) when (attempt == 0 && e.SqlState == PostgresErrorCodes.UniqueViolation && e.ConstraintName == "ux_holds_order_id")
-                {
-                    continue; // the transaction is rolled back on dispose
-                }
+                await tx.CommitAsync(ct);
 
                 // Step 8, after commit.
                 metrics.Hold(launchId, "ok");
@@ -163,8 +183,7 @@ public sealed class InternalService(LaunchDbContext db, PassTokens tokens, Launc
         try
         {
             var room = redis.GetDatabase();
-            await room.SortedSetRemoveAsync(RedisKeys.Passes(launch), pass.ToString("D"));
-            await room.KeyDeleteAsync(RedisKeys.Pass(launch, account));
+            await Task.WhenAll(room.SortedSetRemoveAsync(RedisKeys.Passes(launch), pass.ToString("D")), room.KeyDeleteAsync(RedisKeys.Pass(launch, account)));
         }
         catch (Exception e)
         {

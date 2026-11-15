@@ -2,6 +2,7 @@ using Bloom.Payment.Contracts;
 using Bloom.Payment.Data;
 using Bloom.Payment.Stripe;
 using Bloom.Payment.Worker;
+using Bloom.Shared.Persistence;
 using System.Data.Common;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
@@ -175,6 +176,23 @@ public sealed class TestPayment : IAsyncDisposable
     {
         await using var db = NewDb();
         await db.Database.ExecuteSqlAsync(sql, Ct);
+    }
+
+    /// <summary>The database's <c>now()</c>: the clock stored timestamps and time checks use, which the fake clock does not drive.</summary>
+    public async Task<DateTimeOffset> DbNowAsync()
+    {
+        await using var db = NewDb();
+        return await db.Database.NowAsync(Ct);
+    }
+
+    /// <summary>Moves every stored time back by <paramref name="span"/>, as if that much time had passed since the rows were written: the database clock cannot be advanced.</summary>
+    public async Task AgeAsync(TimeSpan span)
+    {
+        await SqlAsync($"""
+            UPDATE payments SET created_at = created_at - {span}, updated_at = updated_at - {span}, session_expires_at = session_expires_at - {span},
+                locked_until = locked_until - {span}, succeeded_at = succeeded_at - {span}
+            """);
+        await SqlAsync($"UPDATE refunds SET created_at = created_at - {span}, updated_at = updated_at - {span}, next_attempt_at = next_attempt_at - {span}");
     }
 
     /// <summary>Sessions of this database waiting for a lock, so a test can tell a second transaction is queued behind the first.</summary>

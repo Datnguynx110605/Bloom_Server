@@ -80,6 +80,18 @@ public class AccountTests(Containers containers)
     }
 
     [Fact]
+    public async Task Recent_auth_window_follows_the_database_clock_not_the_app_clock()
+    {
+        await using var t = await TestIdentity.StartAsync(containers);
+        var account = await Seed.CustomerAsync(t);
+        t.Clock.Advance(TimeSpan.FromDays(1)); // the app clock is a day ahead; the database is not
+        var now = await t.DbNowAsync();
+
+        await (await ChangeEmailAsync(t, TestCaller.Customer(account.Id, now.AddMinutes(-6)), NewEmail())).ExpectErrorAsync(400, "REAUTH_REQUIRED");
+        Assert.Equal(HttpStatusCode.OK, (await ChangeEmailAsync(t, TestCaller.Customer(account.Id, now.AddMinutes(-4)), NewEmail())).StatusCode);
+    }
+
+    [Fact]
     public async Task Change_password_revokes_all_sessions()
     {
         await using var t = await TestIdentity.StartAsync(containers);
@@ -88,7 +100,9 @@ public class AccountTests(Containers containers)
         await Seed.SessionAsync(t, account);
         await Seed.SessionAsync(t, account);
 
+        var before = await t.DbNowAsync();
         var response = await ChangePasswordAsync(t, TestCaller.Customer(t, account), Seed.Password, NewPassword);
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(response.Headers.Contains("Set-Cookie"));
@@ -99,7 +113,7 @@ public class AccountTests(Containers containers)
             Assert.All(tokens, x => Assert.Equal(RefreshStatuses.Revoked, x.Status));
         }
         var stored = await t.AccountAsync(account.Id);
-        Assert.Equal(t.Clock.GetUtcNow(), stored.TokensValidAfter!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(stored.TokensValidAfter!.Value, before, after);
         var revoked = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.TokensRevoked)).GetPayload<TokensRevokedV1>();
         Assert.Equal(account.Id, revoked.AccountId);
         Assert.Equal(1, metrics.Sum("revocations_total", ("trigger", "password_change")));
@@ -130,12 +144,14 @@ public class AccountTests(Containers containers)
         var account = await Seed.CustomerAsync(t);
         var next = NewEmail();
 
+        var before = await t.DbNowAsync();
         var request = await ChangeEmailAsync(t, TestCaller.Customer(t, account), $" {next.ToUpperInvariant()} ");
+        var after = await t.DbNowAsync();
         Assert.Equal(HttpStatusCode.OK, request.StatusCode);
         var sent = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.VerificationCode)).GetPayload<VerificationCodeV1>();
         Assert.Equal(next, sent.Email);
         Assert.Equal("change_email", sent.Purpose);
-        Assert.Equal(t.Clock.GetUtcNow().AddMinutes(15), sent.ExpiresAt);
+        Assert.InRange(sent.ExpiresAt, before.AddMinutes(15), after.AddMinutes(15));
 
         var code = await Outbox.LatestCodeAsync(t, next, "change_email");
         Assert.Equal(HttpStatusCode.OK, (await ConfirmEmailAsync(t, TestCaller.Customer(t, account), code)).StatusCode);
@@ -234,11 +250,14 @@ public class AccountTests(Containers containers)
         var account = await Seed.CustomerAsync(t);
         await Seed.SessionAsync(t, account);
 
-        Assert.Equal(HttpStatusCode.OK, (await RequestResetAsync(t, $" {account.EmailNormalized.ToUpperInvariant()} ")).StatusCode);
+        var before = await t.DbNowAsync();
+        var requested = await RequestResetAsync(t, $" {account.EmailNormalized.ToUpperInvariant()} ");
+        var after = await t.DbNowAsync();
+        Assert.Equal(HttpStatusCode.OK, requested.StatusCode);
         var sent = Assert.Single(await Outbox.EnvelopesAsync(t, IdentityMessages.VerificationCode)).GetPayload<VerificationCodeV1>();
         Assert.Equal(account.EmailNormalized, sent.Email);
         Assert.Equal("reset_password", sent.Purpose);
-        Assert.Equal(t.Clock.GetUtcNow().AddMinutes(10), sent.ExpiresAt);
+        Assert.InRange(sent.ExpiresAt, before.AddMinutes(10), after.AddMinutes(10));
 
         var code = await Outbox.LatestCodeAsync(t, account.EmailNormalized, "reset_password");
         await using (var db = t.NewDb()) // the HMAC subject is the account id (spec §7, R45)

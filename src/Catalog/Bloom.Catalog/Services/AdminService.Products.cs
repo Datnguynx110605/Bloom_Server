@@ -5,6 +5,7 @@ using Bloom.Catalog.Domain;
 using Bloom.Catalog.Errors;
 using Bloom.Catalog.Validation;
 using Bloom.Catalog.V1;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -36,7 +37,7 @@ public sealed partial class AdminService
         {
             Id = Guid.CreateVersion7(), CategoryId = categoryId, Kind = request.Kind, Name = fields.Name, Slug = fields.Slug,
             DescriptionMd = fields.DescriptionMd, DescriptionHtml = fields.DescriptionHtml, Specs = fields.SpecsJson,
-            Serialized = request.Serialized, CoverageMonths = request.CoverageMonths, UpdatedAt = clock.GetUtcNow(),
+            Serialized = request.Serialized, CoverageMonths = request.CoverageMonths, UpdatedAt = await db.Database.NowAsync(ct),
         };
         db.Products.Add(row);
         audit.Record(caller, "catalog.product-created", "product", row.Id);
@@ -75,7 +76,7 @@ public sealed partial class AdminService
                 $"UPDATE products SET serialized = {request.Serialized} WHERE id = {id} AND serialized_locked = false", ct))
             throw CatalogErrors.Error(CatalogErrors.SerializedLocked, "serialized can't change once stock has been received.");
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         try
         {
             await concurrent.UpdateVersionedAsync("product", db.Products.Where(p => p.Id == id), request.Version,
@@ -117,7 +118,7 @@ public sealed partial class AdminService
         if (from == ProductStatuses.Draft && !await db.Skus.AnyAsync(s => s.ProductId == id && s.Active, ct))
             throw CatalogErrors.Error(CatalogErrors.PublishIncomplete, "Publishing needs at least one active SKU.");
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         await concurrent.UpdateVersionedAsync("product", db.Products.Where(p => p.Id == id), request.Version,
             s => s.SetProperty(p => p.Status, to).SetProperty(p => p.PublishedAt, product.PublishedAt ?? now).SetProperty(p => p.UpdatedAt, now),
             CatalogErrors.NotFound, ct);

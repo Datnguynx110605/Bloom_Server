@@ -283,12 +283,47 @@ public class CustomerTests(Containers containers)
     }
 
     [Fact]
+    public async Task Status_polled_through_the_admission_never_shows_NOT_IN_QUEUE()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, rate: 1);
+        var accounts = Enumerable.Range(0, 100).Select(_ => Guid.NewGuid()).ToList();
+        foreach (var account in accounts) await Join(t, launch.Id, account);
+        var pollers = accounts.Select(account => Task.Run(async () =>
+        {
+            // Poll.UntilAsync waits 50 ms per round, too coarse to catch the race; a NOT_IN_QUEUE throws.
+            var clock = Stopwatch.StartNew();
+            while ((await Status(t, launch.Id, account)).State != "admitted")
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30), $"Account {account} not admitted within 30 s");
+                await Task.Delay(2, Ct);
+            }
+        }, Ct)).ToList();
+
+        for (var i = 0; i < accounts.Count; i++) await t.TickAsync(launch.Id);
+        await Task.WhenAll(pollers);
+    }
+
+    [Fact]
     public async Task Status_when_not_queued_in_an_open_room_is_NOT_IN_QUEUE()
     {
         await using var t = await StartAsync();
         var launch = await Seed.LaunchAsync(t);
 
         await Rpc.FailsAsync(t.Customer.GetWaitingRoomStatusAsync(Room(launch.Id), Api.Customer(Guid.NewGuid()), cancellationToken: Ct), LaunchErrors.NotInQueue);
+    }
+
+    [Fact]
+    public async Task Status_when_not_queued_before_the_room_opens_is_not_open_with_polling()
+    {
+        await using var t = await StartAsync();
+        var launch = await Seed.LaunchAsync(t, LaunchStages.Announced, launchIn: TimeSpan.FromMinutes(20));
+
+        var status = await Status(t, launch.Id, Guid.NewGuid());
+
+        Assert.Equal("not_open", status.State);
+        Assert.InRange(status.PollAfterSeconds, 4, 6);
+        Assert.Equal(0, status.Position);
     }
 
     [Fact]

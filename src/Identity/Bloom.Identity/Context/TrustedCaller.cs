@@ -30,9 +30,9 @@ public sealed record TrustedCaller(Guid UserId, string UserType, string? Role, D
     public TrustedCaller RequireAdmin() =>
         UserType == "staff" && Role == "admin" ? this : throw Denied("Admins only.");
 
-    /// <summary><c>now − auth_time ≤ 5 min</c> passes.</summary>
-    public TrustedCaller RequireRecentAuth(TimeProvider time) =>
-        time.GetUtcNow() - AuthTime <= ReauthWindow
+    /// <summary><c>now − auth_time ≤ 5 min</c> passes; <paramref name="now"/> is the database's (auth_time was minted from it).</summary>
+    public TrustedCaller RequireRecentAuth(DateTimeOffset now) =>
+        now - AuthTime <= ReauthWindow
             ? this
             : throw IdentityErrors.Error(IdentityErrors.ReauthRequired, "Sign in again to continue.");
 

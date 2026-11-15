@@ -10,6 +10,7 @@ using Bloom.Order.Observability;
 using Bloom.Payment.Contracts;
 using Bloom.Shared.Errors;
 using Bloom.Shared.Idempotency;
+using Bloom.Shared.Persistence;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
@@ -25,12 +26,14 @@ namespace Bloom.Order.Services;
 /// </summary>
 public sealed class CheckoutService(
     OrderDbContext db, IdempotencyGuard guard, Upstreams upstreams, Transitions transitions, CheckoutFailures failures, Coupons coupons,
-    OrderMetrics metrics, OrderOptions options, TimeProvider clock, ILogger<CheckoutService> logger) : OrderCheckout.OrderCheckoutBase
+    OrderMetrics metrics, OrderOptions options, ILogger<CheckoutService> logger) : OrderCheckout.OrderCheckoutBase
 {
     private const long MinTotalCents = 50; // CHK-R20: the card processor's minimum
 
     private static readonly TimeSpan CreatingWindow = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan PaymentWindow = TimeSpan.FromMinutes(15);
+
+    private TimeSpan _paymentCall; // left out of checkout_start_seconds (HLD-ADR-021)
 
     private sealed record Placement(IReadOnlyList<PricedLine> Lines, Totals Totals, Guid? CouponId);
 
@@ -55,7 +58,7 @@ public sealed class CheckoutService(
         }
         finally
         {
-            metrics.CheckoutStarted(kind, Stopwatch.GetElapsedTime(started).TotalSeconds);
+            metrics.CheckoutStarted(kind, (Stopwatch.GetElapsedTime(started) - _paymentCall).TotalSeconds);
         }
     }
 
@@ -66,7 +69,7 @@ public sealed class CheckoutService(
         var existing = await db.CheckoutKeys.AsNoTracking().Where(k => k.AccountId == claim.UserId && k.IdempotencyKey == key).Select(k => (Guid?)k.OrderId).SingleOrDefaultAsync(ct);
         if (existing is { } orderId) return (orderId, true);
 
-        var now = clock.GetUtcNow();
+        var now = await db.Database.NowAsync(ct);
         var isLaunch = request.SourceCase == StartCheckoutRequest.SourceOneofCase.Launch;
         var order = new OrderRow
         {
@@ -199,7 +202,7 @@ public sealed class CheckoutService(
     private async Task CommitPlacementAsync(OrderRow order, Placement placement, CancellationToken ct)
     {
         var tx = await db.Database.BeginTransactionAsync(ct); // not disposed on the rejection path: the guard commits it
-        var locked = await db.Database.SqlQuery<Guid>($"SELECT id AS \"Value\" FROM orders WHERE id = {order.Id} AND status = {OrderStatuses.Creating} FOR UPDATE").ToListAsync(ct);
+        var locked = await db.Database.SqlQuery<DateTimeOffset>($"SELECT now() AS \"Value\" FROM orders WHERE id = {order.Id} AND status = {OrderStatuses.Creating} FOR UPDATE").ToListAsync(ct);
         if (locked.Count == 0)
         {
             await tx.DisposeAsync();
@@ -228,8 +231,9 @@ public sealed class CheckoutService(
         }));
         await db.SaveChangesAsync(ct);
         var t = placement.Totals;
-        var deadline = clock.GetUtcNow() + PaymentWindow;
-        var moved = await transitions.MoveAsync(order.Id, [OrderStatuses.Creating], OrderStatuses.PendingPayment, new Actor(ActorTypes.Customer, order.AccountId), null, null,
+        var now = locked[0]; // the database clock, read under the row lock
+        var deadline = now + PaymentWindow;
+        var moved = await transitions.MoveLockedAsync(order.Id, OrderStatuses.Creating, OrderStatuses.PendingPayment, new Actor(ActorTypes.Customer, order.AccountId), null, now,
             s => s.SetProperty(o => o.SubtotalCents, t.SubtotalCents).SetProperty(o => o.DiscountCents, t.DiscountCents).SetProperty(o => o.TaxCents, t.TaxCents)
                 .SetProperty(o => o.ShippingCents, t.ShippingCents).SetProperty(o => o.TotalCents, t.TotalCents).SetProperty(o => o.TaxRateBp, options.TaxRateBasisPoints!.Value)
                 .SetProperty(o => o.DeadlineAt, deadline), ct);
@@ -245,17 +249,17 @@ public sealed class CheckoutService(
     /// </summary>
     private async Task<StartCheckoutResponse> PayAsync(Guid orderId, CancellationToken ct)
     {
-        var order = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == orderId, ct);
-        if (order.Status == OrderStatuses.Cancelled
-            || (order.Status == OrderStatuses.PendingPayment && await db.Database.SqlQuery<bool>($"SELECT COALESCE(deadline_at <= now(), false) AS \"Value\" FROM orders WHERE id = {orderId}").SingleAsync(ct)))
+        var read = await PaymentRead(db, orderId).SingleAsync(ct);
+        var order = read.Order;
+        if (order.Status == OrderStatuses.Cancelled || (order.Status == OrderStatuses.PendingPayment && read.Expired))
             throw OrderErrors.Error(OrderErrors.CheckoutClosed, "This checkout was cancelled; start a new one.");
         if (order.Status != OrderStatuses.PendingPayment) return Response(order, "");
 
-        var lines = await db.OrderLines.AsNoTracking().Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToListAsync(ct);
-        var display = lines.Select(l => new DisplayLine { Name = $"{l.Name} × {l.Quantity}", AmountCents = l.PaidCents }).ToList();
+        var display = read.Lines.Select(l => new DisplayLine { Name = $"{l.Name} × {l.Quantity}", AmountCents = l.PaidCents }).ToList();
         if (order.ShippingCents > 0) display.Add(new DisplayLine { Name = "Express shipping", AmountCents = order.ShippingCents }); // they sum to the total (spec §7)
 
         CreatePaymentResponse payment;
+        var paymentStarted = Stopwatch.GetTimestamp();
         try
         {
             payment = await upstreams.CreatePaymentAsync(order.Id, order.Number, order.AccountId, order.TotalCents, display, ct);
@@ -265,12 +269,23 @@ public sealed class CheckoutService(
             logger.LogError(e, "CreatePayment failed for order {OrderId}; the order stays pending_payment.", order.Id);
             throw new RpcException(new Status(StatusCode.Unavailable, "The payment could not be started; try again."));
         }
+        finally
+        {
+            _paymentCall += Stopwatch.GetElapsedTime(paymentStarted); // += : a takeover may run this step again
+        }
 
         _ = await db.Database.BeginTransactionAsync(ct); // the guard saves and commits it with the stored response
         var paymentId = Guid.Parse(payment.PaymentId);
         await db.Orders.Where(o => o.Id == orderId && o.PaymentId == null).ExecuteUpdateAsync(s => s.SetProperty(o => o.PaymentId, paymentId), ct);
         return Response(order, payment.CheckoutUrl);
     }
+
+    internal sealed record PaymentReadRow(OrderRow Order, bool Expired, List<OrderLine> Lines);
+
+    /// <summary>One round trip: the order, its past-the-deadline flag and its lines. <c>DateTimeOffset.UtcNow</c> translates to the database's <c>now()</c> (R9; a null <c>deadline_at</c> is not expired).</summary>
+    internal static IQueryable<PaymentReadRow> PaymentRead(OrderDbContext db, Guid orderId) =>
+        db.Orders.AsNoTracking().Where(o => o.Id == orderId).Select(o => new PaymentReadRow(
+            o, o.DeadlineAt <= DateTimeOffset.UtcNow, db.OrderLines.Where(l => l.OrderId == orderId).OrderBy(l => l.LineNo).ToList()));
 
     private static StartCheckoutResponse Response(OrderRow order, string paymentUrl) => new()
     {

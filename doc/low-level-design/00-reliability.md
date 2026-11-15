@@ -156,7 +156,7 @@ The JSON body of every message:
 | `messageType` | string | ✓ | §5.1 |
 | `kind` | `event` \| `command` | ✓ | |
 | `producer` | string | ✓ | Service name |
-| `occurredAt` | RFC 3339 UTC | ✓ | When the business change committed |
+| `occurredAt` | RFC 3339 UTC | ✓ | When the business change committed: the database time of the outbox row's insert (`outbox_messages.created_at`), set by the relay when it publishes (§10) |
 | `correlationId` | uuid | ✓ | Same across one business flow (for example one checkout) |
 | `causationId` | uuid | — | `messageId` of the message that caused this one |
 | `payload` | object | ✓ | Type-specific body |

@@ -115,9 +115,9 @@ public class TrackingTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (_, poisonedId, _) = await HandedOverAsync(t, "1");
         var (_, goodId, _) = await HandedOverAsync(t, "2");
+        await t.AgeAsync(TimeSpan.FromDays(7) + TimeSpan.FromMinutes(1)); // before the poison: it fails every UPDATE of the row
         await Seed.PoisonAsync(t, "shipments", poisonedId);
 
-        t.Clock.Advance(TimeSpan.FromDays(7) + TimeSpan.FromMinutes(1));
         await SweepAsync(t); // doesn't throw
 
         Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, poisonedId)).Status); // rolled back
@@ -132,32 +132,35 @@ public class TrackingTests(Containers containers)
         using var metrics = new MetricCapture(t.Services);
         var (order, shipmentId, tracking) = await HandedOverAsync(t);
 
+        var beforeTransit = await t.DbNowAsync();
         await EventAsync(t, tracking, "TRANSIT");
+        var afterTransit = await t.DbNowAsync();
         var transit = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.InTransit, transit.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), transit.LastTrackingAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(transit.LastTrackingAt!.Value, beforeTransit, afterTransit);
         Assert.All(await Seed.CoveragesAsync(t, order.OrderId), c => Assert.Equal(CoverageStatuses.PendingDelivery, c.Status));
 
-        t.Clock.Advance(TimeSpan.FromDays(2));
+        await t.AgeAsync(TimeSpan.FromDays(2));
+        var before = await t.DbNowAsync();
         await EventAsync(t, tracking, "DELIVERED");
+        var after = await t.DbNowAsync();
 
-        var now = t.Clock.GetUtcNow();
         var delivered = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.Delivered, delivered.Status);
-        Assert.Equal(now, delivered.DeliveredAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(delivered.DeliveredAt!.Value, before, after);
         await using (var db = t.NewDb())
-            Assert.Equal(now, (await db.OrderAccounts.AsNoTracking().SingleAsync(a => a.OrderId == order.OrderId, Ct)).DeliveredAt!.Value, TimeSpan.FromMilliseconds(1));
+            Assert.InRange((await db.OrderAccounts.AsNoTracking().SingleAsync(a => a.OrderId == order.OrderId, Ct)).DeliveredAt!.Value, before, after);
         var coverages = await Seed.CoveragesAsync(t, order.OrderId);
         Assert.NotEmpty(coverages);
         Assert.All(coverages, c =>
         {
             Assert.Equal(CoverageStatuses.Active, c.Status);
-            Assert.Equal(now, c.StartsAt!.Value, TimeSpan.FromMilliseconds(1));
+            Assert.InRange(c.StartsAt!.Value, before, after);
             Assert.Equal(c.StartsAt!.Value.UtcDateTime.AddMonths(12), c.EndsAt!.Value.UtcDateTime, TimeSpan.FromMilliseconds(1));
         });
         var message = Assert.Single(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
         Assert.Equal((order.OrderId, order.OrderId), (message.OrderId, message.RefId));
-        Assert.Equal(now, message.DeliveredAt, TimeSpan.FromMilliseconds(1));
+        Assert.Equal(delivered.DeliveredAt!.Value, message.DeliveredAt, TimeSpan.FromMilliseconds(1));
         Assert.Equal(2, metrics.Sum("tracking_webhooks_total", ("result", "applied")));
     }
 
@@ -174,13 +177,15 @@ public class TrackingTests(Containers containers)
         await Seed.ReadyAsync(t, ready);
         var (taskId, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB", "SNA");
         var tracking = (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!;
-        t.Clock.Advance(TimeSpan.FromHours(3));
+        await t.AgeAsync(TimeSpan.FromHours(3));
+        var before = await t.DbNowAsync();
 
         await EventAsync(t, tracking, scan);
+        var after = await t.DbNowAsync();
 
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(expected, shipment.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), shipment.HandedOverAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(shipment.HandedOverAt!.Value, before, after);
         await using (var db = t.NewDb()) Assert.Equal(TaskStatuses.HandedOver, (await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, Ct)).Status);
         var shipped = Assert.Single(await Outbox.PayloadsAsync<ShipmentShippedV1>(t, FulfillmentMessages.ShipmentShipped));
         Assert.Equal((ready.OrderId, tracking), (shipped.OrderId, shipped.TrackingNumber));
@@ -188,8 +193,8 @@ public class TrackingTests(Containers containers)
         Assert.Equal(scan == "DELIVERED" ? 1 : 0, (await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered)).Count);
     }
 
-    /// <summary>A label_ready shipment scanned 3 h after its task was created; Shippo reports TRANSIT with a date <paramref name="statusOffset"/> after the task created_at (null = no date).</summary>
-    private async Task<(DateTimeOffset Created, DateTimeOffset Handed, double Count, double Sum)> ScanAsync(TimeSpan? statusOffset, TimeSpan? zone = null)
+    /// <summary>A label_ready shipment scanned 3 h after its task was created; Shippo reports TRANSIT with a date <paramref name="statusOffset"/> after the task created_at (null = no date). Before and After bracket the scan on the database clock.</summary>
+    private async Task<(DateTimeOffset Created, DateTimeOffset Handed, DateTimeOffset Before, DateTimeOffset After, double Count, double Sum)> ScanAsync(TimeSpan? statusOffset, TimeSpan? zone = null)
     {
         await using var t = await TestFulfillment.StartAsync(containers);
         using var metrics = new MetricCapture(t.Services);
@@ -197,22 +202,24 @@ public class TrackingTests(Containers containers)
         await Seed.ReadyAsync(t, ready);
         var (taskId, shipmentId) = await Seed.LabelReadyAsync(t, ready, "SNB", "SNA");
         var tracking = (await Seed.ShipmentAsync(t, shipmentId)).TrackingNumber!;
+        await t.AgeAsync(TimeSpan.FromHours(3));
         DateTimeOffset created;
         await using (var db = t.NewDb()) created = (await db.PackTasks.AsNoTracking().SingleAsync(p => p.Id == taskId, Ct)).CreatedAt;
-        t.Clock.Advance(TimeSpan.FromHours(3));
         t.Shippo.SetTracking(tracking, "TRANSIT", statusOffset is { } o ? (created + o).ToOffset(zone ?? TimeSpan.Zero) : null); // zone: the UTC offset the carrier writes the date in
+        var before = await t.DbNowAsync();
         using (var response = await PostAsync(t, Body(tracking, "TRANSIT"))) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var after = await t.DbNowAsync();
 
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.InTransit, shipment.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), shipment.LastTrackingAt!.Value, TimeSpan.FromMilliseconds(1)); // only handed_over_at takes the carrier's date
-        return (created, shipment.HandedOverAt!.Value, metrics.Count("time_to_handover_seconds"), metrics.Sum("time_to_handover_seconds"));
+        Assert.InRange(shipment.LastTrackingAt!.Value, before, after); // only handed_over_at takes the carrier's date
+        return (created, shipment.HandedOverAt!.Value, before, after, metrics.Count("time_to_handover_seconds"), metrics.Sum("time_to_handover_seconds"));
     }
 
     [Fact]
     public async Task D32_scan_with_date_hands_over_at_that_date()
     {
-        var (created, handed, count, sum) = await ScanAsync(TimeSpan.FromHours(2));
+        var (created, handed, _, _, count, sum) = await ScanAsync(TimeSpan.FromHours(2));
         Assert.Equal(created.AddHours(2), handed, TimeSpan.FromMilliseconds(1));
         Assert.Equal((1, 7200), (count, sum));
     }
@@ -220,7 +227,7 @@ public class TrackingTests(Containers containers)
     [Fact]
     public async Task D32_scan_date_with_a_utc_offset_is_stored()
     {
-        var (created, handed, count, sum) = await ScanAsync(TimeSpan.FromHours(2), TimeSpan.FromHours(2)); // "...+02:00": Npgsql rejects a non-zero offset
+        var (created, handed, _, _, count, sum) = await ScanAsync(TimeSpan.FromHours(2), TimeSpan.FromHours(2)); // "...+02:00": Npgsql rejects a non-zero offset
         Assert.Equal(created.AddHours(2), handed, TimeSpan.FromMilliseconds(1));
         Assert.Equal((1, 7200), (count, sum));
     }
@@ -228,17 +235,19 @@ public class TrackingTests(Containers containers)
     [Fact]
     public async Task D32_scan_without_date_hands_over_at_processing_time()
     {
-        var (created, handed, count, sum) = await ScanAsync(null);
-        Assert.Equal(created.AddHours(3), handed, TimeSpan.FromMilliseconds(1));
-        Assert.Equal((1, 10800), (count, sum));
+        var (_, handed, before, after, count, sum) = await ScanAsync(null);
+        Assert.InRange(handed, before, after);
+        Assert.Equal(1, count);
+        Assert.InRange(sum, 10800, 10860); // 3 h plus the seconds the test took
     }
 
     [Fact]
     public async Task D32_scan_date_is_clamped()
     {
         var future = await ScanAsync(TimeSpan.FromHours(5)); // after processing time (+3 h)
-        Assert.Equal(future.Created.AddHours(3), future.Handed, TimeSpan.FromMilliseconds(1));
-        Assert.Equal((1, 10800), (future.Count, future.Sum));
+        Assert.InRange(future.Handed, future.Before, future.After); // clamped to the database's now
+        Assert.Equal(1, future.Count);
+        Assert.InRange(future.Sum, 10800, 10860);
 
         var past = await ScanAsync(TimeSpan.FromHours(-1)); // before the task existed
         Assert.Equal(past.Created, past.Handed, TimeSpan.FromMilliseconds(1));
@@ -253,13 +262,15 @@ public class TrackingTests(Containers containers)
         await using (var db = t.NewDb()) await db.Shipments.Where(s => s.Id == shipmentId).ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, ShipmentStatuses.Lost), Ct);
         int Outbox() { using var db = t.NewDb(); return db.Set<Bloom.Shared.Persistence.OutboxMessage>().Count(); }
         var before = Outbox();
-        t.Clock.Advance(TimeSpan.FromDays(9));
+        await t.AgeAsync(TimeSpan.FromDays(9));
+        var beforeAt = await t.DbNowAsync();
 
         await EventAsync(t, tracking, "DELIVERED");
+        var afterAt = await t.DbNowAsync();
 
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.Lost, shipment.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), shipment.DeliveredAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(shipment.DeliveredAt!.Value, beforeAt, afterAt);
         Assert.Contains(t.Logs.Entries, e => e.StartsWith("[Error]") && e.Contains(shipmentId.ToString()) && e.Contains("lost"));
         Assert.Equal(before, Outbox()); // no stock or money message
         await using var db2 = t.NewDb();
@@ -288,8 +299,8 @@ public class TrackingTests(Containers containers)
         var (_, shipmentId, tracking) = await HandedOverAsync(t);
 
         await EventAsync(t, tracking, "DELIVERED");
+        await t.AgeAsync(TimeSpan.FromHours(1)); // a repeat an hour later must not restamp the shipment
         var first = await Seed.ShipmentAsync(t, shipmentId);
-        t.Clock.Advance(TimeSpan.FromHours(1));
         await EventAsync(t, tracking, "DELIVERED");
         await EventAsync(t, tracking, "TRANSIT");
 
@@ -334,15 +345,17 @@ public class TrackingTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (_, shipmentId, tracking) = await HandedOverAsync(t);
         await EventAsync(t, tracking, "FAILURE");
-        t.Clock.Advance(TimeSpan.FromDays(1));
+        await t.AgeAsync(TimeSpan.FromDays(1));
+        var before = await t.DbNowAsync();
 
         await EventAsync(t, tracking, "DELIVERED");
+        var after = await t.DbNowAsync();
 
         var shipment = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.Delivered, shipment.Status);
         var failure = (await Seed.FailureAsync(t, shipmentId))!;
         Assert.Equal(FailureStatuses.Dismissed, failure.Status);
-        Assert.Equal(t.Clock.GetUtcNow(), failure.DismissedAt!.Value, TimeSpan.FromMilliseconds(1));
+        Assert.InRange(failure.DismissedAt!.Value, before, after);
         Assert.Single(await Outbox.PayloadsAsync<ShipmentDeliveredV1>(t, FulfillmentMessages.ShipmentDelivered));
     }
 
@@ -366,12 +379,12 @@ public class TrackingTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (_, shipmentId, _) = await HandedOverAsync(t);
 
-        t.Clock.Advance(TimeSpan.FromDays(7) - TimeSpan.FromMinutes(1));
+        await t.AgeAsync(TimeSpan.FromDays(7) - TimeSpan.FromMinutes(1));
         await SweepAsync(t);
         Assert.Equal(ShipmentStatuses.HandedOver, (await Seed.ShipmentAsync(t, shipmentId)).Status);
         Assert.Null(await Seed.FailureAsync(t, shipmentId));
 
-        t.Clock.Advance(TimeSpan.FromMinutes(3));
+        await t.AgeAsync(TimeSpan.FromMinutes(3));
         await SweepAsync(t);
 
         Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
@@ -386,21 +399,21 @@ public class TrackingTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var (_, shipmentId, tracking) = await HandedOverAsync(t);
         await EventAsync(t, tracking, "TRANSIT");
-        t.Clock.Advance(TimeSpan.FromDays(7) + TimeSpan.FromMinutes(1));
+        await t.AgeAsync(TimeSpan.FromDays(7) + TimeSpan.FromMinutes(1));
         await SweepAsync(t);
         Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
 
-        t.Clock.Advance(TimeSpan.FromDays(1));
+        await t.AgeAsync(TimeSpan.FromDays(1));
         await DismissAsync(t, shipmentId);
         var dismissed = await Seed.ShipmentAsync(t, shipmentId);
         Assert.Equal(ShipmentStatuses.InTransit, dismissed.Status);
         Assert.Equal(FailureStatuses.Dismissed, (await Seed.FailureAsync(t, shipmentId))!.Status);
 
-        t.Clock.Advance(TimeSpan.FromDays(6)); // 6 days after the dismissal
+        await t.AgeAsync(TimeSpan.FromDays(6)); // 6 days after the dismissal
         await SweepAsync(t);
         Assert.Equal(ShipmentStatuses.InTransit, (await Seed.ShipmentAsync(t, shipmentId)).Status);
 
-        t.Clock.Advance(TimeSpan.FromDays(1) + TimeSpan.FromMinutes(1)); // 7 days + 1 min after the dismissal
+        await t.AgeAsync(TimeSpan.FromDays(1) + TimeSpan.FromMinutes(1)); // 7 days + 1 min after the dismissal
         await SweepAsync(t);
 
         Assert.Equal(ShipmentStatuses.PossiblyLost, (await Seed.ShipmentAsync(t, shipmentId)).Status);
@@ -437,12 +450,13 @@ public class TrackingTests(Containers containers)
         await using var t = await TestFulfillment.StartAsync(containers);
         var id = Guid.NewGuid();
         var orderId = Guid.NewGuid();
+        var now = await t.DbNowAsync();
         await using (var db = t.NewDb())
         {
             db.Shipments.Add(new Shipment
             {
                 Id = id, OrderId = orderId, ReturnRequestId = Guid.NewGuid(), Direction = Directions.ShipBack, Service = ShippingOptions.Standard, Status = ShipmentStatuses.HandedOver,
-                TrackingNumber = "SB1", HandedOverAt = t.Clock.GetUtcNow(), NextAttemptAt = t.Clock.GetUtcNow(), CreatedAt = t.Clock.GetUtcNow(),
+                TrackingNumber = "SB1", HandedOverAt = now, NextAttemptAt = now, CreatedAt = now,
             });
             await db.SaveChangesAsync(Ct);
         }

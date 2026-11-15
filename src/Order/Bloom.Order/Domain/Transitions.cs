@@ -14,12 +14,13 @@ public sealed record Actor(string Type, Guid? Id)
 }
 
 /// <summary>The one place an order's status changes (plan R8, spec §7): a guarded update and its history row (ORD-R04) in the caller's transaction.</summary>
-public sealed class Transitions(OrderDbContext db, TimeProvider clock, OutboxWriter outbox)
+public sealed class Transitions(OrderDbContext db, OutboxWriter outbox)
 {
     internal sealed class Current
     {
         public string Status { get; set; } = "";
         public long Version { get; set; }
+        public DateTimeOffset Now { get; set; }
     }
 
     /// <summary>
@@ -34,15 +35,25 @@ public sealed class Transitions(OrderDbContext db, TimeProvider clock, OutboxWri
         if (db.Database.CurrentTransaction is null)
             throw new InvalidOperationException("A status change and its history row commit together: open a transaction first.");
 
-        var current = (await db.Database.SqlQuery<Current>($"SELECT status AS \"Status\", version AS \"Version\" FROM orders WHERE id = {orderId} FOR UPDATE").ToListAsync(ct)).SingleOrDefault();
+        var current = (await db.Database.SqlQuery<Current>($"SELECT status AS \"Status\", version AS \"Version\", now() AS \"Now\" FROM orders WHERE id = {orderId} FOR UPDATE").ToListAsync(ct)).SingleOrDefault();
         if (current is null || !from.Contains(current.Status)) return false;
         if (version is { } expected && expected != current.Version)
             throw OrderErrors.Conflict("order");
 
-        var now = clock.GetUtcNow();
-        var query = db.Orders.Where(o => o.Id == orderId && from.Contains(o.Status));
-        if (version is { } v) query = query.Where(o => o.Version == v);
-        var affected = await query.ExecuteUpdateAsync(s =>
+        return await MoveLockedAsync(orderId, current.Status, to, actor, reason, current.Now, extra, ct);
+    }
+
+    /// <summary>
+    /// The guarded update and history row of <see cref="MoveAsync"/>, for a caller that already holds the row <c>FOR UPDATE</c> in the open transaction and has read the order's
+    /// <paramref name="from"/> status and the database <paramref name="now"/> under that lock. The caller's lock is what guarantees the guarded move cannot fail and that
+    /// <paramref name="now"/> is the database time read under that same lock; without it, use <see cref="MoveAsync"/>. Returns false when the guarded update affects no row.
+    /// </summary>
+    public async Task<bool> MoveLockedAsync(Guid orderId, string from, string to, Actor actor, string? reason, DateTimeOffset now, Action<UpdateSettersBuilder<OrderRow>>? extra, CancellationToken ct)
+    {
+        if (db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("A status change and its history row commit together: open a transaction first.");
+
+        var affected = await db.Orders.Where(o => o.Id == orderId && o.Status == from).ExecuteUpdateAsync(s =>
         {
             s.SetProperty(o => o.Status, to).SetProperty(o => o.Version, o => o.Version + 1).SetProperty(o => o.UpdatedAt, now);
             extra?.Invoke(s);
@@ -51,7 +62,7 @@ public sealed class Transitions(OrderDbContext db, TimeProvider clock, OutboxWri
 
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO order_status_history (order_id, from_status, to_status, actor_type, actor_id, reason, at)
-            VALUES ({orderId}, {current.Status}, {to}, {actor.Type}, {actor.Id}, {reason}, {now})
+            VALUES ({orderId}, {from}, {to}, {actor.Type}, {actor.Id}, {reason}, {now})
             """, ct);
         return true;
     }

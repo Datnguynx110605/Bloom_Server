@@ -89,13 +89,16 @@ public class StaffAdminTests(Containers containers)
         await Seed.SessionAsync(t, staff);
         var version = (await t.AccountAsync(staff.Id)).Version;
 
-        Assert.Equal(HttpStatusCode.OK, (await ActAsync(t, admin, staff.Id.ToString(), "deactivate")).StatusCode);
+        var before = await t.DbNowAsync();
+        var deactivated = await ActAsync(t, admin, staff.Id.ToString(), "deactivate");
+        var after = await t.DbNowAsync();
+        Assert.Equal(HttpStatusCode.OK, deactivated.StatusCode);
 
         await using (var db = t.NewDb())
         {
             var account = await db.Accounts.SingleAsync(a => a.Id == staff.Id, Ct);
             Assert.Equal(AccountStatuses.Deactivated, account.Status);
-            Assert.Equal(t.Clock.GetUtcNow(), account.TokensValidAfter!.Value, TimeSpan.FromMilliseconds(1));
+            Assert.InRange(account.TokensValidAfter!.Value, before, after);
             Assert.Equal(version + 1, account.Version);
             Assert.All(await db.RefreshTokens.Where(r => r.AccountId == staff.Id).ToListAsync(Ct), r => Assert.Equal(RefreshStatuses.Revoked, r.Status));
             var audit = await db.AuditEntries.SingleAsync(Ct);
@@ -262,7 +265,9 @@ public class StaffAdminTests(Containers containers)
             Assert.Null((await db.Accounts.SingleAsync(a => a.Id == staff.Id, Ct)).TotpSecretEnc);
         }
 
+        var before = await t.DbNowAsync();
         var response = await Accept(Seed.Password, TestTotp.CodeAt(t, secret));
+        var after = await t.DbNowAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.False(string.IsNullOrEmpty(response.RefreshCookie()));
@@ -275,7 +280,7 @@ public class StaffAdminTests(Containers containers)
             Assert.Equal("Test Staff", account.Name);
             Assert.Equal(StaffRoles.Warehouse, account.Role);
             Assert.Equal(staff.PasswordHash, account.PasswordHash);
-            Assert.Equal(t.Clock.GetUtcNow(), (await db.StaffInvitations.SingleAsync(Ct)).AcceptedAt!.Value, TimeSpan.FromMilliseconds(1));
+            Assert.InRange((await db.StaffInvitations.SingleAsync(Ct)).AcceptedAt!.Value, before, after);
         }
         await (await Accept(Seed.Password, TestTotp.CodeAt(t, secret, 1))).ExpectErrorAsync(400, "INVITATION_INVALID");
     }

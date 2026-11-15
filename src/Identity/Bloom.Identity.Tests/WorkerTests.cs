@@ -158,7 +158,7 @@ public class WorkerTests(Containers containers)
         var (api, worker) = await StartAsync();
         await using var _ = api;
         await using var __ = worker;
-        var now = worker.Clock.GetUtcNow();
+        var now = await api.DbNowAsync();
         var old = now.AddDays(-1).AddSeconds(-1);
         var recent = now.AddHours(-23);
         var account = await Seed.CustomerAsync(api);

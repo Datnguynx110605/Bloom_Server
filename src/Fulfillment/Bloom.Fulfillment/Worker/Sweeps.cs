@@ -60,10 +60,9 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Fulf
         await using (var scope = scopes.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
-            var now = clock.GetUtcNow();
             due = await db.Database.SqlQuery<Guid>($"""
                 SELECT r.id AS "Value" FROM return_requests r
-                WHERE r.status = ANY({open}) AND r.expires_at < {now}
+                WHERE r.status = ANY({open}) AND r.expires_at < now()
                   AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.return_request_id = r.id AND s.direction = {Directions.Return} AND s.status = ANY({scanned}))
                 """).ToListAsync(ct);
         }
@@ -75,11 +74,10 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Fulf
                 await using var scope = scopes.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
                 await using var tx = await db.Database.BeginTransactionAsync(ct);
-                var now = clock.GetUtcNow();
                 await db.Database.ExecuteSqlAsync($"SELECT 1 FROM shipments WHERE return_request_id = {id} AND direction = {Directions.Return} FOR UPDATE", ct); // waits for the label worker
                 var orderId = (await db.Database.SqlQuery<Guid>($"""
-                    UPDATE return_requests SET status = {ReturnStatuses.Expired}, version = version + 1, updated_at = {now}
-                    WHERE id = {id} AND status = ANY({open}) AND expires_at < {now}
+                    UPDATE return_requests SET status = {ReturnStatuses.Expired}, version = version + 1, updated_at = now()
+                    WHERE id = {id} AND status = ANY({open}) AND expires_at < now()
                       AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.return_request_id = {id} AND s.direction = {Directions.Return} AND s.status = ANY({scanned}))
                     RETURNING order_id AS "Value"
                     """).ToListAsync(ct)).SingleOrDefault();
@@ -111,10 +109,9 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Fulf
         await using (var scope = scopes.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
-            var cutoff = clock.GetUtcNow() - Silence;
             due = await db.Database.SqlQuery<Guid>($"""
                 SELECT s.id AS "Value" FROM shipments s LEFT JOIN delivery_failures f ON f.shipment_id = s.id
-                WHERE s.direction = {Directions.Outbound} AND s.status = ANY({open}) AND greatest(s.last_tracking_at, s.handed_over_at, f.dismissed_at) < {cutoff}
+                WHERE s.direction = {Directions.Outbound} AND s.status = ANY({open}) AND greatest(s.last_tracking_at, s.handed_over_at, f.dismissed_at) < now() - {Silence}
                 """).ToListAsync(ct);
         }
 
@@ -125,10 +122,9 @@ public sealed class Sweeps(IServiceScopeFactory scopes, TimeProvider clock, Fulf
                 await using var scope = scopes.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<FulfillmentDbContext>();
                 await using var tx = await db.Database.BeginTransactionAsync(ct);
-                var cutoff = clock.GetUtcNow() - Silence;
                 var shipment = (await db.Shipments.FromSql($"""
                     SELECT s.* FROM shipments s LEFT JOIN delivery_failures f ON f.shipment_id = s.id
-                    WHERE s.id = {id} AND s.status = ANY({open}) AND greatest(s.last_tracking_at, s.handed_over_at, f.dismissed_at) < {cutoff}
+                    WHERE s.id = {id} AND s.status = ANY({open}) AND greatest(s.last_tracking_at, s.handed_over_at, f.dismissed_at) < now() - {Silence}
                     FOR UPDATE OF s
                     """).AsNoTracking().ToListAsync(ct)).SingleOrDefault();
                 if (shipment is null) continue; // moved on since the scan

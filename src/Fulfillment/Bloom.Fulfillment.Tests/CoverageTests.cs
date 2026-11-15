@@ -43,15 +43,17 @@ public class CoverageTests(Containers containers)
         Assert.False(Has(body, "startsAt") || Has(body, "endsAt"));
 
         using (var handover = await t.SendAsync(HttpMethod.Post, "/api/admin/fulfillment/handover", new { shipmentId }, TestCaller.Staff("warehouse"))) await handover.OkJsonAsync();
+        var before = await t.DbNowAsync();
         await using (var db = t.NewDb())
             await Seed.TrackAsync(t, (await db.Shipments.AsNoTracking().SingleAsync(s => s.Id == shipmentId, Ct)).TrackingNumber!, "DELIVERED");
-        var deliveredAt = t.Clock.GetUtcNow();
+        var after = await t.DbNowAsync();
 
         using var active = await CustomerGetAsync(t, serials[0], customer);
         body = await active.OkJsonAsync();
         Assert.Equal("active", body.GetProperty("status").GetString());
-        Assert.Equal(deliveredAt, body.GetProperty("startsAt").GetDateTimeOffset(), TimeSpan.FromMilliseconds(1));
-        Assert.Equal(deliveredAt.AddMonths(12), body.GetProperty("endsAt").GetDateTimeOffset(), TimeSpan.FromSeconds(1));
+        var startsAt = body.GetProperty("startsAt").GetDateTimeOffset();
+        Assert.InRange(startsAt, before, after);
+        Assert.Equal(startsAt.AddMonths(12), body.GetProperty("endsAt").GetDateTimeOffset(), TimeSpan.FromSeconds(1));
     }
 
     [Fact]
@@ -61,10 +63,10 @@ public class CoverageTests(Containers containers)
         var (order, serials, customer) = await PaidAsync(t);
         await Seed.DeliveredAsync(t, order, serials);
 
-        t.Clock.Advance(TimeSpan.FromDays(364));
+        await t.AgeAsync(TimeSpan.FromDays(364));
         using (var before = await CustomerGetAsync(t, serials[0], customer)) Assert.Equal("active", (await before.OkJsonAsync()).GetProperty("status").GetString());
 
-        t.Clock.Advance(TimeSpan.FromDays(2)); // past ends_at (delivery + 12 months)
+        await t.AgeAsync(TimeSpan.FromDays(2)); // past ends_at (delivery + 12 months)
         using (var customerView = await CustomerGetAsync(t, serials[0], customer)) Assert.Equal("expired", (await customerView.OkJsonAsync()).GetProperty("status").GetString());
         using (var staffView = await StaffGetAsync(t, serials[0], "support")) Assert.Equal("expired", (await staffView.OkJsonAsync()).GetProperty("status").GetString());
 

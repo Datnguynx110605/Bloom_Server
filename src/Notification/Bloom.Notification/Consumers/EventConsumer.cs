@@ -20,7 +20,7 @@ namespace Bloom.Notification.Consumers;
 /// <c>notifications_created_total</c> are queued on <see cref="NotificationDbContext.AfterCommit"/> (plan N7).
 /// </summary>
 public sealed class EventConsumer(
-    NotificationDbContext db, TemplateRenderer templates, NotificationMetrics metrics, TimeProvider clock,
+    NotificationDbContext db, TemplateRenderer templates, NotificationMetrics metrics,
     IConnectionMultiplexer redis, IHubContext<NotificationHub> hub) : IMessageHandler
 {
     public static IReadOnlyList<(string Handler, ConsumerBinding Binding)> Handlers { get; } =
@@ -150,7 +150,7 @@ public sealed class EventConsumer(
     // order_refs values never change for an order (plan N12).
     private Task InsertOrderRef(Guid orderId, Guid accountId, string orderNumber, CancellationToken ct) =>
         db.Database.ExecuteSqlAsync($"""
-            INSERT INTO order_refs (order_id, account_id, order_number, updated_at) VALUES ({orderId}, {accountId}, {orderNumber}, {clock.GetUtcNow()})
+            INSERT INTO order_refs (order_id, account_id, order_number, updated_at) VALUES ({orderId}, {accountId}, {orderNumber}, now())
             ON CONFLICT (order_id) DO NOTHING
             """, ct);
 
@@ -162,20 +162,20 @@ public sealed class EventConsumer(
         vars["orderNumber"] = orderNumber;
         vars["name"] = contact.Name;
 
-        var now = clock.GetUtcNow();
         var (title, body) = templates.RenderInApp(type, vars);
         var link = TemplateRenderer.InAppLink(orderNumber);
         var id = Guid.CreateVersion7();
-        var inserted = await db.Database.ExecuteSqlAsync($"""
+        var created = await db.Database.SqlQuery<DateTimeOffset>($"""
             INSERT INTO notifications (id, account_id, type, title, body, link, source_message_id, created_at)
-            VALUES ({id}, {accountId}, {type}, {title}, {body}, {link}, {e.MessageId}, {now})
+            VALUES ({id}, {accountId}, {type}, {title}, {body}, {link}, {e.MessageId}, now())
             ON CONFLICT (source_message_id, type) DO NOTHING
-            """, ct);
-        if (inserted == 1)
+            RETURNING created_at AS "Value"
+            """).ToListAsync(ct);
+        if (created.Count == 1)
             db.AfterCommit.Add(async () =>
             {
                 metrics.Created(type, "in_app"); // counted before the push: a failed push still created the row
-                await hub.Clients.Group(NotificationHub.Group(accountId)).SendAsync(NotificationHub.ClientMethod, new PushMessage(id, type, title, link, now), CancellationToken.None);
+                await hub.Clients.Group(NotificationHub.Group(accountId)).SendAsync(NotificationHub.ClientMethod, new PushMessage(id, type, title, link, created[0]), CancellationToken.None);
                 metrics.Pushed(type);
             });
 
@@ -184,10 +184,9 @@ public sealed class EventConsumer(
 
     private async Task EnqueueEmail(Envelope e, string template, Guid? accountId, string to, Dictionary<string, string> data, CancellationToken ct)
     {
-        var now = clock.GetUtcNow();
         var inserted = await db.Database.ExecuteSqlAsync($"""
             INSERT INTO email_jobs (id, account_id, to_email, template, data, status, attempts, next_attempt_at, source_message_id, created_at)
-            VALUES ({Guid.CreateVersion7()}, {accountId}, {to}, {template}, {JsonSerializer.Serialize(data)}::jsonb, {EmailStatuses.Pending}, 0, {now}, {e.MessageId}, {now})
+            VALUES ({Guid.CreateVersion7()}, {accountId}, {to}, {template}, {JsonSerializer.Serialize(data)}::jsonb, {EmailStatuses.Pending}, 0, now(), {e.MessageId}, now())
             ON CONFLICT (source_message_id, template) DO NOTHING
             """, ct);
         if (inserted == 1) db.AfterCommit.Add(() => { metrics.Created(template, "email"); return Task.CompletedTask; });
