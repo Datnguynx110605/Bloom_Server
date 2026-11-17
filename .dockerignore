@@ -1,0 +1,10 @@
+**/bin
+**/obj
+.git
+doc
+docs
+**/TestResults
+.vs
+.idea
+deploy/loadtest/results
+deploy/loadtest/k6
