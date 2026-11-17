@@ -4,3 +4,6 @@ TestResults/
 *.user
 .vs/
 .idea/
+
+# Load-test run output
+deploy/loadtest/results/

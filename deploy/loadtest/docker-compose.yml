@@ -1,0 +1,449 @@
+# Load-test overlay (spec 2026-11-17-loadtest-stack-design). Layered on the untouched dev file:
+#   docker compose -p bloom-lt --env-file deploy/loadtest/loadtest.env \
+#     -f deploy/compose/docker-compose.yml -f deploy/loadtest/docker-compose.yml up -d --build --wait
+# Relative paths resolve against deploy/compose/ (the first -f file): repo root is ../.., loadtest files are ../loadtest.
+# Budget: all non-k6 containers <= 6 CPUs / 9 GB; k6 2 CPUs / 1.5 GB (spec 5.2). Every container sets cpus and mem_limit.
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${LT_SUBNET}
+
+x-dotnet-env: &dotnet-env
+  DOTNET_gcServer: "0"
+  Kestrel__Endpoints__Http__Url: http://+:8080
+  Kestrel__Endpoints__Http__Protocols: Http1
+  Kestrel__Endpoints__Grpc__Url: http://+:8081
+  Kestrel__Endpoints__Grpc__Protocols: Http2
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_METRIC_EXPORT_INTERVAL: "5000"
+
+x-dotnet: &dotnet
+  depends_on:
+    migrate: {condition: service_completed_successfully}
+    rabbitmq: {condition: service_healthy}
+
+x-api: &api
+  <<: *dotnet
+  healthcheck: &api-health
+    test: ["CMD", "curl", "-fsS", "http://localhost:8080/readyz"]
+    interval: 5s
+    timeout: 3s
+    retries: 24
+    start_period: 30s
+
+x-worker: &worker
+  <<: *dotnet
+  healthcheck:
+    <<: *api-health
+    test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+
+x-pg: &pg
+  PGHOST: postgres
+  PGUSER: bloom
+  PGPASSWORD: bloom
+
+# Per-service config shared by the api and worker containers (every Options.Validate() key; the Mode is set per container).
+x-gateway-env: &gateway-env
+  Gateway__Redis: gateway-redis:6379
+  Gateway__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Gateway__TrustedProxies__0: ${LT_SUBNET}
+  Gateway__AllowedOrigins__0: ${LT_ORIGIN}
+
+x-identity-env: &identity-env
+  Identity__Database: Host=postgres;Database=bloom_identity;Username=bloom;Password=bloom;Maximum Pool Size=30
+  Identity__Redis: identity-redis:6379
+  Identity__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Identity__OrderUrl: http://order:8081
+  Identity__Google__ClientId: ${LT_GOOGLE_CLIENT_ID}
+  Identity__Google__JwksUrl: http://fakes:8080/google/certs
+  Identity__SigningKeys__0__Kid: lt-1
+  Identity__SigningKeys__0__PrivateKeyPem: ${LT_IDENTITY_SIGNING_KEY_PEM}
+  Identity__ActiveKeyId: lt-1
+  Identity__CodePepper: ${LT_CODE_PEPPER}
+  Identity__CodeEncryptionKey: ${LT_CODE_ENCRYPTION_KEY}
+  Identity__TotpKey: ${LT_TOTP_KEY}
+  Identity__DataProtection__Certificate: ${LT_DATAPROTECTION_PFX}
+
+x-catalog-env: &catalog-env
+  Catalog__Database: Host=postgres;Database=bloom_catalog;Username=bloom;Password=bloom;Maximum Pool Size=30
+  Catalog__Redis: catalog-redis:6379
+  Catalog__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Catalog__Storage__AccessKey: bloom
+  Catalog__Storage__SecretKey: bloom-dev-secret
+
+x-inventory-env: &inventory-env
+  Inventory__Database: Host=postgres;Database=bloom_inventory;Username=inventory_app;Password=inventory-app-loadtest;Maximum Pool Size=30
+  Inventory__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Inventory__Catalog: http://catalog:8081
+
+x-launch-env: &launch-env
+  Launch__Database: Host=postgres;Database=bloom_launch;Username=bloom;Password=bloom;Maximum Pool Size=30
+  Launch__Redis: launch-redis:6379
+  Launch__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Launch__Catalog: http://catalog:8081
+  Launch__PassKeys__0__Kid: lt-1
+  Launch__PassKeys__0__Key: ${LT_LAUNCH_PASS_KEY}
+  Launch__CurrentPassKid: lt-1
+
+x-order-env: &order-env
+  Order__Database: Host=postgres;Database=bloom_order;Username=bloom;Password=bloom;Maximum Pool Size=30
+  Order__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Order__Catalog: http://catalog:8081
+  Order__Inventory: http://inventory:8081
+  Order__Launch: http://launch:8081
+  Order__Payment: http://payment:8081
+  Order__Fulfillment: http://fulfillment:8081
+
+x-payment-env: &payment-env
+  Payment__Database: Host=postgres;Database=bloom_payment;Username=bloom;Password=bloom;Maximum Pool Size=30
+  Payment__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Payment__StorefrontBaseUrl: ${LT_ORIGIN}
+  Payment__Stripe__ApiKey: ${LT_STRIPE_API_KEY}
+  Payment__Stripe__WebhookSecret: ${LT_STRIPE_WEBHOOK_SECRET}
+  Payment__Stripe__BaseUrl: http://fakes:8080/
+
+x-fulfillment-env: &fulfillment-env
+  Fulfillment__Database: Host=postgres;Database=bloom_fulfillment;Username=bloom;Password=bloom;Maximum Pool Size=30
+  Fulfillment__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Fulfillment__Inventory: http://inventory:8081
+  Fulfillment__Shippo__ApiKey: ${LT_SHIPPO_API_KEY}
+  Fulfillment__Shippo__WebhookSecret: ${LT_SHIPPO_WEBHOOK_SECRET}
+  Fulfillment__Shippo__Carrier: usps
+  Fulfillment__Shippo__StandardToken: usps_ground_advantage
+  Fulfillment__Shippo__ExpressToken: usps_priority_express
+  Fulfillment__Warehouse__Name: Bloom Warehouse
+  Fulfillment__Warehouse__Street1: 1 Warehouse Way
+  Fulfillment__Warehouse__City: Reno
+  Fulfillment__Warehouse__State: NV
+  Fulfillment__Warehouse__Zip: "89501"
+  Fulfillment__Warehouse__Phone: "+17755550100"
+  Fulfillment__Parcel__LengthIn: "10"
+  Fulfillment__Parcel__WidthIn: "8"
+  Fulfillment__Parcel__HeightIn: "4"
+  Fulfillment__Parcel__WeightOz: "32"
+
+x-notification-env: &notification-env
+  Notification__Database: Host=postgres;Database=bloom_notification;Username=bloom;Password=bloom;Maximum Pool Size=30
+  Notification__Redis: notification-redis:6379
+  Notification__RabbitMq: amqp://bloom:bloom@rabbitmq:5672
+  Notification__StorefrontBaseUrl: ${LT_ORIGIN}
+  Notification__CodeEncryptionKey: ${LT_CODE_ENCRYPTION_KEY}
+  Notification__AllowedOrigins__0: ${LT_ORIGIN}
+  Notification__Email__Provider: smtp
+  Notification__Email__From: Bloom <no-reply@loadtest.bloom.test>
+  Notification__Email__Smtp__Host: mailpit
+  Notification__Email__Smtp__Port: "1025"
+
+services:
+  # ---- dev services, overridden ----
+  postgres:
+    command: ["postgres", "-c", "max_connections=600"]
+    ports: !reset []
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bloom"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    cpus: 0.9
+    mem_limit: 1280m
+
+  rabbitmq:
+    environment:
+      RABBITMQ_DEFAULT_USER: bloom
+      RABBITMQ_DEFAULT_PASS: bloom
+    ports: !override ["15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    cpus: 0.3
+    mem_limit: 512m
+
+  redis:
+    profiles: [dev-only]
+
+  mailpit:
+    ports: !override ["8025:8025"]
+    cpus: 0.05
+    mem_limit: 64m
+
+  minio:
+    ports: !reset []
+    cpus: 0.1
+    mem_limit: 192m
+
+  minio-init:
+    cpus: 0.05
+    mem_limit: 128m
+
+  otel-collector:
+    ports: !reset []
+    cpus: 0.1
+    mem_limit: 192m
+
+  tempo:
+    cpus: 0.05
+    mem_limit: 192m
+
+  prometheus:
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--web.enable-remote-write-receiver"]
+    cpus: 0.1
+    mem_limit: 384m
+
+  loki:
+    cpus: 0.05
+    mem_limit: 192m
+
+  grafana:
+    cpus: 0.1
+    mem_limit: 192m
+
+  # ---- per-service redis (names as the appsettings have them) ----
+  gateway-redis: &redis
+    image: redis:8.2.3
+    cpus: 0.05
+    mem_limit: 96m
+  catalog-redis: *redis
+  identity-redis: *redis
+  notification-redis: *redis
+  launch-redis:
+    <<: *redis
+    command: ["redis-server", "--appendonly", "yes"]
+    mem_limit: 160m
+
+  # ---- one-shots ----
+  db-init:
+    image: postgres:17.6
+    restart: "no"
+    environment: *pg
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/init.sql"]
+    volumes: ["../loadtest/postgres-init.sql:/init.sql:ro"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    cpus: 0.05
+    mem_limit: 64m
+
+  migrate:
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: migrate}
+    image: bloom-lt-migrate
+    restart: "no"
+    environment:
+      PG_HOST: postgres
+      PG_USER: bloom
+      PG_PASSWORD: bloom
+    depends_on:
+      db-init: {condition: service_completed_successfully}
+    cpus: 0.2
+    mem_limit: 384m
+
+  seed-staff:
+    image: postgres:17.6
+    restart: "no"
+    environment: *pg
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-d", "bloom_identity", "-f", "/seed.sql"]
+    volumes: ["../loadtest/seed-staff.sql:/seed.sql:ro"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    cpus: 0.05
+    mem_limit: 64m
+
+  # ---- fakes (Stripe + Google) ----
+  fakes:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: app
+      args: {PROJECT: deploy/loadtest/fakes/Bloom.LoadTest.Fakes, ASSEMBLY: Bloom.LoadTest.Fakes}
+    image: bloom-lt-fakes
+    environment:
+      DOTNET_gcServer: "0"
+      Fakes__Stripe__WebhookUrl: http://gateway:8080/webhooks/stripe
+      Fakes__Stripe__WebhookSecret: ${LT_STRIPE_WEBHOOK_SECRET}
+      Fakes__Google__ClientId: ${LT_GOOGLE_CLIENT_ID}
+    healthcheck:
+      <<: *api-health
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/_stats"]
+    cpus: 0.15
+    mem_limit: 128m
+
+  # ---- gateway ----
+  gateway-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Gateway/Bloom.Gateway, ASSEMBLY: Bloom.Gateway}}
+    image: bloom-lt-gateway
+    networks: {default: {aliases: [gateway]}}
+    ports: ["8088:8080"]
+    environment: {<<: [*dotnet-env, *gateway-env], Gateway__Mode: api}
+    cpus: 0.4
+    mem_limit: 320m
+  gateway-worker:
+    <<: *worker
+    image: bloom-lt-gateway
+    environment: {<<: [*dotnet-env, *gateway-env], Gateway__Mode: worker}
+    cpus: 0.1
+    mem_limit: 160m
+
+  # ---- identity ----
+  identity-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Identity/Bloom.Identity, ASSEMBLY: Bloom.Identity}}
+    image: bloom-lt-identity
+    networks: {default: {aliases: [identity]}}
+    depends_on: # restates *dotnet's (a merge key replaces the whole map); seed-staff is awaited so `up --wait` accepts its exit
+      migrate: {condition: service_completed_successfully}
+      rabbitmq: {condition: service_healthy}
+      seed-staff: {condition: service_completed_successfully}
+    environment: {<<: [*dotnet-env, *identity-env], Identity__Mode: api}
+    cpus: 0.35
+    mem_limit: 320m
+  identity-worker:
+    <<: *worker
+    image: bloom-lt-identity
+    environment: {<<: [*dotnet-env, *identity-env], Identity__Mode: worker}
+    cpus: 0.1
+    mem_limit: 160m
+
+  # ---- catalog ----
+  catalog-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Catalog/Bloom.Catalog, ASSEMBLY: Bloom.Catalog}}
+    image: bloom-lt-catalog
+    networks: {default: {aliases: [catalog]}}
+    depends_on: # restates *dotnet's; minio-init is awaited (catalog's bucket, and so `up --wait` accepts its exit)
+      migrate: {condition: service_completed_successfully}
+      rabbitmq: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    environment: {<<: [*dotnet-env, *catalog-env], Catalog__Mode: api}
+    cpus: 0.35
+    mem_limit: 320m
+  catalog-worker:
+    <<: *worker
+    image: bloom-lt-catalog
+    environment: {<<: [*dotnet-env, *catalog-env], Catalog__Mode: worker}
+    cpus: 0.1
+    mem_limit: 160m
+
+  # ---- inventory ----
+  inventory-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Inventory/Bloom.Inventory, ASSEMBLY: Bloom.Inventory}}
+    image: bloom-lt-inventory
+    networks: {default: {aliases: [inventory]}}
+    environment: {<<: [*dotnet-env, *inventory-env], Inventory__Mode: api}
+    cpus: 0.15
+    mem_limit: 224m
+  inventory-worker:
+    <<: *worker
+    image: bloom-lt-inventory
+    environment: {<<: [*dotnet-env, *inventory-env], Inventory__Mode: worker}
+    cpus: 0.1
+    mem_limit: 160m
+
+  # ---- launch ----
+  launch-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Launch/Bloom.Launch, ASSEMBLY: Bloom.Launch}}
+    image: bloom-lt-launch
+    networks: {default: {aliases: [launch]}}
+    environment: {<<: [*dotnet-env, *launch-env], Launch__Mode: api}
+    cpus: 0.35
+    mem_limit: 320m
+  launch-worker:
+    <<: *worker
+    image: bloom-lt-launch
+    environment: {<<: [*dotnet-env, *launch-env], Launch__Mode: worker}
+    cpus: 0.15
+    mem_limit: 160m
+
+  # ---- order ----
+  order-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Order/Bloom.Order, ASSEMBLY: Bloom.Order}}
+    image: bloom-lt-order
+    networks: {default: {aliases: [order]}}
+    environment: {<<: [*dotnet-env, *order-env], Order__Mode: api}
+    cpus: 0.35
+    mem_limit: 320m
+  order-worker:
+    <<: *worker
+    image: bloom-lt-order
+    environment: {<<: [*dotnet-env, *order-env], Order__Mode: worker}
+    cpus: 0.15
+    mem_limit: 160m
+
+  # ---- payment ----
+  payment-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Payment/Bloom.Payment, ASSEMBLY: Bloom.Payment}}
+    image: bloom-lt-payment
+    networks: {default: {aliases: [payment]}}
+    environment: {<<: [*dotnet-env, *payment-env], Payment__Mode: api}
+    cpus: 0.15
+    mem_limit: 224m
+  payment-worker:
+    <<: *worker
+    image: bloom-lt-payment
+    environment: {<<: [*dotnet-env, *payment-env], Payment__Mode: worker}
+    cpus: 0.15
+    mem_limit: 160m
+
+  # ---- fulfillment ----
+  fulfillment-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Fulfillment/Bloom.Fulfillment, ASSEMBLY: Bloom.Fulfillment}}
+    image: bloom-lt-fulfillment
+    networks: {default: {aliases: [fulfillment]}}
+    environment: {<<: [*dotnet-env, *fulfillment-env], Fulfillment__Mode: api}
+    cpus: 0.15
+    mem_limit: 224m
+  fulfillment-worker:
+    <<: *worker
+    image: bloom-lt-fulfillment
+    environment: {<<: [*dotnet-env, *fulfillment-env], Fulfillment__Mode: worker}
+    cpus: 0.1
+    mem_limit: 160m
+
+  # ---- notification ----
+  notification-api:
+    <<: *api
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Notification/Bloom.Notification, ASSEMBLY: Bloom.Notification}}
+    image: bloom-lt-notification
+    networks: {default: {aliases: [notification]}}
+    environment: {<<: [*dotnet-env, *notification-env], Notification__Mode: api}
+    cpus: 0.15
+    mem_limit: 224m
+  notification-worker:
+    <<: *worker
+    image: bloom-lt-notification
+    environment: {<<: [*dotnet-env, *notification-env], Notification__Mode: worker}
+    cpus: 0.1
+    mem_limit: 160m
+
+  # ---- load generator (only with --profile loadtest) ----
+  k6:
+    profiles: [loadtest]
+    image: grafana/k6:1.3.0
+    cpus: 2
+    mem_limit: 1536m
+    volumes:
+      - ../loadtest/k6:/scripts:ro
+      - ../loadtest/results:/results
+    environment:
+      BASE_URL: http://gateway:8080
+      FAKES_URL: http://fakes:8080
+      ORIGIN: ${LT_ORIGIN}
+      ADMIN_EMAIL: ${LT_ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${LT_ADMIN_PASSWORD}
+      ADMIN_TOTP_BASE32: ${LT_ADMIN_TOTP_BASE32}
+      K6_OUT: experimental-prometheus-rw
+      K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
+      K6_PROMETHEUS_RW_TREND_STATS: p(95),p(99),avg
+    depends_on:
+      gateway-api: {condition: service_healthy}
+      fakes: {condition: service_healthy}
+      seed-staff: {condition: service_completed_successfully}
+      prometheus: {condition: service_started}
