@@ -3,11 +3,11 @@ import { ADMIN_IP } from './ip.js';
 import { api, must, uuid } from './http.js';
 
 // Admin calls come from one IP and one user, so they share one token bucket (120/min, burst 60): a 429 is waited out, not failed.
-// A GET that times out at the gateway (504, a cold service) is retried the same way.
+// A GET (or a POST carrying an Idempotency-Key, so a repeat is safe) that times out at the gateway (504, a cold service) is retried the same way.
 function adm(method, path, body, token, headers) {
   for (let attempt = 0; ; attempt++) {
     const res = api(method, path, body, { token, ip: ADMIN_IP, flow: 'admin', headers, expect: [200, 201, 204, 429, 504] });
-    const retry = res.status === 429 || (res.status === 504 && method === 'GET');
+    const retry = res.status === 429 || (res.status === 504 && (method === 'GET' || headers?.['Idempotency-Key']));
     if (!retry || attempt >= 60) return must(res, `${method} ${path}`);
     sleep(Number(res.headers['Retry-After']) || 1);
   }
@@ -80,4 +80,9 @@ export function freshLaunch(token, { delaySeconds, admissionRate, purchaseLimit,
 
 export function launch(token, launchId) {
   return adm('GET', `/api/admin/launches/${launchId}`, null, token);
+}
+
+// A cheap read that wakes launch-api (its first call after a start can outlast the gateway's 5 s), so the POSTs of freshLaunch are not the cold ones.
+export function listLaunches(token) {
+  return adm('GET', '/api/admin/launches', null, token);
 }
