@@ -53,6 +53,7 @@ export const options = {
     'http_req_duration{flow:wr_status}': ['p(95)<50'],
     http_req_failed: ['rate<0.01'],
     ws_connect_ok: ['rate>0.99'],
+    ws_sessions: ['count>0'], // ws_connect_ok with no samples would pass; this fails a WebSocket outage that records nothing
     checks: ['rate>0.99'],
     checkout_idempotent: ['rate==1'],
     dropped_iterations: ['count==0'],

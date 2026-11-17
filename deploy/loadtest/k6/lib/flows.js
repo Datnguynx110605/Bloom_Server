@@ -12,6 +12,7 @@ const CUSTOMERS = num('CUSTOMERS', 5000);
 const CHECKOUT_RATIO = num('CHECKOUT_RATIO', 0.05);
 const THINK_SECONDS = num('MIXED_THINK_SECONDS', 1.5);
 const WS_HOLD_SECONDS = num('WS_HOLD_SECONDS', 60);
+const WS_HANDSHAKE_TIMEOUT_S = num('WS_HANDSHAKE_TIMEOUT_S', 10);
 
 export const checkoutIdempotent = new Rate('checkout_idempotent');
 export const wsConnectOk = new Rate('ws_connect_ok');
@@ -40,6 +41,15 @@ function session() {
   return cached;
 }
 
+// The order id of a checkout response; undefined when the body is empty or not JSON.
+function orderId(res) {
+  try {
+    return res.json('orderId');
+  } catch (e) {
+    return undefined;
+  }
+}
+
 function checkout(s, body, flow, key, expect) {
   return api('POST', '/api/checkout', { ...body, shipTo: SHIP_TO, shippingOption: 'standard' }, { token: s.token, ip: s.ip, flow, expect, headers: { 'Idempotency-Key': key } });
 }
@@ -48,11 +58,14 @@ function checkout(s, body, flow, key, expect) {
 // The last seeded customer (no VU reaches it) walks the browse -> cart -> checkout -> ticket path once; its webhook is part of the run's webhook count.
 export function warmUp(pool) {
   const s = customer(CUSTOMERS - 1);
-  const o = { token: s.token, ip: s.ip, flow: 'warmup', expect: [200, 201, 204, 409, 503, 504] };
-  // A cold call may hit a 5 s timeout (504, or 503 when payment is not up yet): repeat it (same Idempotency-Key for the checkout).
+  const o = { token: s.token, ip: s.ip, flow: 'warmup', expect: [200, 201, 204, 409, 429, 503, 504] };
+  // A cold call may hit a 5 s timeout (504, or 503 when payment is not up yet) or empty the checkout bucket (429): repeat it (same Idempotency-Key for the checkout).
   const hit = (call) => {
     let res;
-    for (let n = 0; n < 5; n++) if (![503, 504].includes((res = call()).status)) break;
+    for (let n = 0; n < 5; n++) {
+      if (![429, 503, 504].includes((res = call()).status)) break;
+      if (res.status === 429) sleep(Number(res.headers['Retry-After']) || 10); // the checkout bucket (3 burst, 6/min) drains while a cold payment retries
+    }
     return res;
   };
   const cart = must(hit(() => api('GET', '/api/cart', null, o)), 'warm-up get cart');
@@ -109,25 +122,40 @@ export function launchFlow(data) {
   const key = uuid();
   const first = checkout(s, body, 'checkout_launch', key);
   if (!ok(first, 'launch checkout ok')) return console.error(`launch checkout: ${first.status} ${String(first.body).slice(0, 300)}`);
-  // The same key must resume the same order, never open a second one (00-reliability §9).
-  const again = checkout(s, body, 'checkout_launch', key);
-  checkoutIdempotent.add(again.status === first.status && again.json('orderId') === first.json('orderId'));
+  // The same key must resume the same order, never open a second one (00-reliability §9). Tagged apart: a cached replay (3-9 ms) must not dilute the checkout_launch p95.
+  const again = checkout(s, body, 'checkout_replay', key);
+  const id = orderId(first);
+  checkoutIdempotent.add(again.status === first.status && id !== undefined && orderId(again) === id);
 }
 
-// One hub connection: handshake, answer pings, close after `holdMs`. Resolves when it closes.
+let wsErrorLogged = false; // one line per VU: a wholesale outage must not flood stdout
+
+// One hub connection: handshake (within WS_HANDSHAKE_TIMEOUT_S, else a failed sample), answer pings, close after `holdMs`. Resolves when it is over.
 function hub(ticket, ip, holdMs) {
   return new Promise((resolve) => {
     const started = Date.now();
     let up = false;
+    let done = false;
     const ws = new WebSocket(`${BASE_URL.replace(/^http/, 'ws')}/api/notifications/hub?ticket=${ticket}`, null, { headers: { Origin: ORIGIN, 'X-Forwarded-For': ip } });
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (!up) wsConnectOk.add(false);
+      resolve();
+    };
+    const giveUp = setTimeout(() => { if (!up) { ws.close(); finish(); } }, WS_HANDSHAKE_TIMEOUT_S * 1000);
     ws.onopen = () => ws.send(`{"protocol":"json","version":1}${RS}`);
     ws.onmessage = (e) => {
       for (const rec of String(e.data).split(RS)) {
         if (!rec) continue;
         const m = JSON.parse(rec);
         if (m.type === 6) ws.send(`{"type":6}${RS}`);
-        else if (m.type === undefined && !up && !m.error) { // the handshake answer `{}`
+        else if (m.error) {
+          console.error(`ws handshake refused: ${m.error}`);
+          ws.close();
+        } else if (m.type === undefined && !up) { // the handshake answer `{}`
           up = true;
+          clearTimeout(giveUp);
           wsConnectOk.add(true);
           wsConnectMs.add(Date.now() - started);
           wsSessions.add(1);
@@ -135,13 +163,18 @@ function hub(ticket, ip, holdMs) {
         }
       }
     };
-    ws.onerror = () => {};
+    ws.onerror = (e) => {
+      if (!wsErrorLogged) console.error(`ws error: ${e.error ?? e.message ?? JSON.stringify(e)}`);
+      wsErrorLogged = true;
+    };
     ws.onclose = () => {
-      if (!up) wsConnectOk.add(false);
-      resolve();
+      clearTimeout(giveUp);
+      finish();
     };
   });
 }
+
+const jitter = () => new Promise((r) => setTimeout(r, 1000 + Math.random() * 4000));
 
 export async function wsFlow(data) {
   if (secondsLeft(data) <= 0) return sleep(1); // the scenario is over: don't spin until k6 stops it
@@ -149,9 +182,9 @@ export async function wsFlow(data) {
   const holdEnd = Date.now() + Math.min(WS_HOLD_SECONDS, secondsLeft(data)) * 1000;
   while (Date.now() < holdEnd) {
     const t = api('GET', '/api/notifications/ws-ticket', null, { token: fresh(s).token, ip: s.ip, flow: 'ws_ticket' });
-    if (!ok(t, 'ws ticket ok')) return;
-    await hub(t.json('ticket'), s.ip, holdEnd - Date.now());
-    // An early close is reconnected with jitter (1-5 s) while the hold lasts.
-    if (Date.now() < holdEnd) await new Promise((r) => setTimeout(r, 1000 + Math.random() * 4000));
+    if (ok(t, 'ws ticket ok')) await hub(t.json('ticket'), s.ip, holdEnd - Date.now());
+    else wsConnectOk.add(false); // no ticket, no connection: a failed attempt, retried after the jitter like a reconnect
+    // A failed or early-closed connection is retried with jitter (1-5 s) while the hold lasts.
+    if (Date.now() < holdEnd) await jitter();
   }
 }

@@ -150,6 +150,7 @@ services:
     mem_limit: 1280m
 
   rabbitmq:
+    hostname: rabbitmq # stable node name: a recreated container keeps the broker's queues (the data volume is keyed by node name)
     environment:
       RABBITMQ_DEFAULT_USER: bloom
       RABBITMQ_DEFAULT_PASS: bloom

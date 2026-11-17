@@ -5,7 +5,7 @@ namespace Bloom.LoadTest.Fakes;
 /// <summary>
 /// The eight Stripe endpoints Bloom.Payment calls, served from memory (ported from Bloom.Payment.Tests' FakeStripe, real clock):
 /// sessions create / retrieve / expire, refunds create / retrieve / list, payment_intents list. Anything else answers 404.
-/// Ids are <c>cs_test_n</c>, <c>pi_test_n</c>, <c>re_test_n</c>.
+/// Ids are <c>cs_test_boot_n</c>, <c>pi_test_boot_n</c>, <c>re_test_boot_n</c>: <c>boot</c> (start time) keeps them unique across restarts, because the payment tables outlive this process.
 /// </summary>
 public sealed class StripeFake
 {
@@ -28,6 +28,7 @@ public sealed class StripeFake
     private sealed record IntentRow(string Id, long Amount, DateTimeOffset Created);
 
     private const int PageSize = 100;
+    private static readonly string Boot = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString("x");
 
     private readonly object _gate = new();
     private readonly List<SessionRow> _sessions = [];
@@ -47,7 +48,7 @@ public sealed class StripeFake
             if (s.Status != "open") return null;
             s.Status = "complete";
             s.PaymentStatus = "paid";
-            s.PaymentIntentId = $"pi_test_{++_intentCount}";
+            s.PaymentIntentId = $"pi_test_{Boot}_{++_intentCount}";
             _intents.Add(new(s.PaymentIntentId, s.Amount, DateTimeOffset.UtcNow));
             return ToSession(s);
         }
@@ -99,7 +100,7 @@ public sealed class StripeFake
             amount += long.Parse(unit, CultureInfo.InvariantCulture) * long.Parse(f.GetValueOrDefault($"line_items[{i}][quantity]", "1"), CultureInfo.InvariantCulture);
         var s = new SessionRow
         {
-            Id = $"cs_test_{_sessions.Count + 1}", Amount = amount, ExpiresAt = DateTimeOffset.FromUnixTimeSeconds(expires),
+            Id = $"cs_test_{Boot}_{_sessions.Count + 1}", Amount = amount, ExpiresAt = DateTimeOffset.FromUnixTimeSeconds(expires),
             OrderId = f.GetValueOrDefault("metadata[order_id]"), PaymentId = f.GetValueOrDefault("metadata[payment_id]"),
         };
         _sessions.Add(s);
@@ -111,7 +112,7 @@ public sealed class StripeFake
     private (int, object) CreateRefund(Dictionary<string, string> f, string? key, IReadOnlyList<KeyValuePair<string, string>> form)
     {
         if (Replay(key, form) is { } replay) return replay;
-        var refund = new RefundRow($"re_test_{++_refundCount}", long.Parse(f["amount"], CultureInfo.InvariantCulture), f["payment_intent"],
+        var refund = new RefundRow($"re_test_{Boot}_{++_refundCount}", long.Parse(f["amount"], CultureInfo.InvariantCulture), f["payment_intent"],
             f.GetValueOrDefault("metadata[refund_id]"), f.GetValueOrDefault("metadata[order_id]"), DateTimeOffset.UtcNow);
         _refunds.Add(refund);
         Remember(key, form, refund.Id);
