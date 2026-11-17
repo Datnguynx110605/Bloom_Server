@@ -11,7 +11,7 @@ environment, and never point this stack at real providers (spec 5.6).
 
 ## Prerequisites
 
-- Docker Desktop with the VM at **8 CPUs and about 11.7 GB**. The stack is capped at 6 CPUs / 9 GB, k6 at 2 CPUs / 1.5 GB, so the
+- Docker Desktop with the VM at **8 CPUs and about 11.7 GiB**. The stack is capped at 6 CPUs / 9 GiB, k6 at 2 CPUs / 1.5 GiB, so the
   VM has no spare CPU: close other heavy programs while measuring.
 - **Stop the dev stack first** (`deploy/compose`): both publish host ports 3000 (Grafana), 8025 (Mailpit UI), 9090 (Prometheus) and
   15672 (RabbitMQ UI). This stack also publishes the gateway on 8088.
@@ -36,21 +36,15 @@ Never use plain `$LT run ...` for the tests: it re-runs the one-shot services (m
 running test. Always `run --rm --no-deps`, as below. And never edit the compose file between a start and a run without `up -d`
 and the 70 s wait.
 
-### Postgres on a slow-fsync VM (read this once)
+### Postgres commit wait (already set by the stack)
 
-The VM disk of Docker Desktop here does an fsync in about 17 ms (`pgbench` with `pg_logical_emit_message`: 17.5 ms per commit) and a Postgres checkpoint
-once spent 21 s in its fsync phase (the Postgres log line `checkpoint complete: ... sync=20.943 s`). Every checkout is 6 to 8 sequential commits, so with the
-default (`synchronous_commit=on`) `checkout_launch` p95 is bounded by the disk (300 to 470 ms in the early calibration runs, 216 ms with the final settings),
-and a checkpoint freezes everything for seconds (see Calibration: the one run with it on had 809 dropped iterations and 504s). The recorded runs
-used the commit wait off, set once per database volume:
-
-```bash
-docker exec bloom-lt-postgres-1 psql -U bloom -d postgres -c "ALTER SYSTEM SET synchronous_commit = off" -c "SELECT pg_reload_conf()"
-# undo: ALTER SYSTEM RESET synchronous_commit;  (it also goes away with `down -v`)
-```
-
-This measures Bloom and the stack instead of the laptop's disk; losing the last commits on a crash does not matter in a throwaway test. Whether this becomes the
-stack's default is the owner's decision.
+The overlay starts Postgres with `synchronous_commit=off`; nothing to do. Why: the VM disk of Docker Desktop here does an fsync in about 17.5 ms
+(`pgbench` with `pg_logical_emit_message`), and every checkout is 6 to 8 sequential commits, so with the production default (`on`) `checkout_launch` p95 is
+bounded by the disk, not by Bloom (300 to 470 ms in the early calibration runs). Evidence with the **final split and `synchronous_commit=on`**: one `load.js` run had
+checkout_launch p95 216 ms (pass), but a Postgres checkpoint spent 21 s in its fsync phase (`checkpoint complete: ... sync=20.943 s`) and froze the stack
+for about 30 s: 809 dropped iterations, 1.0 % failed requests (504s), catalog max 22.5 s, so the run failed. Durability of the last commits is not a load-test goal.
+Checkpoints still run with `off`; the recorded runs had none that hurt. The owner may revert it (remove `-c synchronous_commit=off` from the `postgres` command in
+`deploy/loadtest/docker-compose.yml`); expect failures like the one above on a slow-fsync VM.
 
 ## Seed (once; idempotent)
 
@@ -65,6 +59,13 @@ share a 120/min bucket and the admin token lasts 15 minutes: a seed of 100 produ
 `seed-staff.sql` uses `ON CONFLICT DO NOTHING`: changing the admin password, TOTP secret or `LT_TOTP_KEY` needs `down -v`, a new start and a re-seed.
 
 ## Run
+
+**Precondition of the recorded results: stop Tempo.** `up -d --build --wait` starts it, but at 0.05 CPU / 320 MiB it (and then the OpenTelemetry collector)
+is OOM-killed at full trace volume, and the runs behind the numbers below were made without it. Stop it after every start, before the warm-up and the runs:
+
+```bash
+$LT stop tempo        # to look at traces later: $LT start tempo
+```
 
 Warm the stack once after every (re)start: the first test after a restart is slower (cold JIT, cold pools) and can fail on
 `checkout_launch` p95 by itself. A short smoke does it:
@@ -97,7 +98,7 @@ Also look at `docker stats --no-stream`: if k6 sits at its 2-CPU cap the result 
 - Spike gates: during the spike error rate < 5 % and 5xx < 1 % (`phase:spike`); after it `catalog` and `wr_status` p95 and the error
   rate again (`phase:recovery`; no `checkout_launch` there: no pass tokens exist after sell-out). Its teardown requires
   `held + sold == allocation`, so `SPIKE_USERS` must stay above `ALLOCATION`.
-- **Stress** prints `KNEE step=<k> BROKE step=<b> FIRST=<flow|errors>` first, then one line per step with its error rate and the p95 of
+- **Stress** prints `KNEE step=<k> BROKE step=<b> FIRST=<flow|errors>` first, then one line per step with its error rate, `dropped=` iterations and the p95 of
   each flow against its target. Step *i* offers *i* x the `*_STEP` amount of each flow (`CATALOG_STEP` it/s, `MIXED_STEP` it/s,
   `WS_STEP` sessions, `STATUS_STEP` waiting-room users). The knee is the last step where every p95 is under its target; a step breaks
   at p95 > 2 x target or errors > 5 %. `none` for the knee means no step met all targets. Raise `STEPS` or the `*_STEP` values if no step broke.
@@ -113,8 +114,8 @@ Also look at `docker stats --no-stream`: if k6 sits at its 2-CPU cap the result 
 
 ## Calibration (this machine, measured 2026-11-17)
 
-**Machine and budget.** Windows 11 Home, Docker Desktop VM 8 CPUs / 11.7 GB. All non-k6 containers together (one-shots and `verify` included):
-**5.95 CPUs / 8.94 GB**; k6 2 CPUs / 1.5 GB. `DOTNET_gcServer=0` everywhere; every container sets `cpus` and `mem_limit`. Gateway rate limits are production values.
+**Machine and budget.** Windows 11 Home, Docker Desktop VM 8 CPUs / 11.7 GiB. All non-k6 containers together (one-shots and `verify` included):
+**5.95 CPUs / 8.94 GiB** (9152 MiB); k6 2 CPUs / 1.5 GiB. `DOTNET_gcServer=0` everywhere; every container sets `cpus` and `mem_limit`. Gateway rate limits are production values.
 Split (CPUs): postgres 0.6, rabbitmq 0.65, gateway-api 0.75, catalog-api 0.5, order-api 0.4, launch-api 0.35, identity-api 0.3, inventory-api 0.25, payment-api 0.2,
 fakes 0.1, notification-api 0.08, fulfillment-api 0.05; workers 0.05 to 0.15 (launch 0.15, notification 0.09, inventory/order 0.08, payment 0.07,
 catalog/gateway/identity 0.06, fulfillment 0.05); otel-collector 0.15, prometheus 0.1, tempo/loki/grafana/minio 0.05, redis x5 0.05, mailpit and one-shots 0.03 to 0.15.
@@ -129,6 +130,9 @@ at 5.8 and 7.1 ms); k6 used about 12 % of its 2 CPUs, so the break is Bloom's (a
 full telemetry volume broke at steps 2 to 5 of the larger step size (catalog p95 638 ms at 40 it/s when gateway and catalog were pinned; wr_status 347 ms at 150 users when launch-api
 was throttled; several multi-second `checkout_launch` stalls coinciding with a dead OpenTelemetry collector or a Postgres checkpoint).
 
+The knee is a single measurement with the final settings, and it carries sample noise: `abortOnFail` evaluates p95 on very few `checkout_launch` samples at a step start, and earlier
+stress runs (other splits, full telemetry) broke at steps 1 to 5 of the larger step size. The 56 to 60 % defaults below inherit that uncertainty.
+
 **Defaults** (about 55 % of the knee per flow; spike baseline = load; spike peak slightly above the knee):
 
 | | load.js | spike.js | knee |
@@ -142,7 +146,7 @@ Load: ramp 1 m, hold 8 m, launch 120 s after the start. Spike: launch 180 s afte
 `CUSTOMERS=2000` (a run needs under 1,000 VUs). Numbers this small are what a 6-CPU budget of fractional-CPU containers gives: on a bigger machine raise the env vars and
 re-run `stress.js` to find the new knee (rule: spec 5.9).
 
-**Recorded results** (final settings, `synchronous_commit=off`, Tempo stopped, collector and Loki up):
+**Recorded results** (final settings, `synchronous_commit=off` as the stack sets it, Tempo stopped, collector and Loki up):
 
 | run | result |
 |---|---|
@@ -150,7 +154,7 @@ re-run `stress.js` to find the new knee (rule: spec 5.9).
 | `load.js` #2 (right after) | exit 0, verify ok: 5.3 / 86.5 / 4.6 ms, 0 failed of 49,250, 0 dropped, 700 WS ok |
 | `spike.js` | exit 0, verify ok: 100 sold of 100, spike-phase error rate 0 and 5xx 0; recovery catalog p95 5.0 ms, wr_status 6.3 ms (361 reads), error rate 0, 0 dropped; 839 WS ok, 166 webhooks delivered |
 
-With `synchronous_commit=on` (one run, same defaults): checkout_launch p95 216 ms (pass) but a checkpoint with a 21 s fsync phase froze the stack for about 30 s: 809 dropped
+With the final split but `synchronous_commit=on` (one run, same defaults): checkout_launch p95 216 ms (pass) but a checkpoint with a 21 s fsync phase froze the stack for about 30 s: 809 dropped
 iterations, 1.0 % failed requests (504s), catalog max 22.5 s: `load.js` FAIL. Settings that mattered besides the split: the telemetry volume (10 % of traces, OTLP logs at Warning:
 with every SQL command exported, Tempo, Loki and the collector were OOM-killed or pinned and runs broke), and Tempo off during runs.
 
@@ -164,7 +168,7 @@ with every SQL command exported, Tempo, Loki and the collector were OOM-killed o
   trace volume and leaves the collector backlogged). To keep the runs honest the services export 10 % of traces
   (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`, arg 0.1) and only warnings and above as OTLP logs (`Logging__OpenTelemetry__LogLevel__Default=Warning`);
   metrics are complete and console logs are unchanged (`docker logs`). Tempo was not running during the recorded load and spike runs (it OOM-restarts
-  on its old WAL): `$LT stop tempo` before a run, `$LT start tempo` to look at traces. Loki stayed up.
+  on its old WAL): it is stopped in the Run section (`$LT stop tempo`); `$LT start tempo` brings it back for trace viewing (stop it again before measuring). Loki stayed up.
 
 ## Teardown (everything: containers, volumes, images)
 
