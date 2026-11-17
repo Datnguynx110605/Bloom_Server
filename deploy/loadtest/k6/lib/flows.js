@@ -11,7 +11,7 @@ import { customer, fresh } from './auth.js';
 const CUSTOMERS = num('CUSTOMERS', 5000);
 const CHECKOUT_RATIO = num('CHECKOUT_RATIO', 0.05);
 const THINK_SECONDS = num('MIXED_THINK_SECONDS', 1.5);
-const WS_HOLD_SECONDS = num('WS_HOLD_SECONDS', 60);
+export const WS_HOLD_SECONDS = num('WS_HOLD_SECONDS', 60);
 const WS_HANDSHAKE_TIMEOUT_S = num('WS_HANDSHAKE_TIMEOUT_S', 10);
 
 export const checkoutIdempotent = new Rate('checkout_idempotent');

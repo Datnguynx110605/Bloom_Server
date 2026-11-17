@@ -1,4 +1,5 @@
 import http from 'k6/http';
+import { sleep } from 'k6';
 import { FAKES_URL, num, str } from './config.js';
 import { ADMIN_IP, customerIp } from './ip.js';
 import { api, must } from './http.js';
@@ -8,7 +9,18 @@ const REFRESH_AFTER_S = num('REFRESH_AFTER_S', 600);
 const now = () => Date.now() / 1000;
 
 // Staff sign-in: password, then the TOTP code of the seeded admin (seed-staff.sql).
+// A second sign-in within the same 30 s TOTP step can be refused as a replay: then wait for the next step and retry once.
 export function adminToken() {
+  try {
+    return signInAdmin();
+  } catch (e) {
+    if (!String(e.message).startsWith('admin mfa')) throw e;
+    sleep(31 - (now() % 30));
+    return signInAdmin();
+  }
+}
+
+function signInAdmin() {
   const password = str('ADMIN_PASSWORD', '');
   const secret = str('ADMIN_TOTP_BASE32', '');
   if (!password || !secret) throw new Error('ADMIN_PASSWORD and ADMIN_TOTP_BASE32 must be set');

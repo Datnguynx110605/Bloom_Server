@@ -15,3 +15,11 @@ export function str(name, def) {
 export const BASE_URL = str('BASE_URL', 'http://gateway:8080');
 export const FAKES_URL = str('FAKES_URL', 'http://fakes:8080');
 export const ORIGIN = str('ORIGIN', 'http://loadtest.bloom.test');
+
+const UNIT_S = { s: 1, m: 60, h: 3600 };
+// A duration like 30s, 1m or 1h, in seconds.
+export function seconds(d) {
+  const m = /^(\d+)([smh])$/.exec(d);
+  if (!m) throw new Error(`duration ${d} must look like 30s, 1m or 1h`);
+  return Number(m[1]) * UNIT_S[m[2]];
+}

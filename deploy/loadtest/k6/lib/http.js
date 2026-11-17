@@ -1,6 +1,10 @@
 import http from 'k6/http';
 import { randomBytes } from 'k6/crypto';
+import { Rate } from 'k6/metrics';
 import { BASE_URL, ORIGIN } from './config.js';
+
+// Share of calls answered 5xx (the spike's "no 5xx storm" threshold).
+export const serverErrors = new Rate('server_errors');
 
 // One JSON call through the gateway. A fresh empty cookie jar per call: sessions are carried by hand (Cookie header), never by the VU jar.
 export function api(method, path, body, { token, ip, flow, headers, expect } = {}) {
@@ -8,12 +12,14 @@ export function api(method, path, body, { token, ip, flow, headers, expect } = {
   if (body !== undefined && body !== null) h['Content-Type'] = 'application/json';
   if (ip) h['X-Forwarded-For'] = ip;
   if (token) h.Authorization = `Bearer ${token}`;
-  return http.request(method, BASE_URL + path, body === undefined || body === null ? null : JSON.stringify(body), {
+  const res = http.request(method, BASE_URL + path, body === undefined || body === null ? null : JSON.stringify(body), {
     headers: h,
     tags: flow ? { flow } : {},
     jar: new http.CookieJar(),
     responseCallback: http.expectedStatuses(...(expect ?? [200, 201, 204])),
   });
+  serverErrors.add(res.status >= 500);
+  return res;
 }
 
 // The JSON body of a 2xx response; anything else throws with the status and body.
