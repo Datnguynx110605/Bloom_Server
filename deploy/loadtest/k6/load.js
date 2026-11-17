@@ -1,17 +1,17 @@
 // Load test: anonymous catalog browsing, signed-in mixed shoppers, a launch with its waiting room, and WebSocket sessions, all at once.
-// Every rate, count and duration is an env var with a default (a placeholder until the machine is measured).
+// Every rate, count and duration is an env var with a default (calibrated for the machine in deploy/loadtest/README.md).
 import { num, seconds, str } from './lib/config.js';
 import { catalogFlow, mixedFlow, launchFlow, wsFlow } from './lib/flows.js';
 import { prepare, checkWebhooks, summaryLines, summaryOutputs } from './lib/run.js';
 
-const CATALOG_RATE = num('CATALOG_RATE', 50);
-const MIXED_RATE = num('MIXED_RATE', 10);
-const WS_CONNECTIONS = num('WS_CONNECTIONS', 200);
-const LAUNCH_USERS = num('LAUNCH_USERS', 300);
+const CATALOG_RATE = num('CATALOG_RATE', 14);
+const MIXED_RATE = num('MIXED_RATE', 3);
+const WS_CONNECTIONS = num('WS_CONNECTIONS', 70);
+const LAUNCH_USERS = num('LAUNCH_USERS', 70);
 const LAUNCH_DELAY = num('LAUNCH_DELAY', 120);
-const ALLOCATION = num('ALLOCATION', 150);
+const ALLOCATION = num('ALLOCATION', 50);
 const PURCHASE_LIMIT = num('PURCHASE_LIMIT', 1);
-const ADMISSION_RATE = num('ADMISSION_RATE', 20);
+const ADMISSION_RATE = num('ADMISSION_RATE', 3);
 const RAMP = str('RAMP', '1m');
 const HOLD = str('HOLD', '8m');
 const TEST_SECONDS = 2 * seconds(RAMP) + seconds(HOLD);

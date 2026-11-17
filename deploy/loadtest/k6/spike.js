@@ -1,6 +1,6 @@
 // Spike test: baseline traffic, then a launch opens with SPIKE_USERS in the waiting room and SPIKE_WS WebSocket sessions, then traffic falls back.
 // Phases (seconds from the start): baseline + spike run until LAUNCH_DELAY + SPIKE_HOLD, then recovery runs RECOVERY seconds.
-// Every rate, count and duration is an env var with a default (a placeholder until the machine is measured).
+// Every rate, count and duration is an env var with a default (calibrated for the machine in deploy/loadtest/README.md).
 import { sleep, fail } from 'k6';
 import exec from 'k6/execution';
 import { num, str } from './lib/config.js';
@@ -9,18 +9,18 @@ import { launch as getLaunch } from './lib/admin.js';
 import { catalogFlow, mixedFlow, launchFlow, statusFlow, wsFlow, WS_HOLD_SECONDS } from './lib/flows.js';
 import { prepare, webhookProblem, summaryLines, summaryOutputs } from './lib/run.js';
 
-const BASE_CATALOG_RATE = num('BASE_CATALOG_RATE', 50);
-const BASE_MIXED_RATE = num('BASE_MIXED_RATE', 10);
-const SPIKE_USERS = num('SPIKE_USERS', 2000);
-const SPIKE_WS = num('SPIKE_WS', 1000);
+const BASE_CATALOG_RATE = num('BASE_CATALOG_RATE', 14);
+const BASE_MIXED_RATE = num('BASE_MIXED_RATE', 3);
+const SPIKE_USERS = num('SPIKE_USERS', 140);
+const SPIKE_WS = num('SPIKE_WS', 140);
 const SPIKE_RAMP = num('SPIKE_RAMP', 60);
 const LAUNCH_DELAY = num('LAUNCH_DELAY', 180);
 const SPIKE_HOLD = num('SPIKE_HOLD', 180);
 const RECOVERY = num('RECOVERY', 180);
-const ALLOCATION = num('ALLOCATION', 1000);
+const ALLOCATION = num('ALLOCATION', 100);
 const RECOVERY_WR_RATE = num('RECOVERY_WR_RATE', 2); // status reads/s after sell-out; the per-user limit (wr-status: 30/min) needs them spread over several customers
 const PURCHASE_LIMIT = num('PURCHASE_LIMIT', 1);
-const ADMISSION_RATE = num('ADMISSION_RATE', 20);
+const ADMISSION_RATE = num('ADMISSION_RATE', 3);
 const SPIKE_END = LAUNCH_DELAY + SPIKE_HOLD;
 const TEST_SECONDS = SPIKE_END + RECOVERY;
 

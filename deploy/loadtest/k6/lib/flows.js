@@ -8,7 +8,7 @@ import { anonIp } from './ip.js';
 import { api, must, uuid } from './http.js';
 import { customer, fresh } from './auth.js';
 
-const CUSTOMERS = num('CUSTOMERS', 5000);
+const CUSTOMERS = num('CUSTOMERS', 2000);
 const CHECKOUT_RATIO = num('CHECKOUT_RATIO', 0.05);
 const THINK_SECONDS = num('MIXED_THINK_SECONDS', 1.5);
 export const WS_HOLD_SECONDS = num('WS_HOLD_SECONDS', 60);

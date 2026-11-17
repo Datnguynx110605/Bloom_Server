@@ -1,6 +1,6 @@
 // Stress test: the combined profile (catalog + mixed + waiting-room polling + WebSocket) grows by one increment per step until a step breaks.
 // Step i (1-based) offers i x the *_STEP amount of each flow; k6 aborts on the first broken step and the summary names the knee.
-// Every rate, count and duration is an env var with a default (a placeholder until the machine is measured).
+// Every rate, count and duration is an env var with a default (calibrated for the machine in deploy/loadtest/README.md).
 // A run that finds a broken step exits 99 by design (abortOnFail): chain verify with `;`, not `&&`.
 import { num, seconds, str } from './lib/config.js';
 import { catalogFlow, mixedFlow, launchFlow, wsFlow } from './lib/flows.js';
@@ -9,10 +9,10 @@ import { prepare, checkWebhooks, summaryLines, summaryOutputs } from './lib/run.
 
 const STEPS = num('STEPS', 10);
 const D = seconds(str('STEP_DURATION', '2m'));
-const CATALOG_STEP = num('CATALOG_STEP', 10); // iterations/s added per step
-const MIXED_STEP = num('MIXED_STEP', 2);      // iterations/s added per step
-const WS_STEP = num('WS_STEP', 50);           // WebSocket sessions added per step
-const STATUS_STEP = num('STATUS_STEP', 50);   // waiting-room users added per step
+const CATALOG_STEP = num('CATALOG_STEP', 5); // iterations/s added per step
+const MIXED_STEP = num('MIXED_STEP', 1);      // iterations/s added per step
+const WS_STEP = num('WS_STEP', 25);           // WebSocket sessions added per step
+const STATUS_STEP = num('STATUS_STEP', 25);   // waiting-room users added per step
 const MAX_ERROR_RATE = num('MAX_ERROR_RATE', 0.05);
 const ALLOCATION = num('ALLOCATION', 100000); // large, with a slow admission: most users stay queued and poll
 const ADMISSION_RATE = num('ADMISSION_RATE', 1);

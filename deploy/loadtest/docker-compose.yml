@@ -18,6 +18,10 @@ x-dotnet-env: &dotnet-env
   Kestrel__Endpoints__Grpc__Protocols: Http2
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
   OTEL_METRIC_EXPORT_INTERVAL: "5000"
+  # Telemetry volume: tempo, loki and the collector do not fit the CPU/memory budget at full volume (README). Metrics stay complete.
+  OTEL_TRACES_SAMPLER: parentbased_traceidratio
+  OTEL_TRACES_SAMPLER_ARG: "0.1"
+  Logging__OpenTelemetry__LogLevel__Default: Warning # the OTLP log export only; console logging keeps the appsettings levels
 
 x-dotnet: &dotnet
   depends_on:
@@ -146,7 +150,7 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
-    cpus: 0.9
+    cpus: 0.6
     mem_limit: 1280m
 
   rabbitmq:
@@ -161,7 +165,7 @@ services:
       timeout: 10s
       retries: 20
       start_period: 20s
-    cpus: 0.3
+    cpus: 0.65
     mem_limit: 512m
 
   redis:
@@ -169,26 +173,26 @@ services:
 
   mailpit:
     ports: !override ["8025:8025"]
-    cpus: 0.05
+    cpus: 0.03
     mem_limit: 64m
 
   minio:
     ports: !reset []
-    cpus: 0.1
+    cpus: 0.05
     mem_limit: 192m
 
   minio-init:
-    cpus: 0.05
+    cpus: 0.03
     mem_limit: 128m
 
   otel-collector:
     ports: !reset []
-    cpus: 0.1
-    mem_limit: 192m
+    cpus: 0.15
+    mem_limit: 352m
 
   tempo:
     cpus: 0.05
-    mem_limit: 192m
+    mem_limit: 320m
 
   prometheus:
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--web.enable-remote-write-receiver"]
@@ -200,7 +204,7 @@ services:
     mem_limit: 192m
 
   grafana:
-    cpus: 0.1
+    cpus: 0.05
     mem_limit: 192m
 
   # ---- per-service redis (names as the appsettings have them) ----
@@ -225,7 +229,7 @@ services:
     volumes: ["../loadtest/postgres-init.sql:/init.sql:ro"]
     depends_on:
       postgres: {condition: service_healthy}
-    cpus: 0.05
+    cpus: 0.03
     mem_limit: 64m
 
   migrate:
@@ -238,7 +242,7 @@ services:
       PG_PASSWORD: bloom
     depends_on:
       db-init: {condition: service_completed_successfully}
-    cpus: 0.2
+    cpus: 0.15
     mem_limit: 384m
 
   seed-staff:
@@ -249,7 +253,7 @@ services:
     volumes: ["../loadtest/seed-staff.sql:/seed.sql:ro"]
     depends_on:
       migrate: {condition: service_completed_successfully}
-    cpus: 0.05
+    cpus: 0.03
     mem_limit: 64m
 
   # ---- fakes (Stripe + Google) ----
@@ -268,7 +272,7 @@ services:
     healthcheck:
       <<: *api-health
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/_stats"]
-    cpus: 0.15
+    cpus: 0.1
     mem_limit: 128m
 
   # ---- gateway ----
@@ -279,14 +283,14 @@ services:
     networks: {default: {aliases: [gateway]}}
     ports: ["8088:8080"]
     environment: {<<: [*dotnet-env, *gateway-env], Gateway__Mode: api}
-    cpus: 0.4
+    cpus: 0.75
     mem_limit: 320m
   gateway-worker:
     <<: *worker
     image: bloom-lt-gateway
     environment: {<<: [*dotnet-env, *gateway-env], Gateway__Mode: worker}
-    cpus: 0.1
-    mem_limit: 160m
+    cpus: 0.06
+    mem_limit: 192m
 
   # ---- identity ----
   identity-api:
@@ -299,14 +303,14 @@ services:
       rabbitmq: {condition: service_healthy}
       seed-staff: {condition: service_completed_successfully}
     environment: {<<: [*dotnet-env, *identity-env], Identity__Mode: api}
-    cpus: 0.35
+    cpus: 0.3
     mem_limit: 320m
   identity-worker:
     <<: *worker
     image: bloom-lt-identity
     environment: {<<: [*dotnet-env, *identity-env], Identity__Mode: worker}
-    cpus: 0.1
-    mem_limit: 160m
+    cpus: 0.06
+    mem_limit: 192m
 
   # ---- catalog ----
   catalog-api:
@@ -319,14 +323,14 @@ services:
       rabbitmq: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
     environment: {<<: [*dotnet-env, *catalog-env], Catalog__Mode: api}
-    cpus: 0.35
+    cpus: 0.5
     mem_limit: 320m
   catalog-worker:
     <<: *worker
     image: bloom-lt-catalog
     environment: {<<: [*dotnet-env, *catalog-env], Catalog__Mode: worker}
-    cpus: 0.1
-    mem_limit: 160m
+    cpus: 0.06
+    mem_limit: 192m
 
   # ---- inventory ----
   inventory-api:
@@ -335,14 +339,14 @@ services:
     image: bloom-lt-inventory
     networks: {default: {aliases: [inventory]}}
     environment: {<<: [*dotnet-env, *inventory-env], Inventory__Mode: api}
-    cpus: 0.15
+    cpus: 0.25
     mem_limit: 224m
   inventory-worker:
     <<: *worker
     image: bloom-lt-inventory
     environment: {<<: [*dotnet-env, *inventory-env], Inventory__Mode: worker}
-    cpus: 0.1
-    mem_limit: 160m
+    cpus: 0.08
+    mem_limit: 192m
 
   # ---- launch ----
   launch-api:
@@ -358,7 +362,7 @@ services:
     image: bloom-lt-launch
     environment: {<<: [*dotnet-env, *launch-env], Launch__Mode: worker}
     cpus: 0.15
-    mem_limit: 160m
+    mem_limit: 192m
 
   # ---- order ----
   order-api:
@@ -367,14 +371,14 @@ services:
     image: bloom-lt-order
     networks: {default: {aliases: [order]}}
     environment: {<<: [*dotnet-env, *order-env], Order__Mode: api}
-    cpus: 0.35
+    cpus: 0.4
     mem_limit: 320m
   order-worker:
     <<: *worker
     image: bloom-lt-order
     environment: {<<: [*dotnet-env, *order-env], Order__Mode: worker}
-    cpus: 0.15
-    mem_limit: 160m
+    cpus: 0.08
+    mem_limit: 192m
 
   # ---- payment ----
   payment-api:
@@ -383,14 +387,14 @@ services:
     image: bloom-lt-payment
     networks: {default: {aliases: [payment]}}
     environment: {<<: [*dotnet-env, *payment-env], Payment__Mode: api}
-    cpus: 0.15
+    cpus: 0.2
     mem_limit: 224m
   payment-worker:
     <<: *worker
     image: bloom-lt-payment
     environment: {<<: [*dotnet-env, *payment-env], Payment__Mode: worker}
-    cpus: 0.15
-    mem_limit: 160m
+    cpus: 0.07
+    mem_limit: 192m
 
   # ---- fulfillment ----
   fulfillment-api:
@@ -400,15 +404,15 @@ services:
     image: bloom-lt-fulfillment
     networks: {default: {aliases: [fulfillment]}}
     environment: {<<: [*dotnet-env, *fulfillment-env], Fulfillment__Mode: api}
-    cpus: 0.15
+    cpus: 0.05
     mem_limit: 224m
   fulfillment-worker:
     <<: *worker
     extra_hosts: ["api.goshippo.com:127.0.0.1"] # Shippo base URL is hard-coded (spec 8): blackhole it so no traffic reaches the real API
     image: bloom-lt-fulfillment
     environment: {<<: [*dotnet-env, *fulfillment-env], Fulfillment__Mode: worker}
-    cpus: 0.1
-    mem_limit: 160m
+    cpus: 0.05
+    mem_limit: 192m
 
   # ---- notification ----
   notification-api:
@@ -417,14 +421,14 @@ services:
     image: bloom-lt-notification
     networks: {default: {aliases: [notification]}}
     environment: {<<: [*dotnet-env, *notification-env], Notification__Mode: api}
-    cpus: 0.15
+    cpus: 0.08
     mem_limit: 224m
   notification-worker:
     <<: *worker
     image: bloom-lt-notification
     environment: {<<: [*dotnet-env, *notification-env], Notification__Mode: worker}
-    cpus: 0.1
-    mem_limit: 160m
+    cpus: 0.09
+    mem_limit: 192m
 
   # ---- load generator (only with --profile loadtest) ----
   k6:
@@ -461,5 +465,5 @@ services:
     volumes: ["../loadtest/verify:/verify:ro"]
     depends_on:
       postgres: {condition: service_healthy}
-    cpus: 0.1
+    cpus: 0.05
     mem_limit: 128m

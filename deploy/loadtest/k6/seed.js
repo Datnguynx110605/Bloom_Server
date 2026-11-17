@@ -6,7 +6,7 @@ import { num, str } from './lib/config.js';
 import { adminToken, customer } from './lib/auth.js';
 import { available, poolCategory, poolProduct, receive } from './lib/admin.js';
 
-const CUSTOMERS = num('CUSTOMERS', 5000);
+const CUSTOMERS = num('CUSTOMERS', 2000);
 const POOL = num('POOL', 100);
 const POOL_STOCK = num('POOL_STOCK', 1000000);
 
