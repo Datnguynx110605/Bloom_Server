@@ -191,6 +191,9 @@ public sealed class FakesTests
         });
 
         Assert.True(result.IsValid, result.Exception?.Message);
+        // Identity caches the JWKS and refetches only for an unknown kid, so a restarted fake must not reuse the old kid.
+        Assert.Equal(jwks.Keys.Single().Kid, new JsonWebToken(token).Kid);
+        Assert.NotEqual("lt-google-1", jwks.Keys.Single().Kid);
         Assert.Equal(email, result.ClaimsIdentity.FindFirst("email")!.Value);
         Assert.Equal("true", result.ClaimsIdentity.FindFirst("email_verified")!.Value, ignoreCase: true);
         Assert.Equal("lt-" + email.ToLowerInvariant(), result.ClaimsIdentity.FindFirst("sub")!.Value);

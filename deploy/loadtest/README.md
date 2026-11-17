@@ -14,7 +14,7 @@ environment, and never point this stack at real providers (spec 5.6).
 - Docker Desktop with the VM at **8 CPUs and about 11.7 GiB**. The stack is capped at 6 CPUs / 9 GiB, k6 at 2 CPUs / 1.5 GiB, so the
   VM has no spare CPU: close other heavy programs while measuring.
 - **Stop the dev stack first** (`deploy/compose`): both publish host ports 3000 (Grafana), 8025 (Mailpit UI), 9090 (Prometheus) and
-  15672 (RabbitMQ UI). This stack also publishes the gateway on 8088.
+  15672 (RabbitMQ UI). This stack also publishes the gateway on 127.0.0.1:8088 (loopback only: the admin credentials are committed).
 - Git Bash (the commands below). Prefix every compose command with `MSYS_NO_PATHCONV=1`, or Git Bash rewrites the container paths.
 
 ```bash
@@ -49,12 +49,13 @@ Checkpoints still run with `off`; the recorded runs had none that hurt. The owne
 ## Seed (once; idempotent)
 
 ```bash
-$LT run --rm --no-deps k6 run /scripts/seed.js        # CUSTOMERS=2000, POOL=100 products: about 2 minutes
+$LT run --rm --no-deps k6 run /scripts/seed.js        # CUSTOMERS=2000, POOL=100 products: about 5.5 minutes the first time, about 2 when re-run
 ```
 
 Creates the category and `lt-pool` products with stock, and signs in `CUSTOMERS` customers through the Google fake. VU ids are global
 across a test's scenarios, so `CUSTOMERS` must be at least the VU count of any run (the defaults need under 1,000). The admin calls
-share a 120/min bucket and the admin token lasts 15 minutes: a seed of 100 products fits, `POOL` of about 200 or more would 401.
+share a 120/min bucket (burst 60) and a first seed of 100 products makes about 600 of them (about 5.5 minutes, measured); the admin token lasts
+15 minutes, so about 300 products is the most one seed run can create. The seed's setup timeout is `SETUP_TIMEOUT` (default 30 m).
 
 `seed-staff.sql` uses `ON CONFLICT DO NOTHING`: changing the admin password, TOTP secret or `LT_TOTP_KEY` needs `down -v`, a new start and a re-seed.
 
@@ -83,6 +84,8 @@ $LT run --rm --no-deps k6 run /scripts/spike.js  && $LT run --rm --no-deps verif
 $LT run --rm --no-deps k6 run /scripts/stress.js ;  $LT run --rm --no-deps verify     # up to 25 minutes; `;`, see below
 ```
 
+The scripts need every Stripe session paid: keep the fakes' `Fakes__Stripe__PayFraction` at its default 1, or every run fails teardown ("webhooks still in flight").
+
 Every rate, user count and duration is an env var with a default (`-e NAME=value`; see the top of each script). `stress.js` exits 99
 by design when a step breaks (`abortOnFail`), so chain `verify` with `;`, not `&&`. Results land in `deploy/loadtest/results/` (git-ignored).
 Also look at `docker stats --no-stream`: if k6 sits at its 2-CPU cap the result measures k6, not Bloom.
@@ -96,30 +99,29 @@ Also look at `docker stats --no-stream`: if k6 sits at its 2-CPU cap the result 
 - `checkout_idempotent` is the binding idempotency proof: k6 replays every launch checkout with the same `Idempotency-Key` (replay tagged
   `flow:checkout_replay`) and requires the same order. The idempotency checks in `verify` are backed by database unique indexes.
 - Spike gates: during the spike error rate < 5 % and 5xx < 1 % (`phase:spike`); after it `catalog` and `wr_status` p95 and the error
-  rate again (`phase:recovery`; no `checkout_launch` there: no pass tokens exist after sell-out). Its teardown requires
+  rate again (`phase:recovery`; no `checkout_launch` there: no pass tokens exist after sell-out), and `checkout_idempotent` = 1 over the whole run. Its teardown requires
   `held + sold == allocation`, so `SPIKE_USERS` must stay above `ALLOCATION`.
 - **Stress** prints `KNEE step=<k> BROKE step=<b> FIRST=<flow|errors>` first, then one line per step with its error rate, `dropped=` iterations and the p95 of
   each flow against its target. Step *i* offers *i* x the `*_STEP` amount of each flow (`CATALOG_STEP` it/s, `MIXED_STEP` it/s,
   `WS_STEP` sessions, `STATUS_STEP` waiting-room users). The knee is the last step where every p95 is under its target; a step breaks
   at p95 > 2 x target or errors > 5 %. `none` for the knee means no step met all targets. Raise `STEPS` or the `*_STEP` values if no step broke.
+  With the default `ADMISSION_RATE=1` and `STATUS_STEP=25`, the waiting-room users of steps 1 to 4 are all admitted within their step and leave, so "most users stay queued
+  and poll" only holds from about step 5; the waiting-room load of the early steps is lighter than their user count suggests. `checkout_idempotent` is also a threshold here (not an abort).
 
 ### Known noise
 
 - `fulfillment-worker` logs "Label-check sweep failed ... connection refused" at start: Shippo's base URL is hard-coded, so
   `api.goshippo.com` is blackholed to 127.0.0.1 in the two fulfillment containers (`extra_hosts`). Expected.
-- Right after a restart an admitted launch user can get `400 SKU_NOT_BUYABLE` ("launch not open for pre-orders"): the waiting room admits by clock
-  and the stage is flipped by the launch scheduler a moment later. Warming the stack first avoids it; if it still shows, rerun (a spike run then fails on
-  `held + sold == allocation` by one unit). This is a Bloom timing race, not a stack bug; it is recorded for the owner.
+- Rarely (once in about 20 runs, on warm and on freshly restarted stacks) an admitted launch user gets `400 SKU_NOT_BUYABLE` ("launch not open for pre-orders"):
+  the waiting room admits by clock and the catalog stage is flipped by the launch scheduler a moment later. Warming the stack reduces it but does not prevent it;
+  if it shows, rerun (a spike run then fails on `held + sold == allocation` by one unit). This is a timing race in Bloom, not a stack bug; it is an owner item.
 - One admitted user in a few runs gets `SOLD_OUT`: admission can issue more passes than units, so a pass is occasionally lost to a sold-out launch. Normal.
 
 ## Calibration (this machine, measured 2026-11-17)
 
 **Machine and budget.** Windows 11 Home, Docker Desktop VM 8 CPUs / 11.7 GiB. All non-k6 containers together (one-shots and `verify` included):
 **5.95 CPUs / 8.94 GiB** (9152 MiB); k6 2 CPUs / 1.5 GiB. `DOTNET_gcServer=0` everywhere; every container sets `cpus` and `mem_limit`. Gateway rate limits are production values.
-Split (CPUs): postgres 0.6, rabbitmq 0.65, gateway-api 0.75, catalog-api 0.5, order-api 0.4, launch-api 0.35, identity-api 0.3, inventory-api 0.25, payment-api 0.2,
-fakes 0.1, notification-api 0.08, fulfillment-api 0.05; workers 0.05 to 0.15 (launch 0.15, notification 0.09, inventory/order 0.08, payment 0.07,
-catalog/gateway/identity 0.06, fulfillment 0.05); otel-collector 0.15, prometheus 0.1, tempo/loki/grafana/minio 0.05, redis x5 0.05, mailpit and one-shots 0.03 to 0.15.
-The split came from `docker stats` and the cgroup throttle counters (`/sys/fs/cgroup/cpu.stat`) during stress runs: containers pinned at their cap while the
+The split: see `cpus` / `mem_limit` in `docker-compose.yml`. It came from `docker stats` and the cgroup throttle counters (`/sys/fs/cgroup/cpu.stat`) during stress runs: containers pinned at their cap while the
 system had headroom (rabbitmq, gateway, catalog, launch-api) got CPU from the idle ones (postgres averages 0.1 with bursts to 0.6, order-api peaks at 0.3,
 payment and inventory at 0.1 to 0.2). RabbitMQ is the heaviest single container (average 0.2, peaks at its 0.65 cap).
 
@@ -128,10 +130,8 @@ Step 5 is catalog 25 it/s (5 requests each, about 125 req/s), mixed 5 it/s, 125 
 catalog p95 4.9 ms, wr_status 6.2 ms, checkout_launch 98 ms, errors 0.14 %. Step 6 broke on `checkout_launch` (p95 1.3 s on a handful of samples; catalog and wr_status were still
 at 5.8 and 7.1 ms); k6 used about 12 % of its 2 CPUs, so the break is Bloom's (and the VM disk's, see above), not the generator's. Earlier stress runs on worse splits or with the
 full telemetry volume broke at steps 2 to 5 of the larger step size (catalog p95 638 ms at 40 it/s when gateway and catalog were pinned; wr_status 347 ms at 150 users when launch-api
-was throttled; several multi-second `checkout_launch` stalls coinciding with a dead OpenTelemetry collector or a Postgres checkpoint).
-
-The knee is a single measurement with the final settings, and it carries sample noise: `abortOnFail` evaluates p95 on very few `checkout_launch` samples at a step start, and earlier
-stress runs (other splits, full telemetry) broke at steps 1 to 5 of the larger step size. The 56 to 60 % defaults below inherit that uncertainty.
+was throttled; several multi-second `checkout_launch` stalls coinciding with a dead OpenTelemetry collector or a Postgres checkpoint). The knee is one measurement with the
+final settings and carries sample noise (`abortOnFail` evaluates p95 on very few `checkout_launch` samples at a step start); the 56 to 60 % defaults below inherit that uncertainty.
 
 **Defaults** (about 55 % of the knee per flow; spike baseline = load; spike peak slightly above the knee):
 
@@ -154,9 +154,8 @@ re-run `stress.js` to find the new knee (rule: spec 5.9).
 | `load.js` #2 (right after) | exit 0, verify ok: 5.3 / 86.5 / 4.6 ms, 0 failed of 49,250, 0 dropped, 700 WS ok |
 | `spike.js` | exit 0, verify ok: 100 sold of 100, spike-phase error rate 0 and 5xx 0; recovery catalog p95 5.0 ms, wr_status 6.3 ms (361 reads), error rate 0, 0 dropped; 839 WS ok, 166 webhooks delivered |
 
-With the final split but `synchronous_commit=on` (one run, same defaults): checkout_launch p95 216 ms (pass) but a checkpoint with a 21 s fsync phase froze the stack for about 30 s: 809 dropped
-iterations, 1.0 % failed requests (504s), catalog max 22.5 s: `load.js` FAIL. Settings that mattered besides the split: the telemetry volume (10 % of traces, OTLP logs at Warning:
-with every SQL command exported, Tempo, Loki and the collector were OOM-killed or pinned and runs broke), and Tempo off during runs.
+The result with `synchronous_commit=on` is under "Postgres commit wait". Besides the split, what mattered was the telemetry volume (see "Look at it": with every SQL command
+exported, Tempo, Loki and the collector were OOM-killed or pinned and runs broke) and Tempo off during runs.
 
 ## Look at it
 
@@ -167,8 +166,9 @@ with every SQL command exported, Tempo, Loki and the collector were OOM-killed o
 - **Tempo and Loki.** Both are in the stack but are the weakest containers inside the budget (Tempo at 0.05 CPU is OOM-killed on a full
   trace volume and leaves the collector backlogged). To keep the runs honest the services export 10 % of traces
   (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`, arg 0.1) and only warnings and above as OTLP logs (`Logging__OpenTelemetry__LogLevel__Default=Warning`);
-  metrics are complete and console logs are unchanged (`docker logs`). Tempo was not running during the recorded load and spike runs (it OOM-restarts
-  on its old WAL): it is stopped in the Run section (`$LT stop tempo`); `$LT start tempo` brings it back for trace viewing (stop it again before measuring). Loki stayed up.
+  metrics are complete and console logs are unchanged (`docker logs`). These two settings are owner decisions: to revert them, delete the lines
+  `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` and `Logging__OpenTelemetry__LogLevel__Default` from `x-dotnet-env` in `docker-compose.yml` (then `up -d` and wait 70 s;
+  expect the OOM kills above). To view traces, `$LT start tempo` (precondition and reason: Run section). Loki stayed up in the recorded runs.
 
 ## Teardown (everything: containers, volumes, images)
 

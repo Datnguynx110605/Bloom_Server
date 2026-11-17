@@ -2,9 +2,6 @@ using Bloom.LoadTest.Fakes;
 
 FakesApp.Build(args).Run();
 
-/// <summary>Marker for hosting the app from a test project.</summary>
-public partial class Program;
-
 public static class FakesApp
 {
     private record IdTokenRequest(string? Email, string? Name);

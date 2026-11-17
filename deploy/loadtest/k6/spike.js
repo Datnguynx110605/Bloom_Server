@@ -3,10 +3,10 @@
 // Every rate, count and duration is an env var with a default (calibrated for the machine in deploy/loadtest/README.md).
 import { sleep, fail } from 'k6';
 import exec from 'k6/execution';
-import { num, str } from './lib/config.js';
+import { num, str, SLO } from './lib/config.js';
 import { adminToken } from './lib/auth.js';
 import { launch as getLaunch } from './lib/admin.js';
-import { catalogFlow, mixedFlow, launchFlow, statusFlow, wsFlow, WS_HOLD_SECONDS } from './lib/flows.js';
+import { launchFlow, WS_HOLD_SECONDS } from './lib/flows.js';
 import { prepare, webhookProblem, summaryLines, summaryOutputs } from './lib/run.js';
 
 const BASE_CATALOG_RATE = num('BASE_CATALOG_RATE', 14);
@@ -51,13 +51,14 @@ export const options = {
     recovery_wr: arrival('status', RECOVERY_WR_RATE, wrVus, wrVus * 2, SPIKE_END, RECOVERY, 'recovery'),
   },
   thresholds: {
+    checkout_idempotent: ['rate==1'], // k6 replays every launch checkout with its Idempotency-Key and requires the same order
     // The spike (baseline and launch traffic until SPIKE_END); setup, teardown and recovery calls do not dilute it.
     'http_req_failed{phase:spike}': ['rate<0.05'],
     'server_errors{phase:spike}': ['rate<0.01'],
     // Recovery: the load test's latency targets again, on the traffic that is back at baseline.
-    'http_req_duration{flow:catalog,phase:recovery}': ['p(95)<150'],
+    'http_req_duration{flow:catalog,phase:recovery}': [`p(95)<${SLO.catalog}`],
     // No checkout_launch latency here: no pass tokens exist after sell-out, so it cannot be measured in recovery.
-    'http_req_duration{flow:wr_status,phase:recovery}': ['p(95)<50'],
+    'http_req_duration{flow:wr_status,phase:recovery}': [`p(95)<${SLO.wr_status}`],
     'http_reqs{flow:wr_status,phase:recovery}': ['count>0'], // a gate without samples would pass vacuously
     'http_req_failed{phase:recovery}': ['rate<0.01'],
     'dropped_iterations{phase:recovery}': ['count==0'], // a generator that cannot keep the rate would flatter the latency
@@ -68,10 +69,7 @@ export function setup() {
   return prepare({ delaySeconds: LAUNCH_DELAY, admissionRate: ADMISSION_RATE, purchaseLimit: PURCHASE_LIMIT, allocation: ALLOCATION, testSeconds: TEST_SECONDS });
 }
 
-export const catalog = catalogFlow;
-export const mixed = mixedFlow;
-export const ws = wsFlow;
-export const status = statusFlow;
+export { catalogFlow as catalog, mixedFlow as mixed, statusFlow as status, wsFlow as ws } from './lib/flows.js';
 export function spikeLaunch(data) {
   sleep(((exec.vu.idInScenario - 1) / SPIKE_USERS) * SPIKE_RAMP);
   launchFlow(data);
@@ -90,9 +88,18 @@ function allocationProblem(data) {
   }
 }
 
+// A webhook check that throws (fakes unreachable) is a problem like any other.
+function guardedWebhookProblem(data) {
+  try {
+    return webhookProblem(data.fakes);
+  } catch (e) {
+    return `webhook check: ${e.message}`;
+  }
+}
+
 // Both checks always run, so one failure does not hide the other.
 export function teardown(data) {
-  const problems = [allocationProblem(data), webhookProblem(data.fakes)].filter(Boolean);
+  const problems = [allocationProblem(data), guardedWebhookProblem(data)].filter(Boolean);
   if (problems.length) fail(problems.join(' | '));
 }
 

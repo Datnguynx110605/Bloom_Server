@@ -14,11 +14,11 @@ const THINK_SECONDS = num('MIXED_THINK_SECONDS', 1.5);
 export const WS_HOLD_SECONDS = num('WS_HOLD_SECONDS', 60);
 const WS_HANDSHAKE_TIMEOUT_S = num('WS_HANDSHAKE_TIMEOUT_S', 10);
 
-export const checkoutIdempotent = new Rate('checkout_idempotent');
-export const wsConnectOk = new Rate('ws_connect_ok');
-export const wsConnectMs = new Trend('ws_connect_ms', true);
-export const wsSessions = new Counter('ws_sessions');
-export const sessionRefreshes = new Counter('session_refreshes');
+const checkoutIdempotent = new Rate('checkout_idempotent');
+const wsConnectOk = new Rate('ws_connect_ok');
+const wsConnectMs = new Trend('ws_connect_ms', true);
+const wsSessions = new Counter('ws_sessions');
+const sessionRefreshes = new Counter('session_refreshes');
 
 const SHIP_TO = { name: 'Load Test', lines: ['1 Test Street'], city: 'Reno', state: 'NV', zip: '89501', phone: '+17755550100' };
 const RS = '\u001e'; // SignalR record separator
@@ -130,7 +130,7 @@ export function launchFlow(data) {
 
 // One status read of the run's launch by a signed-in customer (after sell-out the room answers sold_out or closed, 01-launch §6.3).
 export function statusFlow(data) {
-  const s = fresh(session());
+  const s = session();
   ok(api('GET', `/api/launches/${data.launchId}/waiting-room`, null, { token: s.token, ip: s.ip, flow: 'wr_status' }));
 }
 

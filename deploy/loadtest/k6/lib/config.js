@@ -16,6 +16,9 @@ export const BASE_URL = str('BASE_URL', 'http://gateway:8080');
 export const FAKES_URL = str('FAKES_URL', 'http://fakes:8080');
 export const ORIGIN = str('ORIGIN', 'http://loadtest.bloom.test');
 
+// The p95 targets in ms (design thresholds): the one copy every script builds its thresholds from.
+export const SLO = { catalog: 150, checkout_launch: 300, wr_status: 50 };
+
 const UNIT_S = { s: 1, m: 60, h: 3600 };
 // A duration like 30s, 1m or 1h, in seconds.
 export function seconds(d) {

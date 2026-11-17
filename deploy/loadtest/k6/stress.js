@@ -2,8 +2,7 @@
 // Step i (1-based) offers i x the *_STEP amount of each flow; k6 aborts on the first broken step and the summary names the knee.
 // Every rate, count and duration is an env var with a default (calibrated for the machine in deploy/loadtest/README.md).
 // A run that finds a broken step exits 99 by design (abortOnFail): chain verify with `;`, not `&&`.
-import { num, seconds, str } from './lib/config.js';
-import { catalogFlow, mixedFlow, launchFlow, wsFlow } from './lib/flows.js';
+import { num, seconds, str, SLO } from './lib/config.js';
 import { knee } from './lib/knee.js';
 import { prepare, checkWebhooks, summaryLines, summaryOutputs } from './lib/run.js';
 
@@ -18,10 +17,9 @@ const ALLOCATION = num('ALLOCATION', 100000); // large, with a slow admission: m
 const ADMISSION_RATE = num('ADMISSION_RATE', 1);
 const LAUNCH_DELAY = num('LAUNCH_DELAY', 10);
 const PURCHASE_LIMIT = num('PURCHASE_LIMIT', 1);
-const SLO = { catalog: 150, checkout_launch: 300, wr_status: 50 }; // p95 targets in ms
 
 const scenarios = {};
-const thresholds = {};
+const thresholds = { checkout_idempotent: ['rate==1'] }; // no abortOnFail: it is judged at the end, steps decide the knee
 for (let i = 1; i <= STEPS; i++) {
   const at = { startTime: `${(i - 1) * D}s`, gracefulStop: '0s', tags: { step: String(i) } };
   const arrival = (exec, rate, vus, maxVus) => ({ executor: 'constant-arrival-rate', exec, rate, timeUnit: '1s', preAllocatedVUs: vus, maxVUs: maxVus, duration: `${D}s`, ...at });
@@ -42,10 +40,7 @@ export function setup() {
   return prepare({ delaySeconds: LAUNCH_DELAY, admissionRate: ADMISSION_RATE, purchaseLimit: PURCHASE_LIMIT, allocation: ALLOCATION, testSeconds: STEPS * D });
 }
 
-export const catalog = catalogFlow;
-export const mixed = mixedFlow;
-export const launch = launchFlow;
-export const ws = wsFlow;
+export { catalogFlow as catalog, mixedFlow as mixed, launchFlow as launch, wsFlow as ws } from './lib/flows.js';
 
 export function teardown(data) {
   checkWebhooks(data.fakes);

@@ -11,7 +11,7 @@ const POOL = num('POOL', 100);
 const POOL_STOCK = num('POOL_STOCK', 1000000);
 
 export const options = {
-  setupTimeout: str('SEED_SETUP_TIMEOUT', '30m'),
+  setupTimeout: str('SETUP_TIMEOUT', '30m'),
   scenarios: {
     customers: { executor: 'shared-iterations', vus: Math.min(num('SEED_VUS', 50), CUSTOMERS), iterations: CUSTOMERS, maxDuration: str('SEED_MAX_DURATION', '30m') },
   },

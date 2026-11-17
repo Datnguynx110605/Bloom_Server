@@ -8,7 +8,8 @@ namespace Bloom.LoadTest.Fakes;
 /// <summary>Google's JWKS and ID-token minting (ported from Bloom.Identity.Tests' FakeGoogle): one RS256 key, tokens for any email.</summary>
 public sealed class GoogleFake(IConfiguration config)
 {
-    private const string Kid = "lt-google-1";
+    // Unique per boot (a new key every start): Identity refetches the JWKS only for an unknown kid.
+    private static readonly string Kid = "lt-google-" + DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString("x");
 
     private readonly RSA _key = RSA.Create(2048);
     private readonly string _clientId = config["Fakes:Google:ClientId"] ?? throw new InvalidOperationException("Fakes:Google:ClientId is not set.");

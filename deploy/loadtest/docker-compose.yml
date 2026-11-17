@@ -270,6 +270,7 @@ services:
       Fakes__Stripe__WebhookUrl: http://gateway:8080/webhooks/stripe
       Fakes__Stripe__WebhookSecret: ${LT_STRIPE_WEBHOOK_SECRET}
       Fakes__Google__ClientId: ${LT_GOOGLE_CLIENT_ID}
+      # The k6 scripts need every session paid (teardown waits for one webhook per session): leave Fakes__Stripe__PayFraction at its default 1.
     healthcheck:
       <<: *api-health
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/_stats"]
@@ -282,7 +283,7 @@ services:
     build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Gateway/Bloom.Gateway, ASSEMBLY: Bloom.Gateway}}
     image: bloom-lt-gateway
     networks: {default: {aliases: [gateway]}}
-    ports: ["8088:8080"]
+    ports: ["127.0.0.1:8088:8080"]
     environment: {<<: [*dotnet-env, *gateway-env], Gateway__Mode: api}
     cpus: 0.75
     mem_limit: 320m

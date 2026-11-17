@@ -1,7 +1,6 @@
 // Load test: anonymous catalog browsing, signed-in mixed shoppers, a launch with its waiting room, and WebSocket sessions, all at once.
 // Every rate, count and duration is an env var with a default (calibrated for the machine in deploy/loadtest/README.md).
-import { num, seconds, str } from './lib/config.js';
-import { catalogFlow, mixedFlow, launchFlow, wsFlow } from './lib/flows.js';
+import { num, seconds, str, SLO } from './lib/config.js';
 import { prepare, checkWebhooks, summaryLines, summaryOutputs } from './lib/run.js';
 
 const CATALOG_RATE = num('CATALOG_RATE', 14);
@@ -35,9 +34,7 @@ export const options = {
     launch: { executor: 'per-vu-iterations', exec: 'launch', vus: LAUNCH_USERS, iterations: 1, maxDuration: `${TEST_SECONDS}s` },
   },
   thresholds: {
-    'http_req_duration{flow:catalog}': ['p(95)<150'],
-    'http_req_duration{flow:checkout_launch}': ['p(95)<300'],
-    'http_req_duration{flow:wr_status}': ['p(95)<50'],
+    ...Object.fromEntries(Object.entries(SLO).map(([flow, ms]) => [`http_req_duration{flow:${flow}}`, [`p(95)<${ms}`]])),
     http_req_failed: ['rate<0.01'],
     ws_connect_ok: ['rate>0.99'],
     ws_sessions: ['count>0'], // ws_connect_ok with no samples would pass; this fails a WebSocket outage that records nothing
@@ -55,10 +52,7 @@ export function setup() {
   return prepare({ delaySeconds: LAUNCH_DELAY, admissionRate: ADMISSION_RATE, purchaseLimit: PURCHASE_LIMIT, allocation: ALLOCATION, testSeconds: TEST_SECONDS });
 }
 
-export const catalog = catalogFlow;
-export const mixed = mixedFlow;
-export const launch = launchFlow;
-export const ws = wsFlow;
+export { catalogFlow as catalog, mixedFlow as mixed, launchFlow as launch, wsFlow as ws } from './lib/flows.js';
 
 export function teardown(data) {
   checkWebhooks(data.fakes);
