@@ -394,6 +394,7 @@ services:
   # ---- fulfillment ----
   fulfillment-api:
     <<: *api
+    extra_hosts: ["api.goshippo.com:127.0.0.1"] # Shippo base URL is hard-coded (spec 8): blackhole it so no traffic reaches the real API
     build: {context: ../.., dockerfile: deploy/docker/Dockerfile, target: app, args: {PROJECT: src/Fulfillment/Bloom.Fulfillment, ASSEMBLY: Bloom.Fulfillment}}
     image: bloom-lt-fulfillment
     networks: {default: {aliases: [fulfillment]}}
@@ -402,6 +403,7 @@ services:
     mem_limit: 224m
   fulfillment-worker:
     <<: *worker
+    extra_hosts: ["api.goshippo.com:127.0.0.1"] # Shippo base URL is hard-coded (spec 8): blackhole it so no traffic reaches the real API
     image: bloom-lt-fulfillment
     environment: {<<: [*dotnet-env, *fulfillment-env], Fulfillment__Mode: worker}
     cpus: 0.1
