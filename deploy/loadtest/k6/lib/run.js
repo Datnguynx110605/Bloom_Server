@@ -29,16 +29,23 @@ export function prepare({ testSeconds, ...launch }) {
 }
 
 // P5: every Stripe session of this run must end in a delivered webhook. Deliveries lag the checkout by the fake's pay delay plus its retries, so wait for them first.
-export function checkWebhooks(before) {
+// Returns the problem as a message (null when every webhook arrived), so a caller can report it next to other findings.
+export function webhookProblem(before) {
   let s;
   for (let waited = 0; ; waited++) {
     s = stats();
     if (s.webhooksDelivered + s.webhooksFailed - before.webhooksDelivered - before.webhooksFailed >= s.sessionsCreated - before.sessionsCreated) break;
-    if (waited >= WEBHOOK_WAIT_S) fail(`webhooks still in flight after ${WEBHOOK_WAIT_S}s: before ${JSON.stringify(before)}, now ${JSON.stringify(s)}`);
+    if (waited >= WEBHOOK_WAIT_S) return `webhooks still in flight after ${WEBHOOK_WAIT_S}s: before ${JSON.stringify(before)}, now ${JSON.stringify(s)}`;
     sleep(1);
   }
-  if (s.webhooksFailed > before.webhooksFailed) fail(`${s.webhooksFailed - before.webhooksFailed} webhook(s) never delivered: before ${JSON.stringify(before)}, now ${JSON.stringify(s)}`);
+  if (s.webhooksFailed > before.webhooksFailed) return `${s.webhooksFailed - before.webhooksFailed} webhook(s) never delivered: before ${JSON.stringify(before)}, now ${JSON.stringify(s)}`;
   console.log(`webhooks: ${s.sessionsCreated - before.sessionsCreated} sessions, ${s.webhooksDelivered - before.webhooksDelivered} delivered, 0 failed`);
+  return null;
+}
+
+export function checkWebhooks(before) {
+  const problem = webhookProblem(before);
+  if (problem) fail(problem);
 }
 
 // One line per metric (sub-metrics included), with its thresholds.

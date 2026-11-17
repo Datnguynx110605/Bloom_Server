@@ -128,6 +128,12 @@ export function launchFlow(data) {
   checkoutIdempotent.add(again.status === first.status && id !== undefined && orderId(again) === id);
 }
 
+// One status read of the run's launch by a signed-in customer (after sell-out the room answers sold_out or closed, 01-launch §6.3).
+export function statusFlow(data) {
+  const s = fresh(session());
+  ok(api('GET', `/api/launches/${data.launchId}/waiting-room`, null, { token: s.token, ip: s.ip, flow: 'wr_status' }));
+}
+
 let wsErrorLogged = false; // one line per VU: a wholesale outage must not flood stdout
 
 // One hub connection: handshake (within WS_HANDSHAKE_TIMEOUT_S, else a failed sample), answer pings, close after `holdMs`. Resolves when it is over.

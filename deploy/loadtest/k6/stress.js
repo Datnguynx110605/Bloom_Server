@@ -1,6 +1,7 @@
 // Stress test: the combined profile (catalog + mixed + waiting-room polling + WebSocket) grows by one increment per step until a step breaks.
 // Step i (1-based) offers i x the *_STEP amount of each flow; k6 aborts on the first broken step and the summary names the knee.
 // Every rate, count and duration is an env var with a default (a placeholder until the machine is measured).
+// A run that finds a broken step exits 99 by design (abortOnFail): chain verify with `;`, not `&&`.
 import { num, seconds, str } from './lib/config.js';
 import { catalogFlow, mixedFlow, launchFlow, wsFlow } from './lib/flows.js';
 import { knee } from './lib/knee.js';
