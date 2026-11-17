@@ -449,3 +449,16 @@ services:
       fakes: {condition: service_healthy}
       seed-staff: {condition: service_completed_successfully}
       prometheus: {condition: service_started}
+
+  # ---- invariant check (only with --profile loadtest; run after a test: `run --rm verify`) ----
+  verify:
+    profiles: [loadtest]
+    image: postgres:17.6
+    restart: "no"
+    environment: *pg
+    command: ["sh", "/verify/verify.sh"]
+    volumes: ["../loadtest/verify:/verify:ro"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    cpus: 0.1
+    mem_limit: 128m
