@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <ProjectReference Include="..\Bloom.LoadTest.Fakes\Bloom.LoadTest.Fakes.csproj" />
+    <ProjectReference Include="..\..\..\..\src\Payment\Bloom.Payment\Bloom.Payment.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+    <!-- Bloom.Payment references Design as private, so its EF Core version never reaches this project; see Bloom.Payment.Tests. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" />
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+</Project>
